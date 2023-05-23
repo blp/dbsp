@@ -45,7 +45,7 @@ mimalloc-rust-sys = "1.7.2"
 
     [dependencies.size-of]
     version = "0.1.5"
-    features = ["hashbrown", "time-std", "xxhash-xxh3"]
+    features = ["hashbrown", "time-std", "xxhash-xxh3", "ordered-float"]
 
 [dev-dependencies]
 zip = "0.6.2"
@@ -109,3 +109,7 @@ name = "orgchart"
 
 [[example]]
 name = "degrees"
+
+[[example]]
+name = "tutorial"
+required-features = ["with-csv", "with-serde"]
