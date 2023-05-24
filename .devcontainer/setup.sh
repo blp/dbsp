@@ -22,5 +22,5 @@ rustup component add rustfmt --toolchain nightly
 rustup component add clippy 
 rustup component add clippy --toolchain nightly
 #curl -fsSL https://deb.nodesource.com/setup_19.x | bash -
-#npm install --global yarn
-#npm install --global openapi-typescript-codegen
+npm install --global yarn
+npm install --global openapi-typescript-codegen
