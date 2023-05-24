@@ -7,7 +7,10 @@ apt-get install -y \
   sudo \
   build-essential \
   openssl \
-  cmake
+  cmake \
+  pkg-config \
+  libssl-dev \
+  nodejs
 
 ## Install rustup and common components
 curl https://sh.rustup.rs -sSf | sh -s -- -y
@@ -17,3 +20,6 @@ rustup component add rustfmt
 rustup component add rustfmt --toolchain nightly
 rustup component add clippy 
 rustup component add clippy --toolchain nightly
+curl -fsSL https://deb.nodesource.com/setup_19.x | bash -
+npm install --global yarn
+npm install --global openapi-typescript-codegen
