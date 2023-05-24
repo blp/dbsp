@@ -10,7 +10,8 @@ apt-get install -y \
   cmake \
   pkg-config \
   libssl-dev \
-  nodejs
+  nodejs \
+  npm
 
 ## Install rustup and common components
 curl https://sh.rustup.rs -sSf | sh -s -- -y
