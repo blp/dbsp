@@ -444,7 +444,9 @@ impl<D> StreamValue<D> {
 ///
 /// Aggregation applies a function (the "aggregation function") to all of the
 /// values for a given key in an input stream, and outputs an indexed Z-set with
-/// the same keys as the input and the function's output as values.
+/// the same keys as the input and the function's output as values.  Aggregation
+/// usually reduces the input data size because it outputs only one record for
+/// each key in the input.
 ///
 /// DBSP implements two kinds of aggregation:
 ///
@@ -480,9 +482,14 @@ impl<D> StreamValue<D> {
 /// ## Rolling aggregates
 ///
 /// DBSP supports rolling aggregation of time series data over a
-/// client-specified "rolling window" range.  Any type that implements `Ord` may
-/// be used to model time, with larger values corresponding to later times.
-/// (DBSP logical time is an unrelated concept.)
+/// client-specified "rolling window" range.  For this purpose, Rust integer
+/// types[*] model times.  Larger integers corresponding to later times.  The
+/// unit of time in use is relevant only for specifying the width of the
+/// aggregation window, with [`RelRange`].
+///
+///   [*] Other types may be used if they implement `num::traits::int::PrimInt`.
+///
+/// The DBSP logical time concept is unrelated to times for rolling aggregation.
 ///
 /// Rolling aggregation takes place within a "partition", which is any
 /// convenient division of the data.  It might correspond to a tenant ID, for
@@ -492,6 +499,9 @@ impl<D> StreamValue<D> {
 /// the partition (it may be `()` if all data is to be within a single
 /// partition) and a value type of the form `(TS, V)` where `TS` is the type
 /// used for time and `V` is the client's value type.
+///
+/// Rolling aggregation does not reduce the size of data.  It outputs one record
+/// for each input record.
 ///
 /// DBSP has two kinds of rolling aggregation functions that differ based on
 /// their tolerance for updating aggregation results when new data arrives for

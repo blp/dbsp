@@ -172,8 +172,7 @@ fn main() -> Result<()> {
 ```
 
 The compiler will point out a problem: `Record` lacks a pile of traits
-required for the record type of the "Z-sets" (see
-`dbsp::algebra::zset::ZSet`).
+required for the record type of the "Z-sets" ([`dbsp::algebra::zset::ZSet`]).
 
 We can add them:
 ```rust
@@ -294,7 +293,7 @@ records.  We can use the `FilterMap` trait implemented for `Stream` to
 do that.  For example, we can take just the records for locations in
 the United Kingdom:
 
-```
+```rust
 fn build_circuit(circuit: &mut RootCircuit) -> Result<()> {
     circuit
         .add_source(CsvSource::<_, Record, isize, OrdZSet<_, _>>::from_csv_reader(reader()?))
@@ -312,5 +311,70 @@ fn build_circuit(circuit: &mut RootCircuit) -> Result<()> {
 This prints 3083, showing that we did select a subset of the 168662
 total records.
 
-### Counting
+### Aggregating by month
+
+3083 records is a lot to look at.  There's so much because we've got
+years of daily data.  Let's aggregate daily vaccinations into months,
+to get monthly vaccinations.  DBSP has several forms of aggregation.
+All of them work with "indexed Z-sets"
+([`dbsp::algebra::zset::IndexedZSet`]), which are Z-sets of key-value
+pairs.  Aggregation happens across records with the same key.
+
+To aggregate daily vaccinations over months across location, we need
+to transform our Z-set into an indexed Z-set where the key (the index)
+has the form `(location, year, month)` and the value is daily
+vaccinations (we could keep the whole record but we'd just throw away
+most of it later).  To do this, we call [`Stream::index_with`], passing
+in a function that maps a record into a key-value tuple:
+
+```rust
+        .index_with(|r| {
+            (
+                (r.location.clone(), r.date.year(), r.date.month() as u8),
+                r.daily_vaccinations.unwrap_or(0),
+            )
+        })
+```
+
+Then we can [`Stream::aggregate_linear`], the simplest form of
+aggregation in DBSP, to sum across months.  This function sums the
+output of a function of key-value pairs across each unique key.  To
+get monthly vaccinations, we just sum the values from our indexed
+Z-set (we have to convert to `isize` because aggregation implicitly
+multiplies by record weights):
+
+```rust
+        .aggregate_linear(|_k, &v| v as isize)
+```
+
+To see our output we can use `inspect` again.  We could just print the
+raw (indexed) Z-sets, but here's a slightly refined way that shows how
+to break them down into records:
+
+```rust
+        .inspect(|data| {
+            data.iter()
+                .for_each(|(k, v, w)| println!("{:16} {}-{:02} {v:10}: {w:+}", k.0, k.1, k.2))
+        });
+```
+
+The output looks like this:
+
+```text
+England          2021-01    5600174: +1
+England          2021-02    9377418: +1
+England          2021-03   11861175: +1
+England          2021-04   11288945: +1
+England          2021-05   13772946: +1
+England          2021-06   10944915: +1
+...
+Northern Ireland 2021-01     150315: +1
+Northern Ireland 2021-02     317074: +1
+...
+Wales            2023-01      33838: +1
+Wales            2023-02      17098: +1
+Wales            2023-03       8776: +1
+```
+
+### Rolling aggregation
 

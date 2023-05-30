@@ -33,10 +33,9 @@ fn reader() -> Result<csv::Reader<File>> {
 
 fn build_circuit(circuit: &mut RootCircuit) -> Result<()> {
     let stream = circuit.add_source(CsvSource::from_csv_reader(reader()?));
-    stream
-        .inspect(move |record: &OrdZSet<Record, isize>| {
-            println!("{}", record.weighted_count());
-        });
+    stream.inspect(move |record: &OrdZSet<Record, isize>| {
+        println!("{}", record.weighted_count());
+    });
     Ok(())
 }
 

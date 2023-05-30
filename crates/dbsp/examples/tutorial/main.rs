@@ -1,9 +1,9 @@
 use anyhow::Result;
 use csv;
 use dbsp::{
-    operator::{CsvSource, FilterMap},
+    operator::{time_series::RelOffset, time_series::RelRange, CsvSource, FilterMap},
     trace::BatchReader,
-    Circuit, OrdZSet, RootCircuit, ZSet,
+    Circuit, IndexedZSet, OrdZSet, RootCircuit, ZSet,
 };
 use ordered_float::OrderedFloat;
 use serde::Deserialize;
@@ -38,8 +38,33 @@ fn reader() -> Result<csv::Reader<File>> {
 fn build_circuit(circuit: &mut RootCircuit) -> Result<()> {
     circuit
         .add_source(CsvSource::<_, Record, isize, OrdZSet<_, _>>::from_csv_reader(reader()?))
-        .index_with(|r| ((r.location.clone(), r.date.year(), r.date.month() as u8), r.clone()))
-        .inspect(|data| println!("{}", data.key_count()));
+        .filter(|r| {
+            r.location == "England"
+                || r.location == "Northern Ireland"
+                || r.location == "Scotland"
+                || r.location == "Wales"
+        })
+        .index_with(|r| {
+            (
+                (r.location.clone(), r.date.year(), r.date.month() as u8),
+                r.daily_vaccinations.unwrap_or(0),
+            )
+        })
+        .aggregate_linear(|_k, &v| v as isize)
+        .map_index(|(k, &v)| (k.0.clone(), (k.1 * 12 + (k.2 as i32 - 1), v)))
+        .inspect(|data| {
+            data.iter()
+                .for_each(|(k, (date, v), w)| println!("monthly {k:16} {}-{:02} {v}: {w:+}", date / 12, date % 12 + 1))
+        })
+        .partitioned_rolling_aggregate_linear(
+            |&v| v,
+            |x| x,
+            RelRange::new(RelOffset::Before(0), RelOffset::Before(0)),
+        )
+        .inspect(|data| {
+            data.iter()
+                .for_each(|(k, (date, v), w)| println!("moving  {k:16} {}-{:02} {}: {w:+}", date / 12, date % 12 + 1, v.unwrap()))
+        });
     Ok(())
 }
 

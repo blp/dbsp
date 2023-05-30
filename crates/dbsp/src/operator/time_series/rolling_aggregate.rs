@@ -83,15 +83,24 @@ where
     {
         let mut res: Option<A> = None;
 
+        // let mut n = 0;
         while cursor.key_valid() {
             let w = cursor.weight();
             let new = (self.f)(cursor.key()).mul_by_ref(&w);
+            // if n > 0 {
+            //     print!(" + ");
+            // }
+            // n += 1;
+            // print!("{new:?}");
             res = match res {
                 None => Some(new),
                 Some(old) => Some(old + new),
             };
             cursor.step_key();
         }
+        // if let Some(ref res) = res {
+        //     println!(" = {res:?}");
+        // }
         res
     }
 
@@ -226,6 +235,11 @@ impl<B> Stream<RootCircuit, B> {
     /// Outputs the contents of the input stream extended with the
     /// value of the aggregate.
     ///
+    /// For each input record `(p, (ts, v))`, rolling aggregation finds all the
+    /// records `(p, (ts2, x))` such that `ts2` is in `range(ts)`, applies
+    /// `aggregator` across these records to obtain a finalized value `f`,
+    /// and outputs `(p, (ts, f))`.
+    ///
     /// This operator is incremental and will update previously
     /// computed outputs affected by new data.  For example,
     /// a data point arriving out-of-order may affect previously
@@ -331,7 +345,18 @@ impl<B> Stream<RootCircuit, B> {
     }
 
     /// A version of [`Self::partitioned_rolling_aggregate`] optimized for
-    /// linear aggregation functions.
+    /// linear aggregation functions.  For each input record `(p, (ts, v))`,
+    /// it finds all the records `(p, (ts2, x))` such that `ts2` is in
+    /// `range.range_of(ts)`, computes the sum `s` of `f(x)` across these
+    /// records, and outputs `(p, (ts, Some(output_func(s))))`.
+    ///
+    /// Output records from linear aggregation contain an `Option` type because there might be no
+    /// records matching `range.range_of(ts)`.  If `range` contains (relative) time 0, this never
+    /// happens (because the record containing `ts` itself is always a match), so in that case the
+    /// caller can safely `unwrap()` the `Option`.
+    ///
+    /// In rolling aggregation, the number of output records matches the number
+    /// of input records.
     ///
     /// This method only works for linear aggregation functions `f`, i.e.,
     /// functions that satisfy `f(a+b) = f(a) + f(b)`.  It will produce

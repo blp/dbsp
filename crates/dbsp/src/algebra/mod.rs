@@ -23,6 +23,7 @@ use std::{
     num::Wrapping,
     ops::{Add, AddAssign, Mul, Neg},
     rc::Rc,
+    fmt::Debug,
 };
 
 /// A trait for types that have a zero value.
@@ -217,12 +218,12 @@ where
 // TODO: Add a `for<'a> Add<&'a Self, Output = Self>` bound for adding an owned
 // and a referenced value together
 pub trait SemigroupValue:
-    Clone + Eq + SizeOf + Add<Output = Self> + AddByRef + AddAssign + AddAssignByRef + 'static
+    Clone + Eq + SizeOf + Add<Output = Self> + AddByRef + AddAssign + AddAssignByRef + 'static + Debug
 {
 }
 
 impl<T> SemigroupValue for T where
-    T: Clone + Eq + SizeOf + Add<Output = Self> + AddByRef + AddAssign + AddAssignByRef + 'static
+    T: Clone + Eq + SizeOf + Add<Output = Self> + AddByRef + AddAssign + AddAssignByRef + 'static + Debug
 {
 }
 
@@ -541,7 +542,9 @@ where
     V: SemigroupValue,
 {
     fn combine(left: &V, right: &V) -> V {
-        left.add_by_ref(right)
+        let result = left.add_by_ref(right);
+        println!("{left:?} + {right:?} = {result:?}");
+        result
     }
 }
 

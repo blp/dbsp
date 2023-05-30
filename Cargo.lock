@@ -4493,6 +4493,7 @@ checksum = "c4e36eca171fddeda53901b0a436573b3f2391eaa9189d439b2bd8ea8cebd7e3"
 dependencies = [
  "arcstr",
  "hashbrown 0.13.2",
+ "ordered-float",
  "rust_decimal",
  "size-of-derive",
  "time",

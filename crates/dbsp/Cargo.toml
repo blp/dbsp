@@ -111,5 +111,29 @@ name = "orgchart"
 name = "degrees"
 
 [[example]]
+name = "tutorial1"
+path = "examples/tutorial/1.rs"
+
+[[example]]
+name = "tutorial2"
+path = "examples/tutorial/2.rs"
+required-features = ["with-csv"]
+
+[[example]]
+name = "tutorial3"
+path = "examples/tutorial/3.rs"
+required-features = ["with-csv"]
+
+[[example]]
+name = "tutorial4"
+path = "examples/tutorial/4.rs"
+required-features = ["with-csv"]
+
+[[example]]
+name = "tutorial5"
+path = "examples/tutorial/5.rs"
+required-features = ["with-csv"]
+
+[[example]]
 name = "tutorial"
 required-features = ["with-csv", "with-serde"]
