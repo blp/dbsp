@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use async_std::task;
+use bincode::{Decode, Encode};
 use csv::{Reader, ReaderBuilder};
 use dbsp::{
     algebra::{AddAssignByRef, AddByRef, HasOne, HasZero, MulByRef, NegByRef, ZRingValue, ZSet},

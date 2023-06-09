@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bincode = { version = "2.0.0-rc.2", features = ["serde"] }
 paste = { version = "1.0.12" }
 derive_more = { version = "0.99.17", features = ["add", "not", "from"] }
 tuple = { path = "../tuple" }
