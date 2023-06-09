@@ -89,6 +89,7 @@ use crate::{
     },
     NumEntries,
 };
+use bincode::{Encode, enc::Encoder, error::{EncodeError, DecodeError}, Decode, de::Decoder};
 use rand::Rng;
 use size_of::SizeOf;
 use std::{
@@ -138,6 +139,18 @@ where
 {
     fn clone(&self) -> Self {
         unimplemented!()
+    }
+}
+
+impl<B> Encode for Spine<B> where B: Batch{
+    fn encode<E: Encoder>(&self, _encoder: &mut E) -> Result<(), EncodeError> {
+        todo!();
+    }
+}
+
+impl<B> Decode for Spine<B> where B: Batch {
+    fn decode<D: Decoder>(_decoder: &mut D) -> Result<Self, DecodeError> {
+        todo!();
     }
 }
 
