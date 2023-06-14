@@ -7,13 +7,59 @@ use crossbeam::channel::{bounded, Receiver, Sender, TryRecvError};
 use std::{
     fs,
     fs::create_dir_all,
+    net::SocketAddr,
     path::{Path, PathBuf},
     thread::Result as ThreadResult,
-    time::Instant,
+    time::Instant, ops::Range,
 };
 
 #[cfg(doc)]
 use crate::circuit::circuit_builder::Stream;
+
+#[derive(Clone, Debug)]
+pub struct Host {
+    pub address: Option<SocketAddr>,
+    pub workers: Range<usize>,
+}
+
+impl Host {
+    pub fn n_workers(&self) -> usize { self.workers.len() }
+}
+
+/// A distributed layout of `hosts` in which this host has index `this_idx`.
+#[derive(Clone, Debug)]
+pub struct Layout {
+    pub hosts: Vec<Host>,
+    pub this_idx: usize,
+}
+
+impl Layout {
+    pub fn is_solo(&self) -> bool {
+        self.hosts.len() == 1
+    }
+    pub fn this_host(&self) -> &Host {
+        &self.hosts[self.this_idx]
+    }
+    pub fn n_workers(&self) -> usize {
+        self.hosts.iter().fold(0, |sum, host| sum + host.n_workers())
+    }
+}
+
+pub trait IntoLayout {
+    fn into_layout(self) -> Layout;
+}
+
+impl IntoLayout for usize {
+    fn into_layout(self) -> Layout {
+        Layout { hosts: vec![Host { address: None, workers: 0..self }], this_idx: 0 }
+    }
+}
+
+impl IntoLayout for Layout {
+    fn into_layout(self) -> Layout {
+        self
+    }
+}
 
 impl Runtime {
     /// Instantiate a circuit in a multithreaded runtime.
@@ -46,11 +92,18 @@ impl Runtime {
     ///
     /// TODO: Document other requirements.  Not all operators are currently
     /// thread-safe.
-    pub fn init_circuit<F, T>(nworkers: usize, constructor: F) -> Result<(DBSPHandle, T), DBSPError>
+    pub fn init_circuit<F, T>(
+        layout: impl IntoLayout,
+        constructor: F,
+    ) -> Result<(DBSPHandle, T), DBSPError>
     where
         F: FnOnce(&mut RootCircuit) -> Result<T, AnyError> + Clone + Send + 'static,
         T: Clone + Send + 'static,
     {
+        let layout = layout.into_layout();
+        let nworkers = layout.this_host().workers.len();
+        let worker_ofs = layout.this_host().workers.start;
+
         // When a worker finishes building the circuit, it sends completion status back
         // to us via this channel.  The function returns after receiving a
         // notification from each worker.
@@ -65,8 +118,8 @@ impl Runtime {
         let (status_senders, status_receivers): (Vec<_>, Vec<_>) =
             (0..nworkers).map(|_| bounded(1)).unzip();
 
-        let runtime = Self::run(nworkers, move || {
-            let worker_index = Runtime::worker_index();
+        let runtime = Self::run(layout.clone(), move || {
+            let worker_index = Runtime::worker_index() - worker_ofs;
 
             // Drop all but one channels.  This makes sure that if one of the worker panics
             // or exits, its channel will become disconnected.
@@ -248,10 +301,6 @@ impl DBSPHandle {
         Ok(())
     }
 
-    pub fn num_workers(&self) -> usize {
-        self.status_receivers.len()
-    }
-
     /// Evaluate the circuit for one clock cycle.
     pub fn step(&mut self) -> Result<(), DBSPError> {
         self.broadcast_command(Command::Step, |_| {})
@@ -277,7 +326,7 @@ impl DBSPHandle {
     /// reported.
     pub fn dump_profile<P: AsRef<Path>>(&mut self, dir_path: P) -> Result<PathBuf, DBSPError> {
         let elapsed = self.start_time.elapsed().as_micros();
-        let mut profiles = Vec::with_capacity(self.num_workers());
+        let mut profiles = Vec::with_capacity(self.status_receivers.len());
 
         let dir_path = dir_path.as_ref().join(elapsed.to_string());
         create_dir_all(&dir_path)?;

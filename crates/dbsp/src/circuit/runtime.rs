@@ -16,10 +16,13 @@ use std::{
 };
 use typedmap::{TypedDashMap, TypedMapKey};
 
+use super::dbsp_handle::{IntoLayout, Layout};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     WorkerPanic(usize),
     Killed,
+    BadLayout,
 }
 
 impl Display for Error {
@@ -29,6 +32,7 @@ impl Display for Error {
                 write!(f, "worker thread '{worker}' panicked")
             }
             Self::Killed => f.write_str("circuit killed by the user"),
+            Self::BadLayout => f.write_str("unsupported layout"),
         }
     }
 }
@@ -65,22 +69,22 @@ pub struct LocalStoreMarker;
 pub type LocalStore = TypedDashMap<LocalStoreMarker>;
 
 struct RuntimeInner {
-    nworkers: usize,
+    layout: Layout,
     store: LocalStore,
 }
 
 impl Debug for RuntimeInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RuntimeInner")
-            .field("nworkers", &self.nworkers)
+            .field("layout", &self.layout)
             .finish()
     }
 }
 
 impl RuntimeInner {
-    fn new(nworkers: usize) -> Self {
+    fn new(layout: Layout) -> Self {
         Self {
-            nworkers,
+            layout,
             store: TypedDashMap::new(),
         }
     }
@@ -138,14 +142,17 @@ impl Runtime {
     /// hruntime.join().unwrap();
     /// # }
     /// ```
-    pub fn run<F>(workers: usize, circuit: F) -> RuntimeHandle
+    pub fn run<F>(layout: impl IntoLayout, circuit: F) -> RuntimeHandle
     where
         F: FnOnce() + Clone + Send + 'static,
     {
-        let runtime = Self(Arc::new(RuntimeInner::new(workers)));
+        let layout = layout.into_layout();
+        let workers = &layout.this_host().workers;
+        let nworkers = workers.len();
+        let runtime = Self(Arc::new(RuntimeInner::new(layout.clone())));
 
-        let mut handles = Vec::with_capacity(workers);
-        handles.extend((0..workers).map(|worker_index| {
+        let mut handles = Vec::with_capacity(nworkers);
+        handles.extend(workers.clone().map(|worker_index| {
             let runtime = runtime.clone();
             let build_circuit = circuit.clone();
 
@@ -176,7 +183,7 @@ impl Runtime {
             (join_handle, init_receiver)
         }));
 
-        let mut workers = Vec::with_capacity(workers);
+        let mut workers = Vec::with_capacity(nworkers);
         workers.extend(handles.into_iter().map(|(handle, recv)| {
             let (unparker, kill_signal) = recv.recv().unwrap();
             WorkerHandle::new(handle, unparker, kill_signal)
@@ -212,7 +219,11 @@ impl Runtime {
 
     /// Returns the number of workers in this runtime.
     pub fn num_workers(&self) -> usize {
-        self.inner().nworkers
+        self.inner().layout.n_workers()
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.inner().layout
     }
 
     /// Returns reference to the data store shared by all workers within the
@@ -234,7 +245,7 @@ impl Runtime {
     /// same across all worker threads.  Repeated calls to this function
     /// with the same worker index generate numbers 0, 1, 2, ...
     pub fn sequence_next(&self, worker_index: usize) -> usize {
-        debug_assert!(worker_index < self.inner().nworkers);
+        debug_assert!(self.inner().layout.this_host().workers.contains(&worker_index));
         let mut entry = self
             .local_store()
             .entry(WorkerId(worker_index))

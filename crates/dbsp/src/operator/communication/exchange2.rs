@@ -39,7 +39,9 @@ use std::{
 use tarpc::{
     client::{self, RpcError},
     context,
-    server::{self, incoming::Incoming, Channel},
+    serde_transport::tcp::listen,
+    server::{self, incoming::Incoming, BaseChannel, Channel},
+    tokio_serde::formats::Bincode,
     transport::channel,
 };
 use tokio::{
@@ -106,31 +108,20 @@ struct ExchangeServer<T>
 where
     T: Clone + Send + Encode + Decode + 'static,
 {
-    mailbox: Arc<Mutex<Option<T>>>,
-    npeers: usize,
-    receiver_counter: Arc<AtomicUsize>,
-    receiver_callback: Arc<OnceCell<Box<dyn Fn() + Send + Sync>>>,
-    notify: Arc<Notify>,
+    inner: Arc<Inner<T>>,
+    sender: usize,
+    receiver: usize,
 }
 
 impl<T> ExchangeServer<T>
 where
     T: Clone + Send + Encode + Decode + 'static,
 {
-    #[allow(dead_code)]
-    fn new(
-        npeers: usize,
-        mailbox: Arc<Mutex<Option<T>>>,
-        notify: Arc<Notify>,
-        receiver_counter: Arc<AtomicUsize>,
-        receiver_callback: Arc<OnceCell<Box<dyn Fn() + Send + Sync>>>,
-    ) -> ExchangeServer<T> {
+    fn new(inner: Arc<Inner<T>>, sender: usize, receiver: usize) -> ExchangeServer<T> {
         ExchangeServer {
-            npeers,
-            mailbox,
-            receiver_counter,
-            receiver_callback,
-            notify,
+            inner,
+            sender,
+            receiver,
         }
     }
 }
@@ -141,24 +132,206 @@ where
     T: Clone + Send + Encode + Decode + 'static,
 {
     async fn exchange(self, _: context::Context, data: Vec<u8>) {
+        let index = self.sender * self.inner.npeers + self.receiver;
+
         let data = decode_from_slice(&data, bincode::config::standard())
             .unwrap()
             .0;
         {
-            let mut mailbox = self.mailbox.lock().unwrap();
+            let mut mailbox = self.inner.mailboxes[index].lock().unwrap();
             assert!((*mailbox).is_none());
             *mailbox = Some(data);
         }
 
-        let old_counter = self.receiver_counter.fetch_add(1, Ordering::AcqRel);
-        if old_counter >= self.npeers - 1 {
+        let old_counter =
+            self.inner.receiver_counters[self.receiver].fetch_add(1, Ordering::AcqRel);
+        if old_counter >= self.inner.npeers - 1 {
             // This can be a spurious callback (see detailed comment in `try_receive_all`)
             // below.
-            if let Some(cb) = self.receiver_callback.get() {
+            if let Some(cb) = self.inner.receiver_callbacks[self.receiver].get() {
                 cb()
             }
         }
-        self.notify.notified().await;
+        self.inner.sender_notifies[index].notified().await;
+    }
+}
+
+struct Inner<T>
+where
+    T: 'static + Send + Encode + Decode + Clone,
+{
+    tokio: TokioHandle,
+    /// The number of communicating peers.
+    npeers: usize,
+    /// `npeers^2` mailboxes, clients, and servers, one for each sender/receiver
+    /// pair.  Each mailbox is accessed by exactly two threads, so contention is
+    /// low.
+    mailboxes: Vec<Mutex<Option<T>>>,
+    clients: Vec<ExchangeServiceClient>,
+    sender_notifies: Vec<Notify>,
+    /// Counts the number of messages yet to be received in the current round of
+    /// communication per receiver.  The receiver must wait until it has all
+    /// `npeers` messages before reading all of them from mailboxes in one
+    /// pass.
+    receiver_counters: Vec<AtomicUsize>,
+    /// Callback invoked when all `npeers` messages are ready for a receiver.
+    receiver_callbacks: Vec<OnceCell<Box<dyn Fn() + Send + Sync>>>,
+    /// For each sender, whether the sends from the previous round have
+    /// completed, so that the next round can begin.
+    ready_to_send: Vec<AtomicBool>,
+    /// Callback invoked when all `npeers` mailboxes are available.
+    sender_callbacks: Vec<OnceCell<Box<dyn Fn() + Send + Sync>>>,
+}
+
+impl<T> Inner<T>
+where
+    T: 'static + Send + Encode + Decode + Clone,
+{
+    fn new(runtime: &Runtime, tokio: TokioHandle) -> (Arc<Inner<T>>, Vec<ExchangeServer<T>>) {
+        let _guard = tokio.enter();
+
+        let npeers = runtime.num_workers();
+        let mailboxes: Vec<_> = (0..npeers * npeers).map(|_| Mutex::new(None)).collect();
+
+        let receiver_counters: Vec<_> = (0..npeers).map(|_| AtomicUsize::new(0)).collect();
+
+        let receiver_callbacks: Vec<_> = (0..npeers).map(|_| OnceCell::new()).collect();
+
+        let sender_notifies: Vec<_> = (0..npeers * npeers).map(|_| Notify::new()).collect();
+
+        let mut clients = Vec::with_capacity(npeers * npeers);
+        let mut server_transports = Vec::with_capacity(npeers * npeers);
+        for client_index in 0..npeers {
+            for server_index in 0..npeers {
+                let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
+                server_transports.push((client_index, server_index, server_transport));
+                let client =
+                    ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
+                clients.push(client);
+            }
+        }
+
+        let inner = Arc::new(Self {
+            tokio: tokio.clone(),
+            npeers,
+            clients,
+            mailboxes,
+            receiver_counters,
+            receiver_callbacks,
+            sender_notifies,
+            ready_to_send: (0..npeers).map(|_| AtomicBool::new(true)).collect(),
+            sender_callbacks: (0..npeers).map(|_| OnceCell::new()).collect(),
+        });
+
+        let mut servers = Vec::with_capacity(npeers * npeers);
+        for (sender, receiver, server_transport) in server_transports {
+            let channel = BaseChannel::with_defaults(server_transport);
+            let server = ExchangeServer::new(inner.clone(), sender, receiver);
+            tokio.spawn(channel.execute(server.clone().serve()));
+            servers.push(server);
+        }
+
+        (inner, servers)
+    }
+
+    /// Returns an index for the sender/receiver pair.
+    fn mailbox_index(&self, sender: usize, receiver: usize) -> usize {
+        debug_assert!(sender < self.npeers);
+        debug_assert!(receiver < self.npeers);
+        sender * self.npeers + receiver
+    }
+
+    /// Returns a reference to a mailbox for the sender/receiver pair.
+    fn mailbox(&self, sender: usize, receiver: usize) -> &Mutex<Option<T>> {
+        &self.mailboxes[self.mailbox_index(sender, receiver)]
+    }
+
+    fn ready_to_send(&self, sender: usize) -> bool {
+        debug_assert!(sender < self.npeers);
+        self.ready_to_send[sender].load(Ordering::Acquire)
+    }
+
+    fn try_send_all<I>(self: &Arc<Self>, sender: usize, data: &mut I) -> bool
+    where
+        I: Iterator<Item = T> + Send,
+    {
+        if !self.ready_to_send(sender) {
+            return false;
+        }
+        self.ready_to_send[sender].store(false, Ordering::Release);
+
+        let mut tasks = Vec::with_capacity(self.npeers);
+        for receiver in 0..self.npeers {
+            let data = data.next().unwrap();
+            let data = bincode::encode_to_vec(data, bincode::config::standard()).unwrap();
+            let index = self.mailbox_index(sender, receiver);
+            let client = self.clients[index].clone();
+            tasks.push((client, data));
+        }
+
+        let inner = self.clone();
+        self.tokio.spawn(async move {
+            let mut waiters = Vec::with_capacity(tasks.len());
+            for (client, data) in tasks.iter() {
+                waiters.push(client.exchange(context::current(), data.clone()));
+            }
+            for waiter in waiters {
+                waiter.await.unwrap();
+            }
+            inner.ready_to_send[sender].store(true, Ordering::Release);
+            if let Some(cb) = inner.sender_callbacks[sender].get() {
+                cb()
+            }
+        });
+        true
+    }
+
+    fn ready_to_receive(&self, receiver: usize) -> bool {
+        debug_assert!(receiver < self.npeers);
+        self.receiver_counters[receiver].load(Ordering::Acquire) == self.npeers
+    }
+
+    fn try_receive_all<F>(&self, receiver: usize, mut cb: F) -> bool
+    where
+        F: FnMut(T),
+    {
+        if !self.ready_to_receive(receiver) {
+            return false;
+        }
+
+        for sender in 0..self.npeers {
+            let data = self
+                .mailbox(sender, receiver)
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap();
+            cb(data);
+            self.receiver_counters[receiver].fetch_sub(1, Ordering::Release);
+            self.sender_notifies[self.mailbox_index(sender, receiver)].notify_one();
+        }
+        true
+    }
+
+    fn register_sender_callback<F>(&self, sender: usize, cb: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        debug_assert!(sender < self.npeers);
+        debug_assert!(self.sender_callbacks[sender].get().is_none());
+        let res = self.sender_callbacks[sender].set(Box::new(cb) as Box<dyn Fn() + Send + Sync>);
+        debug_assert!(res.is_ok());
+    }
+
+    fn register_receiver_callback<F>(&self, receiver: usize, cb: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        debug_assert!(receiver < self.npeers);
+        debug_assert!(self.receiver_callbacks[receiver].get().is_none());
+        let res =
+            self.receiver_callbacks[receiver].set(Box::new(cb) as Box<dyn Fn() + Send + Sync>);
+        debug_assert!(res.is_ok());
     }
 }
 
@@ -187,28 +360,8 @@ pub(crate) struct Exchange<T>
 where
     T: 'static + Send + Encode + Decode + Clone,
 {
-    tokio: TokioHandle,
-    /// The number of communicating peers.
-    npeers: usize,
-    /// `npeers^2` mailboxes, clients, and servers, one for each sender/receiver
-    /// pair.  Each mailbox is accessed by exactly two threads, so contention is
-    /// low.
-    mailboxes: Vec<Arc<Mutex<Option<T>>>>,
-    clients: Vec<ExchangeServiceClient>,
-    servers: Vec<ExchangeServer<T>>,
-    sender_notifies: Vec<Arc<Notify>>,
-    /// Counts the number of messages yet to be received in the current round of
-    /// communication per receiver.  The receiver must wait until it has all
-    /// `npeers` messages before reading all of them from mailboxes in one
-    /// pass.
-    receiver_counters: Vec<Arc<AtomicUsize>>,
-    /// Callback invoked when all `npeers` messages are ready for a receiver.
-    receiver_callbacks: Vec<Arc<OnceCell<Box<dyn Fn() + Send + Sync>>>>,
-    /// For each sender, whether the sends from the previous round have
-    /// completed, so that the next round can begin.
-    ready_to_send: Vec<Arc<AtomicBool>>,
-    /// Callback invoked when all `npeers` mailboxes are available.
-    sender_callbacks: Vec<Arc<OnceCell<Box<dyn Fn() + Send + Sync>>>>,
+    inner: Arc<Inner<T>>,
+    _servers: Vec<ExchangeServer<T>>,
 }
 
 impl<T> Exchange<T>
@@ -217,55 +370,8 @@ where
 {
     /// Create a new exchange operator for `npeers` communicating threads.
     fn new(runtime: &Runtime, tokio: TokioHandle) -> Self {
-        let _guard = tokio.enter();
-
-        let npeers = runtime.num_workers();
-        let mailboxes: Vec<_> = (0..npeers * npeers)
-            .map(|_| Arc::new(Mutex::new(None)))
-            .collect();
-
-        let receiver_counters: Vec<_> =
-            (0..npeers).map(|_| Arc::new(AtomicUsize::new(0))).collect();
-
-        let receiver_callbacks: Vec<_> = (0..npeers).map(|_| Arc::new(OnceCell::new())).collect();
-
-        let sender_notifies: Vec<_> = (0..npeers * npeers)
-            .map(|_| Arc::new(Notify::new()))
-            .collect();
-
-        let (clients, servers): (Vec<_>, Vec<_>) = (0..npeers)
-            .cartesian_product(0..npeers)
-            .map(|(client_index, server_index)| {
-                let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
-                let channel = server::BaseChannel::with_defaults(server_transport);
-                let index = client_index * npeers + server_index;
-                let server = ExchangeServer::new(
-                    npeers,
-                    mailboxes[index].clone(),
-                    sender_notifies[index].clone(),
-                    receiver_counters[server_index].clone(),
-                    receiver_callbacks[server_index].clone(),
-                );
-                tokio.spawn(channel.execute(server.clone().serve()));
-                let client =
-                    ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
-                (client, server)
-            })
-            .unzip();
-        Self {
-            tokio,
-            npeers,
-            clients,
-            servers,
-            mailboxes,
-            receiver_counters,
-            receiver_callbacks,
-            sender_notifies,
-            ready_to_send: (0..npeers)
-                .map(|_| Arc::new(AtomicBool::new(true)))
-                .collect(),
-            sender_callbacks: (0..npeers).map(|_| Arc::new(OnceCell::new())).collect(),
-        }
+        let (inner, _servers) = Inner::new(runtime, tokio);
+        Self { inner, _servers }
     }
 
     /// Create a new `Exchange` instance if an instance with the same id
@@ -281,6 +387,31 @@ where
             .handle()
             .clone();
 
+        // If this runtime is distributed, start a server.
+        /*
+        if let Some(address) = runtime.layout().this_host().address {
+            tokio.spawn(async move {
+                let mut listener = listen(address, Bincode::default).await.unwrap();
+                listener.config_mut().max_frame_length(usize::MAX);
+                listener
+                    .filter_map(|r| future::ready(r.ok()))
+                    .map(server::BaseChannel::with_defaults)
+                    // Limit channels to 1 per IP.
+                    .max_channels_per_key(1, |t| t.transport().peer_addr().unwrap().ip())
+                    // serve is generated by the service attribute. It takes as input any type
+                    // implementing the generated World trait.
+                    .map(|channel| {
+                        let server = HelloServer(channel.transport().peer_addr().unwrap());
+                        channel.execute(server.serve())
+                    })
+                    // Max 10 channels.
+                    .buffer_unordered(10)
+                    .for_each(|_| async {})
+                    .await;
+            });
+        };
+         */
+
         runtime
             .local_store()
             .entry(ExchangeId::new(exchange_id))
@@ -289,26 +420,13 @@ where
             .clone()
     }
 
-    /// Returns an index for the sender/receiver pair.
-    fn mailbox_index(&self, sender: usize, receiver: usize) -> usize {
-        debug_assert!(sender < self.npeers);
-        debug_assert!(receiver < self.npeers);
-        sender * self.npeers + receiver
-    }
-
-    /// Returns a reference to a mailbox for the sender/receiver pair.
-    fn mailbox(&self, sender: usize, receiver: usize) -> &Mutex<Option<T>> {
-        &self.mailboxes[self.mailbox_index(sender, receiver)]
-    }
-
     /// True if all `sender`'s outgoing mailboxes are free and ready to accept
     /// data.
     ///
     /// Once this function returns true, a subsequent `try_send_all` operation
     /// is guaranteed to succeed for `sender`.
     fn ready_to_send(&self, sender: usize) -> bool {
-        debug_assert!(sender < self.npeers);
-        self.ready_to_send[sender].load(Ordering::Acquire)
+        self.inner.ready_to_send(sender)
     }
 
     /// Write all outgoing messages for `sender` to mailboxes.
@@ -328,36 +446,7 @@ where
     where
         I: Iterator<Item = T> + Send,
     {
-        if !self.ready_to_send(sender) {
-            return false;
-        }
-        self.ready_to_send[sender].store(false, Ordering::Release);
-
-        let mut tasks = Vec::with_capacity(self.npeers);
-        for receiver in 0..self.npeers {
-            let data = data.next().unwrap();
-            let data = bincode::encode_to_vec(data, bincode::config::standard()).unwrap();
-            let index = self.mailbox_index(sender, receiver);
-            let client = self.clients[index].clone();
-            tasks.push((client, data));
-        }
-        let ready_to_send = self.ready_to_send[sender].clone();
-        let callback = self.sender_callbacks[sender].clone();
-
-        self.tokio.spawn(async move {
-            let mut waiters = Vec::with_capacity(tasks.len());
-            for (client, data) in tasks.iter() {
-                waiters.push(client.exchange(context::current(), data.clone()));
-            }
-            for waiter in waiters {
-                waiter.await.unwrap();
-            }
-            ready_to_send.store(true, Ordering::Release);
-            if let Some(cb) = callback.get() {
-                cb()
-            }
-        });
-        true
+        self.inner.try_send_all(sender, data)
     }
 
     /// True if all `receiver`'s incoming mailboxes contain data.
@@ -365,8 +454,7 @@ where
     /// Once this function returns true, a subsequent `try_receive_all`
     /// operation is guaranteed for `receiver`.
     pub(crate) fn ready_to_receive(&self, receiver: usize) -> bool {
-        debug_assert!(receiver < self.npeers);
-        self.receiver_counters[receiver].load(Ordering::Acquire) == self.npeers
+        self.inner.ready_to_receive(receiver)
     }
 
     /// Read all incoming messages for `receiver`.
@@ -376,26 +464,11 @@ where
     /// # Errors
     ///
     /// Fails if at least one of the receiver's incoming mailboxes is empty.
-    pub(crate) fn try_receive_all<F>(&self, receiver: usize, mut cb: F) -> bool
+    pub(crate) fn try_receive_all<F>(&self, receiver: usize, cb: F) -> bool
     where
         F: FnMut(T),
     {
-        if !self.ready_to_receive(receiver) {
-            return false;
-        }
-
-        for sender in 0..self.npeers {
-            let data = self
-                .mailbox(sender, receiver)
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap();
-            cb(data);
-            self.receiver_counters[receiver].fetch_sub(1, Ordering::Release);
-            self.sender_notifies[self.mailbox_index(sender, receiver)].notify_one();
-        }
-        true
+        self.inner.try_receive_all(receiver, cb)
     }
 
     /// Register callback to be invoked whenever the `ready_to_send` condition
@@ -416,10 +489,7 @@ where
     where
         F: Fn() + Send + Sync + 'static,
     {
-        debug_assert!(sender < self.npeers);
-        debug_assert!(self.sender_callbacks[sender].get().is_none());
-        let res = self.sender_callbacks[sender].set(Box::new(cb) as Box<dyn Fn() + Send + Sync>);
-        debug_assert!(res.is_ok());
+        self.inner.register_sender_callback(sender, cb)
     }
 
     /// Register callback to be invoked whenever the `ready_to_receive`
@@ -441,11 +511,7 @@ where
     where
         F: Fn() + Send + Sync + 'static,
     {
-        debug_assert!(receiver < self.npeers);
-        debug_assert!(self.receiver_callbacks[receiver].get().is_none());
-        let res =
-            self.receiver_callbacks[receiver].set(Box::new(cb) as Box<dyn Fn() + Send + Sync>);
-        debug_assert!(res.is_ok());
+        self.inner.register_receiver_callback(receiver, cb)
     }
 }
 
