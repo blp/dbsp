@@ -109,14 +109,15 @@ where
     T: Clone + Send + Encode + Decode + 'static,
 {
     inner: Arc<Inner<T>>,
+    deliver: Arc<dyn Fn(Vec<u8>, usize, usize) + Send + Sync>,
 }
 
 impl<T> ExchangeServer<T>
 where
     T: Clone + Send + Encode + Decode + 'static,
 {
-    fn new(inner: Arc<Inner<T>>) -> ExchangeServer<T> {
-        ExchangeServer { inner }
+    fn new(inner: Arc<Inner<T>>, deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static) -> ExchangeServer<T> {
+        ExchangeServer { inner, deliver: Arc::new(deliver) }
     }
 }
 
@@ -128,14 +129,7 @@ where
     async fn exchange(self, _: context::Context, data: Vec<u8>, sender: usize, receiver: usize) {
         let index = sender * self.inner.npeers + receiver;
 
-        let data = decode_from_slice(&data, bincode::config::standard())
-            .unwrap()
-            .0;
-        {
-            let mut mailbox = self.inner.mailboxes[index].lock().unwrap();
-            assert!((*mailbox).is_none());
-            *mailbox = Some(data);
-        }
+        (self.deliver)(data, sender, receiver);
 
         let old_counter = self.inner.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
         if old_counter >= self.inner.npeers - 1 {
@@ -209,7 +203,16 @@ where
         });
 
         let channel = BaseChannel::with_defaults(server_transport);
-        let server = ExchangeServer::new(inner.clone());
+        let inner2 = inner.clone();
+        let server = ExchangeServer::new(inner.clone(), move |data, sender, receiver| {
+            let index = sender * inner2.npeers + receiver;
+            let data = decode_from_slice(&data, bincode::config::standard())
+                .unwrap()
+                .0;
+            let mut mailbox = inner2.mailboxes[index].lock().unwrap();
+            assert!((*mailbox).is_none());
+            *mailbox = Some(data);
+        });
         tokio.spawn(channel.execute(server.clone().serve()));
 
         (inner, server)
@@ -249,7 +252,11 @@ where
         self.tokio.spawn(async move {
             let mut waiters = Vec::with_capacity(encoded_data.len());
             for (receiver, data) in encoded_data.into_iter().enumerate() {
-                waiters.push(inner.client.exchange(context::current(), data, sender, receiver));
+                waiters.push(
+                    inner
+                        .client
+                        .exchange(context::current(), data, sender, receiver),
+                );
             }
             for waiter in waiters {
                 waiter.await.unwrap();
