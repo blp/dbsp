@@ -116,9 +116,7 @@ where
     T: Clone + Send + Encode + Decode + 'static,
 {
     fn new(inner: Arc<Inner<T>>) -> ExchangeServer<T> {
-        ExchangeServer {
-            inner,
-        }
+        ExchangeServer { inner }
     }
 }
 
@@ -139,8 +137,7 @@ where
             *mailbox = Some(data);
         }
 
-        let old_counter =
-            self.inner.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
+        let old_counter = self.inner.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
         if old_counter >= self.inner.npeers - 1 {
             // This can be a spurious callback (see detailed comment in `try_receive_all`)
             // below.
@@ -254,20 +251,16 @@ where
         }
         self.ready_to_send[sender].store(false, Ordering::Release);
 
-        let mut tasks = Vec::with_capacity(self.npeers);
-        for receiver in 0..self.npeers {
-            let data = data.next().unwrap();
-            let data = bincode::encode_to_vec(data, bincode::config::standard()).unwrap();
-            let index = self.mailbox_index(sender, receiver);
-            let client = self.clients[index].clone();
-            tasks.push((client, receiver, data));
-        }
+        let encoded_data: Vec<_> = data
+            .map(|t| bincode::encode_to_vec(t, bincode::config::standard()).unwrap())
+            .collect();
 
         let inner = self.clone();
         self.tokio.spawn(async move {
-            let mut waiters = Vec::with_capacity(tasks.len());
-            for (client, receiver, data) in tasks.iter() {
-                waiters.push(client.exchange(context::current(), data.clone(), sender, *receiver));
+            let mut waiters = Vec::with_capacity(encoded_data.len());
+            for (receiver, data) in encoded_data.into_iter().enumerate() {
+                let client = &inner.clients[receiver];
+                waiters.push(client.exchange(context::current(), data, sender, receiver));
             }
             for waiter in waiters {
                 waiter.await.unwrap();
