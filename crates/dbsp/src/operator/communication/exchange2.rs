@@ -160,7 +160,7 @@ where
     /// pair.  Each mailbox is accessed by exactly two threads, so contention is
     /// low.
     mailboxes: Vec<Mutex<Option<T>>>,
-    clients: Vec<ExchangeServiceClient>,
+    client: ExchangeServiceClient,
     sender_notifies: Vec<Notify>,
     /// Counts the number of messages yet to be received in the current round of
     /// communication per receiver.  The receiver must wait until it has all
@@ -180,7 +180,7 @@ impl<T> Inner<T>
 where
     T: 'static + Send + Encode + Decode + Clone,
 {
-    fn new(runtime: &Runtime, tokio: TokioHandle) -> (Arc<Inner<T>>, Vec<ExchangeServer<T>>) {
+    fn new(runtime: &Runtime, tokio: TokioHandle) -> (Arc<Inner<T>>, ExchangeServer<T>) {
         let _guard = tokio.enter();
 
         let npeers = runtime.num_workers();
@@ -192,20 +192,14 @@ where
 
         let sender_notifies: Vec<_> = (0..npeers * npeers).map(|_| Notify::new()).collect();
 
-        let mut clients = Vec::with_capacity(npeers * npeers);
-        let mut server_transports = Vec::with_capacity(npeers * npeers);
-        for _ in 0..npeers * npeers {
-            let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
-            server_transports.push(server_transport);
-            let client =
-                ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
-            clients.push(client);
-        }
+        let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
+        let client =
+            ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
 
         let inner = Arc::new(Self {
             tokio: tokio.clone(),
             npeers,
-            clients,
+            client,
             mailboxes,
             receiver_counters,
             receiver_callbacks,
@@ -214,15 +208,11 @@ where
             sender_callbacks: (0..npeers).map(|_| OnceCell::new()).collect(),
         });
 
-        let mut servers = Vec::with_capacity(npeers * npeers);
-        for server_transport in server_transports {
-            let channel = BaseChannel::with_defaults(server_transport);
-            let server = ExchangeServer::new(inner.clone());
-            tokio.spawn(channel.execute(server.clone().serve()));
-            servers.push(server);
-        }
+        let channel = BaseChannel::with_defaults(server_transport);
+        let server = ExchangeServer::new(inner.clone());
+        tokio.spawn(channel.execute(server.clone().serve()));
 
-        (inner, servers)
+        (inner, server)
     }
 
     /// Returns an index for the sender/receiver pair.
@@ -259,8 +249,7 @@ where
         self.tokio.spawn(async move {
             let mut waiters = Vec::with_capacity(encoded_data.len());
             for (receiver, data) in encoded_data.into_iter().enumerate() {
-                let client = &inner.clients[receiver];
-                waiters.push(client.exchange(context::current(), data, sender, receiver));
+                waiters.push(inner.client.exchange(context::current(), data, sender, receiver));
             }
             for waiter in waiters {
                 waiter.await.unwrap();
@@ -348,7 +337,7 @@ where
     T: 'static + Send + Encode + Decode + Clone,
 {
     inner: Arc<Inner<T>>,
-    _servers: Vec<ExchangeServer<T>>,
+    _server: ExchangeServer<T>,
 }
 
 impl<T> Exchange<T>
@@ -357,8 +346,8 @@ where
 {
     /// Create a new exchange operator for `npeers` communicating threads.
     fn new(runtime: &Runtime, tokio: TokioHandle) -> Self {
-        let (inner, _servers) = Inner::new(runtime, tokio);
-        Self { inner, _servers }
+        let (inner, _server) = Inner::new(runtime, tokio);
+        Self { inner, _server }
     }
 
     /// Create a new `Exchange` instance if an instance with the same id
