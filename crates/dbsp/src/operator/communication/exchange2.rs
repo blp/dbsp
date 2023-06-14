@@ -100,7 +100,7 @@ unsafe impl<T: 'static + Send + Encode + Decode> Sync for ExchangeId<T> {}
 
 #[tarpc::service]
 trait ExchangeService {
-    async fn exchange(data: Vec<u8>);
+    async fn exchange(data: Vec<u8>, sender: usize, receiver: usize);
 }
 
 #[derive(Clone)]
@@ -109,19 +109,15 @@ where
     T: Clone + Send + Encode + Decode + 'static,
 {
     inner: Arc<Inner<T>>,
-    sender: usize,
-    receiver: usize,
 }
 
 impl<T> ExchangeServer<T>
 where
     T: Clone + Send + Encode + Decode + 'static,
 {
-    fn new(inner: Arc<Inner<T>>, sender: usize, receiver: usize) -> ExchangeServer<T> {
+    fn new(inner: Arc<Inner<T>>) -> ExchangeServer<T> {
         ExchangeServer {
             inner,
-            sender,
-            receiver,
         }
     }
 }
@@ -131,8 +127,8 @@ impl<T> ExchangeService for ExchangeServer<T>
 where
     T: Clone + Send + Encode + Decode + 'static,
 {
-    async fn exchange(self, _: context::Context, data: Vec<u8>) {
-        let index = self.sender * self.inner.npeers + self.receiver;
+    async fn exchange(self, _: context::Context, data: Vec<u8>, sender: usize, receiver: usize) {
+        let index = sender * self.inner.npeers + receiver;
 
         let data = decode_from_slice(&data, bincode::config::standard())
             .unwrap()
@@ -144,11 +140,11 @@ where
         }
 
         let old_counter =
-            self.inner.receiver_counters[self.receiver].fetch_add(1, Ordering::AcqRel);
+            self.inner.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
         if old_counter >= self.inner.npeers - 1 {
             // This can be a spurious callback (see detailed comment in `try_receive_all`)
             // below.
-            if let Some(cb) = self.inner.receiver_callbacks[self.receiver].get() {
+            if let Some(cb) = self.inner.receiver_callbacks[receiver].get() {
                 cb()
             }
         }
@@ -201,14 +197,12 @@ where
 
         let mut clients = Vec::with_capacity(npeers * npeers);
         let mut server_transports = Vec::with_capacity(npeers * npeers);
-        for client_index in 0..npeers {
-            for server_index in 0..npeers {
-                let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
-                server_transports.push((client_index, server_index, server_transport));
-                let client =
-                    ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
-                clients.push(client);
-            }
+        for _ in 0..npeers * npeers {
+            let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
+            server_transports.push(server_transport);
+            let client =
+                ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
+            clients.push(client);
         }
 
         let inner = Arc::new(Self {
@@ -224,9 +218,9 @@ where
         });
 
         let mut servers = Vec::with_capacity(npeers * npeers);
-        for (sender, receiver, server_transport) in server_transports {
+        for server_transport in server_transports {
             let channel = BaseChannel::with_defaults(server_transport);
-            let server = ExchangeServer::new(inner.clone(), sender, receiver);
+            let server = ExchangeServer::new(inner.clone());
             tokio.spawn(channel.execute(server.clone().serve()));
             servers.push(server);
         }
@@ -266,14 +260,14 @@ where
             let data = bincode::encode_to_vec(data, bincode::config::standard()).unwrap();
             let index = self.mailbox_index(sender, receiver);
             let client = self.clients[index].clone();
-            tasks.push((client, data));
+            tasks.push((client, receiver, data));
         }
 
         let inner = self.clone();
         self.tokio.spawn(async move {
             let mut waiters = Vec::with_capacity(tasks.len());
-            for (client, data) in tasks.iter() {
-                waiters.push(client.exchange(context::current(), data.clone()));
+            for (client, receiver, data) in tasks.iter() {
+                waiters.push(client.exchange(context::current(), data.clone(), sender, *receiver));
             }
             for waiter in waiters {
                 waiter.await.unwrap();
