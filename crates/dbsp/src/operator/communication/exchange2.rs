@@ -104,22 +104,25 @@ trait ExchangeService {
 }
 
 #[derive(Clone)]
-struct ExchangeServer
-{
+struct ExchangeServer {
     inner: Arc<Inner>,
     deliver: Arc<dyn Fn(Vec<u8>, usize, usize) + Send + Sync>,
 }
 
-impl ExchangeServer
-{
-    fn new(inner: Arc<Inner>, deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static) -> ExchangeServer {
-        ExchangeServer { inner, deliver: Arc::new(deliver) }
+impl ExchangeServer {
+    fn new(
+        inner: Arc<Inner>,
+        deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
+    ) -> ExchangeServer {
+        ExchangeServer {
+            inner,
+            deliver: Arc::new(deliver),
+        }
     }
 }
 
 #[tarpc::server]
-impl ExchangeService for ExchangeServer
-{
+impl ExchangeService for ExchangeServer {
     async fn exchange(self, _: context::Context, data: Vec<u8>, sender: usize, receiver: usize) {
         let index = sender * self.inner.npeers + receiver;
 
@@ -137,8 +140,7 @@ impl ExchangeService for ExchangeServer
     }
 }
 
-struct Inner
-{
+struct Inner {
     tokio: TokioHandle,
     /// The number of communicating peers.
     npeers: usize,
@@ -158,9 +160,12 @@ struct Inner
     sender_callbacks: Vec<OnceCell<Box<dyn Fn() + Send + Sync>>>,
 }
 
-impl Inner
-{
-    fn new(runtime: &Runtime, tokio: TokioHandle, deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static) -> (Arc<Inner>, ExchangeServer) {
+impl Inner {
+    fn new(
+        runtime: &Runtime,
+        tokio: TokioHandle,
+        deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
+    ) -> (Arc<Inner>, ExchangeServer) {
         let _guard = tokio.enter();
 
         let npeers = runtime.num_workers();
@@ -272,7 +277,8 @@ where
     /// Create a new exchange operator for `npeers` communicating threads.
     fn new(runtime: &Runtime, tokio: TokioHandle) -> Self {
         let npeers = runtime.num_workers();
-        let mailboxes: Arc<Vec<Mutex<Option<T>>>> = Arc::new((0..npeers * npeers).map(|_| Mutex::new(None)).collect());
+        let mailboxes: Arc<Vec<Mutex<Option<T>>>> =
+            Arc::new((0..npeers * npeers).map(|_| Mutex::new(None)).collect());
         let mailboxes2: Arc<Vec<Mutex<Option<T>>>> = mailboxes.clone();
         let deliver = move |data: Vec<u8>, sender, receiver| {
             let index: usize = sender * npeers + receiver;
@@ -284,7 +290,11 @@ where
             *mailbox = Some(data);
         };
         let (inner, _server) = Inner::new(runtime, tokio, deliver);
-        Self { inner, _server, mailboxes }
+        Self {
+            inner,
+            _server,
+            mailboxes,
+        }
     }
 
     /// Returns a reference to a mailbox for the sender/receiver pair.
