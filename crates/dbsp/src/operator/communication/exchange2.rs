@@ -27,14 +27,15 @@ use rand::distributions::Uniform;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     borrow::Cow,
+    collections::HashMap,
     iter::empty,
     marker::PhantomData,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
-    time::Duration, collections::HashMap,
+    time::Duration,
 };
 use tarpc::{
     client::{self, RpcError},
@@ -104,12 +105,20 @@ trait ExchangeService {
 }
 
 #[derive(Clone)]
-struct ExchangeServer(HashMap<usize, Arc<Inner>>);
+struct ExchangeServer(Arc<RwLock<HashMap<usize, Arc<Inner>>>>);
 
 #[tarpc::server]
 impl ExchangeService for ExchangeServer {
-    async fn exchange(self, _: context::Context, data: Vec<u8>, exchange_id: usize, sender: usize, receiver: usize) {
-        self.0[&exchange_id].received(data, sender, receiver).await;
+    async fn exchange(
+        self,
+        _: context::Context,
+        data: Vec<u8>,
+        exchange_id: usize,
+        sender: usize,
+        receiver: usize,
+    ) {
+        let inner = self.0.read().unwrap().get(&exchange_id).unwrap().clone();
+        inner.received(data, sender, receiver).await;
     }
 }
 
@@ -142,7 +151,7 @@ impl Inner {
         exchange_id: usize,
         deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
         client: ExchangeServiceClient,
-    ) -> Arc<Inner> {
+    ) -> Inner {
         let _guard = tokio.enter();
 
         let npeers = runtime.num_workers();
@@ -153,7 +162,7 @@ impl Inner {
 
         let sender_notifies: Vec<_> = (0..npeers * npeers).map(|_| Notify::new()).collect();
 
-        let inner = Arc::new(Self {
+        Self {
             tokio: tokio.clone(),
             exchange_id,
             npeers,
@@ -164,9 +173,7 @@ impl Inner {
             ready_to_send: (0..npeers).map(|_| AtomicBool::new(true)).collect(),
             sender_callbacks: (0..npeers).map(|_| OnceCell::new()).collect(),
             deliver: Box::new(deliver),
-        });
-
-        inner
+        }
     }
 
     async fn received(self: &Arc<Self>, data: Vec<u8>, sender: usize, receiver: usize) {
@@ -260,7 +267,13 @@ where
     T: Clone + Send + Encode + Decode + 'static,
 {
     /// Create a new exchange operator for `npeers` communicating threads.
-    fn new(runtime: &Runtime, tokio: TokioHandle, exchange_id: usize, client: ExchangeServiceClient) -> Self {
+    fn new(
+        runtime: &Runtime,
+        tokio: TokioHandle,
+        exchange_id: usize,
+        client: ExchangeServiceClient,
+        server: ExchangeServer,
+    ) -> Self {
         let npeers = runtime.num_workers();
         let mailboxes: Arc<Vec<Mutex<Option<T>>>> =
             Arc::new((0..npeers * npeers).map(|_| Mutex::new(None)).collect());
@@ -275,11 +288,15 @@ where
             *mailbox = Some(data);
         };
 
-        let inner = Inner::new(runtime, tokio, exchange_id, deliver, client);
-        Self {
-            inner,
-            mailboxes,
-        }
+        let inner = Arc::new(Inner::new(runtime, tokio, exchange_id, deliver, client));
+        server
+            .0
+            .write()
+            .unwrap()
+            .entry(exchange_id)
+            .and_modify(|_| panic!())
+            .or_insert(inner.clone());
+        Self { inner, mailboxes }
     }
 
     /// Returns a reference to a mailbox for the sender/receiver pair.
@@ -325,23 +342,25 @@ where
         };
          */
 
-        let client = &runtime.local_store().entry(ServerId)
+        let (client, server) = runtime
+            .local_store()
+            .entry(ServerId)
             .or_insert_with(|| {
                 let _guard = tokio.enter();
                 let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
                 let client =
                     ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
                 let channel = BaseChannel::with_defaults(server_transport);
-                let server = ExchangeServer(HashMap::new());
+                let server = ExchangeServer(Arc::new(RwLock::new(HashMap::new())));
                 tokio.spawn(channel.execute(server.clone().serve()));
                 (client, server)
-            }).0;
-            
-
+            })
+            .value()
+            .clone();
         runtime
             .local_store()
             .entry(ExchangeId::new(exchange_id))
-            .or_insert_with(|| Arc::new(Exchange::new(runtime, tokio, exchange_id, client.clone())))
+            .or_insert_with(|| Arc::new(Exchange::new(runtime, tokio, exchange_id, client, server)))
             .value()
             .clone()
     }
@@ -385,11 +404,13 @@ where
         self.inner.tokio.spawn(async move {
             let mut waiters = Vec::with_capacity(encoded_data.len());
             for (receiver, data) in encoded_data.into_iter().enumerate() {
-                waiters.push(
-                    inner
-                        .client
-                        .exchange(context::current(), data, inner.exchange_id, sender, receiver),
-                );
+                waiters.push(inner.client.exchange(
+                    context::current(),
+                    data,
+                    inner.exchange_id,
+                    sender,
+                    receiver,
+                ));
             }
             for waiter in waiters {
                 waiter.await.unwrap();
