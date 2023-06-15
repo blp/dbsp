@@ -104,39 +104,12 @@ trait ExchangeService {
 }
 
 #[derive(Clone)]
-struct ExchangeServer {
-    inner: Arc<Inner>,
-    deliver: Arc<dyn Fn(Vec<u8>, usize, usize) + Send + Sync>,
-}
-
-impl ExchangeServer {
-    fn new(
-        inner: Arc<Inner>,
-        deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
-    ) -> ExchangeServer {
-        ExchangeServer {
-            inner,
-            deliver: Arc::new(deliver),
-        }
-    }
-}
+struct ExchangeServer(Arc<Inner>);
 
 #[tarpc::server]
 impl ExchangeService for ExchangeServer {
     async fn exchange(self, _: context::Context, data: Vec<u8>, sender: usize, receiver: usize) {
-        let index = sender * self.inner.npeers + receiver;
-
-        (self.deliver)(data, sender, receiver);
-
-        let old_counter = self.inner.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
-        if old_counter >= self.inner.npeers - 1 {
-            // This can be a spurious callback (see detailed comment in `try_receive_all`)
-            // below.
-            if let Some(cb) = self.inner.receiver_callbacks[receiver].get() {
-                cb()
-            }
-        }
-        self.inner.sender_notifies[index].notified().await;
+        self.0.received(data, sender, receiver).await;
     }
 }
 
@@ -158,6 +131,7 @@ struct Inner {
     ready_to_send: Vec<AtomicBool>,
     /// Callback invoked when all `npeers` mailboxes are available.
     sender_callbacks: Vec<OnceCell<Box<dyn Fn() + Send + Sync>>>,
+    deliver: Box<dyn Fn(Vec<u8>, usize, usize) + Send + Sync + 'static>,
 }
 
 impl Inner {
@@ -189,13 +163,30 @@ impl Inner {
             sender_notifies,
             ready_to_send: (0..npeers).map(|_| AtomicBool::new(true)).collect(),
             sender_callbacks: (0..npeers).map(|_| OnceCell::new()).collect(),
+            deliver: Box::new(deliver),
         });
 
         let channel = BaseChannel::with_defaults(server_transport);
-        let server = ExchangeServer::new(inner.clone(), deliver);
+        let server = ExchangeServer(inner.clone());
         tokio.spawn(channel.execute(server.clone().serve()));
 
         (inner, server)
+    }
+
+    async fn received(self: &Arc<Self>, data: Vec<u8>, sender: usize, receiver: usize) {
+        let index = sender * self.npeers + receiver;
+
+        (self.deliver)(data, sender, receiver);
+
+        let old_counter = self.receiver_counters[receiver].fetch_add(1, Ordering::AcqRel);
+        if old_counter >= self.npeers - 1 {
+            // This can be a spurious callback (see detailed comment in `try_receive_all`)
+            // below.
+            if let Some(cb) = self.receiver_callbacks[receiver].get() {
+                cb()
+            }
+        }
+        self.sender_notifies[index].notified().await;
     }
 
     /// Returns an index for the sender/receiver pair.
