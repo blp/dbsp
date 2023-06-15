@@ -25,22 +25,24 @@ use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use rand::distributions::Uniform;
 use serde::{de::DeserializeOwned, Serialize};
+use time::Duration;
 use std::{
     borrow::Cow,
     collections::HashMap,
     iter::empty,
     marker::PhantomData,
     net::SocketAddr,
+    ops::{Index, Range},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, RwLock,
     },
-    time::Duration,
+    thread::sleep,
 };
 use tarpc::{
     client::{self, RpcError},
     context,
-    serde_transport::tcp::listen,
+    serde_transport::tcp::{connect, listen},
     server::{self, incoming::Incoming, BaseChannel, Channel},
     tokio_serde::formats::Bincode,
     transport::channel,
@@ -88,12 +90,56 @@ impl ExchangeService for ExchangeServer {
     }
 }
 
+struct Clients(Vec<(Range<usize>, ExchangeServiceClient)>);
+
+impl Clients {
+    fn new(runtime: &Runtime, local_client: &ExchangeServiceClient) -> Clients {
+        Self(
+            runtime
+                .layout()
+                .hosts
+                .iter()
+                .enumerate()
+                .map(|(idx, host)| {
+                    let client = if idx != runtime.layout().this_idx {
+                        let Some(address) = host.address else { unreachable!() };
+                        let mut transport = connect(address, Bincode::default);
+                        transport.config_mut().max_frame_length(usize::MAX);
+                        // XXX Blocking here could cause deadlock?  We should connect
+                        // asynchronously.
+                        sleep(std::time::Duration::from_millis(1000));
+                        println!("connecting to {address}");
+                        let transport = TokioHandle::current().block_on(transport).unwrap();
+                        println!("connected to {address}");
+                        ExchangeServiceClient::new(client::Config::default(), transport).spawn()
+                    } else {
+                        local_client.clone()
+                    };
+                    (host.workers.clone(), client)
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Index<usize> for Clients {
+    type Output = ExchangeServiceClient;
+    fn index(&self, worker: usize) -> &ExchangeServiceClient {
+        for (workers, host) in self.0.iter() {
+            if workers.contains(&worker) {
+                return host;
+            }
+        }
+        unreachable!();
+    }
+}
+
 struct Inner {
     tokio: TokioHandle,
     exchange_id: ExchangeId,
     /// The number of communicating peers.
     npeers: usize,
-    client: ExchangeServiceClient,
+    clients: Arc<Clients>,
     sender_notifies: Vec<Notify>,
     /// Counts the number of messages yet to be received in the current round of
     /// communication per receiver.  The receiver must wait until it has all
@@ -116,7 +162,7 @@ impl Inner {
         tokio: TokioHandle,
         exchange_id: ExchangeId,
         deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
-        client: ExchangeServiceClient,
+        clients: Arc<Clients>,
     ) -> Inner {
         let _guard = tokio.enter();
 
@@ -132,7 +178,7 @@ impl Inner {
             tokio: tokio.clone(),
             exchange_id,
             npeers,
-            client,
+            clients,
             receiver_counters,
             receiver_callbacks,
             sender_notifies,
@@ -217,8 +263,7 @@ impl Inner {
 ///
 /// Each call to exchange populates a mailbox.  When all the mailboxes for a
 /// worker have been populated, it can read and clear them.
-pub(crate) struct Exchange<T>
-{
+pub(crate) struct Exchange<T> {
     inner: Arc<Inner>,
     /// `npeers^2` mailboxes, clients, and servers, one for each sender/receiver
     /// pair.  Each mailbox is accessed by exactly two threads, so contention is
@@ -235,8 +280,8 @@ where
         runtime: &Runtime,
         tokio: TokioHandle,
         exchange_id: ExchangeId,
-        client: ExchangeServiceClient,
-        server: ExchangeServer,
+        clients: Arc<Clients>,
+        directory: ExchangeDirectory,
     ) -> Self {
         let npeers = runtime.num_workers();
         let mailboxes: Arc<Vec<Mutex<Option<T>>>> =
@@ -252,9 +297,8 @@ where
             *mailbox = Some(data);
         };
 
-        let inner = Arc::new(Inner::new(runtime, tokio, exchange_id, deliver, client));
-        server
-            .0
+        let inner = Arc::new(Inner::new(runtime, tokio, exchange_id, deliver, clients));
+        directory
             .write()
             .unwrap()
             .entry(exchange_id)
@@ -281,50 +325,66 @@ where
             .handle()
             .clone();
 
-        // If this runtime is distributed, start a server.
-        /*
-        if let Some(address) = runtime.layout().this_host().address {
-            tokio.spawn(async move {
-                let mut listener = listen(address, Bincode::default).await.unwrap();
-                listener.config_mut().max_frame_length(usize::MAX);
-                listener
-                    .filter_map(|r| future::ready(r.ok()))
-                    .map(server::BaseChannel::with_defaults)
-                    // Limit channels to 1 per IP.
-                    .max_channels_per_key(1, |t| t.transport().peer_addr().unwrap().ip())
-                    // serve is generated by the service attribute. It takes as input any type
-                    // implementing the generated World trait.
-                    .map(|channel| {
-                        let server = HelloServer(channel.transport().peer_addr().unwrap());
-                        channel.execute(server.serve())
-                    })
-                    // Max 10 channels.
-                    .buffer_unordered(10)
-                    .for_each(|_| async {})
-                    .await;
-            });
-        };
-         */
-
-        let (client, server) = runtime
+        let directory = runtime
             .local_store()
-            .entry(ServerId)
+            .entry(DirectoryId)
+            .or_insert_with(|| Arc::new(RwLock::new(HashMap::new())))
+            .clone();
+
+        let clients = runtime
+            .local_store()
+            .entry(ClientsId)
             .or_insert_with(|| {
                 let _guard = tokio.enter();
+
+                // Create a client and server for local exchange.
                 let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
-                let client =
+                let local_client =
                     ExchangeServiceClient::new(client::Config::default(), client_transport).spawn();
-                let channel = BaseChannel::with_defaults(server_transport);
-                let server = ExchangeServer(Arc::new(RwLock::new(HashMap::new())));
-                tokio.spawn(channel.execute(server.clone().serve()));
-                (client, server)
+                let local_server = ExchangeServer(directory.clone());
+                tokio.spawn(
+                    BaseChannel::with_defaults(server_transport)
+                        .execute(local_server.clone().serve()),
+                );
+
+                // Create a listener for remote exchange to connect to us.
+                if let Some(address) = runtime.layout().this_host().address {
+                    let mut listener = tokio.block_on(listen(address, Bincode::default)).unwrap();
+                    listener.config_mut().max_frame_length(usize::MAX);
+                    let directory2 = directory.clone();
+                    tokio.spawn(async move {
+                        println!("listening on {address}");
+                        listener
+                            .filter_map(|r| future::ready(r.ok()))
+                            .map(server::BaseChannel::with_defaults)
+                            .map(move |channel| {
+                                let server = ExchangeServer(directory2.clone());
+                                channel.execute(server.serve())
+                            })
+                            // Max 10 channels.
+                            .buffer_unordered(10)
+                            .for_each(|_| async {}).await;
+                        println!("stopped listening");
+                    });
+                };
+
+                // Create clients for remote exchange.
+                Arc::new(Clients::new(runtime, &local_client))
             })
-            .value()
             .clone();
+
         runtime
             .local_store()
             .entry(ExchangeCacheId::new(exchange_id))
-            .or_insert_with(|| Arc::new(Exchange::new(runtime, tokio, exchange_id, client, server)))
+            .or_insert_with(|| {
+                Arc::new(Exchange::new(
+                    runtime,
+                    tokio,
+                    exchange_id,
+                    clients.clone(),
+                    directory,
+                ))
+            })
             .value()
             .clone()
     }
@@ -368,7 +428,7 @@ where
         self.inner.tokio.spawn(async move {
             let mut waiters = Vec::with_capacity(encoded_data.len());
             for (receiver, data) in encoded_data.into_iter().enumerate() {
-                waiters.push(inner.client.exchange(
+                waiters.push(inner.clients[receiver].exchange(
                     context::current(),
                     data,
                     inner.exchange_id,
@@ -797,6 +857,20 @@ struct ServerId;
 
 impl TypedMapKey<LocalStoreMarker> for ServerId {
     type Value = (ExchangeServiceClient, ExchangeServer);
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct ClientsId;
+
+impl TypedMapKey<LocalStoreMarker> for ClientsId {
+    type Value = Arc<Clients>;
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct DirectoryId;
+
+impl TypedMapKey<LocalStoreMarker> for DirectoryId {
+    type Value = ExchangeDirectory;
 }
 
 /// Create an [`ExchangeSender`]/[`ExchangeReceiver`] operator pair.

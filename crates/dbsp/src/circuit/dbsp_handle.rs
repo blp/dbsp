@@ -3,31 +3,36 @@ use crate::{
     RuntimeError, SchedulerError,
 };
 use anyhow::Error as AnyError;
+use bincode::{Decode, Encode};
 use crossbeam::channel::{bounded, Receiver, Sender, TryRecvError};
+use serde::{Serialize, Deserialize};
 use std::{
     fs,
     fs::create_dir_all,
     net::SocketAddr,
+    ops::Range,
     path::{Path, PathBuf},
     thread::Result as ThreadResult,
-    time::Instant, ops::Range,
+    time::Instant,
 };
 
 #[cfg(doc)]
 use crate::circuit::circuit_builder::Stream;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Decode, Encode, Serialize, Deserialize)]
 pub struct Host {
     pub address: Option<SocketAddr>,
     pub workers: Range<usize>,
 }
 
 impl Host {
-    pub fn n_workers(&self) -> usize { self.workers.len() }
+    pub fn n_workers(&self) -> usize {
+        self.workers.len()
+    }
 }
 
 /// A distributed layout of `hosts` in which this host has index `this_idx`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Decode, Encode, Serialize, Deserialize)]
 pub struct Layout {
     pub hosts: Vec<Host>,
     pub this_idx: usize,
@@ -41,7 +46,17 @@ impl Layout {
         &self.hosts[self.this_idx]
     }
     pub fn n_workers(&self) -> usize {
-        self.hosts.iter().fold(0, |sum, host| sum + host.n_workers())
+        self.hosts
+            .iter()
+            .fold(0, |sum, host| sum + host.n_workers())
+    }
+    pub fn worker_host(&self, worker: usize) -> usize {
+        for (idx, host) in self.hosts.iter().enumerate() {
+            if host.workers.contains(&worker) {
+                return idx;
+            }
+        }
+        unreachable!();
     }
 }
 
@@ -51,7 +66,13 @@ pub trait IntoLayout {
 
 impl IntoLayout for usize {
     fn into_layout(self) -> Layout {
-        Layout { hosts: vec![Host { address: None, workers: 0..self }], this_idx: 0 }
+        Layout {
+            hosts: vec![Host {
+                address: None,
+                workers: 0..self,
+            }],
+            this_idx: 0,
+        }
     }
 }
 
