@@ -58,15 +58,20 @@ use typedmap::TypedMapKey;
 // using the id as a key.  If there already is an `Exchange` with this id in
 // the store, created by another worker, a reference to that `Exchange` will
 // be used instead.
-circuit_cache_key!(local ExchangeId<T>(usize => Arc<Exchange<T>>));
+circuit_cache_key!(local ExchangeCacheId<T>(ExchangeId => Arc<Exchange<T>>));
 
 #[tarpc::service]
 trait ExchangeService {
     async fn exchange(data: Vec<u8>, exchange_id: usize, sender: usize, receiver: usize);
 }
 
+type ExchangeId = usize;
+
+// Maps from an `exchange_id` to the `Inner` that implements the exchange.
+type ExchangeDirectory = Arc<RwLock<HashMap<ExchangeId, Arc<Inner>>>>;
+
 #[derive(Clone)]
-struct ExchangeServer(Arc<RwLock<HashMap<usize, Arc<Inner>>>>);
+struct ExchangeServer(ExchangeDirectory);
 
 #[tarpc::server]
 impl ExchangeService for ExchangeServer {
@@ -74,7 +79,7 @@ impl ExchangeService for ExchangeServer {
         self,
         _: context::Context,
         data: Vec<u8>,
-        exchange_id: usize,
+        exchange_id: ExchangeId,
         sender: usize,
         receiver: usize,
     ) {
@@ -85,7 +90,7 @@ impl ExchangeService for ExchangeServer {
 
 struct Inner {
     tokio: TokioHandle,
-    exchange_id: usize,
+    exchange_id: ExchangeId,
     /// The number of communicating peers.
     npeers: usize,
     client: ExchangeServiceClient,
@@ -109,7 +114,7 @@ impl Inner {
     fn new(
         runtime: &Runtime,
         tokio: TokioHandle,
-        exchange_id: usize,
+        exchange_id: ExchangeId,
         deliver: impl Fn(Vec<u8>, usize, usize) + Send + Sync + 'static,
         client: ExchangeServiceClient,
     ) -> Inner {
@@ -229,7 +234,7 @@ where
     fn new(
         runtime: &Runtime,
         tokio: TokioHandle,
-        exchange_id: usize,
+        exchange_id: ExchangeId,
         client: ExchangeServiceClient,
         server: ExchangeServer,
     ) -> Self {
@@ -266,7 +271,7 @@ where
     /// Create a new `Exchange` instance if an instance with the same id
     /// (created by another thread) does not yet exist within `runtime`.
     /// The number of peers will be set to `runtime.num_workers()`.
-    pub(crate) fn with_runtime(runtime: &Runtime, exchange_id: usize) -> Arc<Self> {
+    pub(crate) fn with_runtime(runtime: &Runtime, exchange_id: ExchangeId) -> Arc<Self> {
         // Grab a Tokio handle for this runtime first.  (We can't do it inside
         // `Exchange::new` because that risks deadlock in the dashmap.)
         let tokio = runtime
@@ -318,7 +323,7 @@ where
             .clone();
         runtime
             .local_store()
-            .entry(ExchangeId::new(exchange_id))
+            .entry(ExchangeCacheId::new(exchange_id))
             .or_insert_with(|| Arc::new(Exchange::new(runtime, tokio, exchange_id, client, server)))
             .value()
             .clone()
@@ -607,7 +612,7 @@ where
         runtime: &Runtime,
         worker_index: usize,
         location: OperatorLocation,
-        exchange_id: usize,
+        exchange_id: ExchangeId,
         partition: L,
     ) -> Self {
         debug_assert!(worker_index < runtime.num_workers());
@@ -714,7 +719,7 @@ where
         runtime: &Runtime,
         worker_index: usize,
         location: OperatorLocation,
-        exchange_id: usize,
+        exchange_id: ExchangeId,
         combine: L,
     ) -> Self {
         debug_assert!(worker_index < runtime.num_workers());
