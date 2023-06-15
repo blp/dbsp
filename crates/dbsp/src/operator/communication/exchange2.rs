@@ -58,46 +58,7 @@ use typedmap::TypedMapKey;
 // using the id as a key.  If there already is an `Exchange` with this id in
 // the store, created by another worker, a reference to that `Exchange` will
 // be used instead.
-#[repr(transparent)]
-#[allow(unused_parens)]
-struct ExchangeId<T: 'static + Send + Encode + Decode>(pub usize, ::std::marker::PhantomData<(T)>);
-impl<T> ExchangeId<T>
-where
-    T: 'static + Send + Encode + Decode,
-{
-    #[allow(unused_parens)]
-    #[allow(dead_code)]
-    pub fn new(key: usize) -> Self {
-        Self(key, ::std::marker::PhantomData::<(T)>)
-    }
-}
-impl<T> ::std::hash::Hash for ExchangeId<T>
-where
-    T: 'static + Send + Encode + Decode,
-{
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: ::std::hash::Hasher,
-    {
-        ::std::hash::Hash::hash(&self.0, state);
-    }
-}
-impl<T> ::std::cmp::PartialEq for ExchangeId<T>
-where
-    T: 'static + Send + Encode + Decode,
-{
-    fn eq(&self, other: &Self) -> bool {
-        ::std::cmp::PartialEq::eq(&self.0, &other.0)
-    }
-}
-impl<T> ::std::cmp::Eq for ExchangeId<T> where T: 'static + Send + Encode + Decode {}
-impl<T: 'static + Send + Encode + Decode + Clone>
-    ::typedmap::TypedMapKey<crate::circuit::runtime::LocalStoreMarker> for ExchangeId<T>
-{
-    type Value = Arc<Exchange<T>>;
-}
-unsafe impl<T: 'static + Send + Encode + Decode> Send for ExchangeId<T> {}
-unsafe impl<T: 'static + Send + Encode + Decode> Sync for ExchangeId<T> {}
+circuit_cache_key!(local ExchangeId<T>(usize => Arc<Exchange<T>>));
 
 #[tarpc::service]
 trait ExchangeService {
@@ -252,8 +213,6 @@ impl Inner {
 /// Each call to exchange populates a mailbox.  When all the mailboxes for a
 /// worker have been populated, it can read and clear them.
 pub(crate) struct Exchange<T>
-where
-    T: 'static + Send + Encode + Decode + Clone,
 {
     inner: Arc<Inner>,
     /// `npeers^2` mailboxes, clients, and servers, one for each sender/receiver
