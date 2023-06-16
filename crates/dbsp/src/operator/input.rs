@@ -544,6 +544,10 @@ where
         }
     }
 
+    fn workers(&self) -> Range<usize> {
+        self.0.offset..self.0.offset + self.0.mailbox.len()
+    }
+
     fn mailbox(&self, worker: usize) -> &Mailbox<T> {
         self.0.mailbox(worker)
     }
@@ -635,14 +639,15 @@ where
     pub fn push(&self, k: K, v: V) {
         let num_partitions = self.num_partitions();
 
-        if num_partitions > 1 {
-            let next_worker = self.next_worker.fetch_add(1, Ordering::AcqRel);
-            self.input_handle
-                .update_for_worker(next_worker % num_partitions, |tuples| tuples.push((k, v)));
+        let next_worker = if num_partitions > 1 {
+            self.next_worker.fetch_add(1, Ordering::AcqRel) % num_partitions
         } else {
-            self.input_handle
-                .update_for_worker(0, |tuples| tuples.push((k, v)));
-        }
+            0
+        };
+        self.input_handle
+            .update_for_worker(next_worker + self.input_handle.workers().start, |tuples| {
+                tuples.push((k, v))
+            });
     }
 
     /// Push multiple `(key,value)` pairs to the input stream.
@@ -684,7 +689,7 @@ where
                 partition_size += 1;
             }
 
-            let worker = (next_worker + i) % num_partitions;
+            let worker = (next_worker + i) % num_partitions + self.input_handle.workers().start;
             if partition_size == vals.len() {
                 self.input_handle.update_for_worker(worker, |tuples| {
                     if tuples.is_empty() {
