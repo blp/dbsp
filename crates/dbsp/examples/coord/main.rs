@@ -90,8 +90,8 @@ async fn main() -> AnyResult<()> {
             let output = client.output(context::current()).await.unwrap();
             output
                 .iter()
-                .for_each(|(l, VaxMonthly { count, year, month }, w)| {
-                    println!("  {i} {l:16} {year}-{month:02} {count:10}: {w:+}")
+                .for_each(|(l, count, w)| {
+                    println!("  {i} {l:16} {count:10}: {w:+}")
                 });
         }
         println!();

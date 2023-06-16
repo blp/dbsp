@@ -13,6 +13,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     mem::{swap, take},
+    ops::Range,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -460,32 +461,30 @@ where
 
 struct InputHandleInternal<T> {
     mailbox: Vec<Mailbox<T>>,
+    offset: usize,
 }
 
 impl<T> InputHandleInternal<T>
 where
     T: Default + Clone,
 {
-    fn new(num_workers: usize) -> Self {
-        assert_ne!(num_workers, 0);
-
-        let mut mailbox = Vec::with_capacity(num_workers);
-        for _ in 0..num_workers {
-            mailbox.push(Mailbox::new());
+    fn new(workers: Range<usize>) -> Self {
+        assert!(!workers.is_empty());
+        Self {
+            mailbox: workers.clone().map(|_| Mailbox::new()).collect(),
+            offset: workers.start,
         }
-
-        Self { mailbox }
     }
 
     fn set_for_worker(&self, worker: usize, v: T) {
-        self.mailbox[worker].set(v);
+        self.mailbox(worker).set(v);
     }
 
     fn update_for_worker<F>(&self, worker: usize, f: F)
     where
         F: FnOnce(&mut T),
     {
-        self.mailbox[worker].update(f);
+        self.mailbox(worker).update(f);
     }
 
     /// Send the same value to all workers.
@@ -503,7 +502,7 @@ where
     }
 
     fn mailbox(&self, worker: usize) -> &Mailbox<T> {
-        &self.mailbox[worker]
+        &self.mailbox[worker - self.offset]
     }
 }
 
@@ -527,7 +526,7 @@ where
 {
     fn new() -> Self {
         match Runtime::runtime() {
-            None => Self(Arc::new(InputHandleInternal::new(1))),
+            None => Self(Arc::new(InputHandleInternal::new(0..1))),
             Some(runtime) => {
                 let input_id = runtime.sequence_next(Runtime::worker_index());
 
@@ -535,7 +534,9 @@ where
                     .local_store()
                     .entry(InputId::new(input_id))
                     .or_insert_with(|| {
-                        Self(Arc::new(InputHandleInternal::new(runtime.num_workers())))
+                        Self(Arc::new(InputHandleInternal::new(
+                            runtime.layout().this_host().workers.clone(),
+                        )))
                     })
                     .value()
                     .clone()

@@ -288,6 +288,7 @@ where
             Arc::new((0..npeers * npeers).map(|_| Mutex::new(None)).collect());
         let mailboxes2: Arc<Vec<Mutex<Option<T>>>> = mailboxes.clone();
         let deliver = move |data: Vec<u8>, sender, receiver| {
+            println!("{receiver} <- {sender}: {} bytes", data.len());
             let index: usize = sender * npeers + receiver;
             let data = decode_from_slice(&data, bincode::config::standard())
                 .unwrap()

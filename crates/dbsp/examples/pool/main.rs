@@ -34,42 +34,20 @@ fn build_circuit(
     circuit: &mut RootCircuit,
 ) -> AnyResult<(
     CollectionHandle<Record, isize>,
-    OutputHandle<OrdIndexedZSet<String, VaxMonthly, isize>>,
+    OutputHandle<OrdIndexedZSet<String, isize, isize>>,
 )> {
     let (input_stream, input_handle) = circuit.add_input_zset::<Record, isize>();
-    let subset = input_stream.filter(|r| {
-        r.location == "England"
-            || r.location == "Northern Ireland"
-            || r.location == "Scotland"
-            || r.location == "Wales"
-    });
-    let monthly_totals = subset
-        .index_with(|r| {
-            (
-                (r.location.clone(), r.date.year(), r.date.month() as u8),
-                r.daily_vaccinations.unwrap_or(0),
-            )
-        })
-        .aggregate_linear(|(_l, _y, _m), v| *v as isize);
-    let most_vax = monthly_totals
-        .map_index(|((l, y, m), sum)| {
-            (
-                l.clone(),
-                VaxMonthly {
-                    count: *sum as u64,
-                    year: *y,
-                    month: *m,
-                },
-            )
-        })
-        .topk_desc(3);
-    Ok((input_handle, most_vax.output()))
+    let by_country = input_stream.map(|r| r.location.clone())
+        .inspect(|z| println!("{z:?}"))
+        .weighted_count()
+        .inspect(|z| println!("{z:?}"));
+    Ok((input_handle, by_country.output()))
 }
 
 struct Inner {
     circuit: DBSPHandle,
     input_handle: CollectionHandle<Record, isize>,
-    output_handle: OutputHandle<OrdIndexedZSet<String, VaxMonthly, isize>>,
+    output_handle: OutputHandle<OrdIndexedZSet<String, isize, isize>>,
 }
 
 impl Inner {
@@ -122,7 +100,7 @@ impl Circuit for Server {
         self.inner().as_mut().unwrap().circuit.step().unwrap();
         future::ready(())
     }
-    type OutputFut = Ready<Vec<(String, VaxMonthly, isize)>>;
+    type OutputFut = Ready<Vec<(String, isize, isize)>>;
     fn output(self, _: context::Context) -> Self::OutputFut {
         future::ready(self.inner().as_ref().unwrap().output_handle.consolidate().iter().collect())
     }

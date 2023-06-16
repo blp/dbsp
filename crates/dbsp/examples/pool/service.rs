@@ -95,6 +95,6 @@ pub struct VaxMonthly {
 pub trait Circuit {
     async fn init(layout: Layout);
     async fn append(records: Vec<(Record, isize)>);
-    async fn output() -> Vec<(String, VaxMonthly, isize)>;
+    async fn output() -> Vec<(String, isize, isize)>;
     async fn step();
 }
