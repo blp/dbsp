@@ -123,6 +123,7 @@ public class RustFileWriter implements ICompilerComponent {
             "};\n" +
             "use dbsp_adapters::Catalog;\n" +
             "use size_of::*;\n" +
+            "use bincode::{Decode, Encode};\n" +
             "use ::serde::{Deserialize,Serialize};\n" +
             "use compare::{Compare, Extract};\n" +
             "use std::{\n" +
@@ -135,11 +136,11 @@ public class RustFileWriter implements ICompilerComponent {
             "    marker::PhantomData,\n" +
             "    str::FromStr,\n" +
             "};\n" +
-            "use rust_decimal::Decimal;\n" +
             "use tuple::declare_tuples;\n" +
             "use sqllib::{\n" +
             "    *,\n" +
             "    casts::*,\n" +
+            "    decimal::*,\n" +
             "    geopoint::*,\n" +
             "    timestamp::*,\n" +
             "    interval::*,\n" +
