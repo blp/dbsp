@@ -194,6 +194,50 @@ pub trait Operator: 'static {
     /// of the fixed point computation, but not as part of an integrator circuit
     /// ([`Stream::integrate`](`crate::circuit::Stream::integrate`)).
     fn fixedpoint(&self, scope: Scope) -> bool;
+
+    /// For an operator that contains internal state, this method must report
+    /// that state by calling `_f` one or more times for each partition that it
+    /// holds.
+    ///
+    /// Operators that don't contain internal state can use the default
+    /// implementation.
+    fn get_state<F>(&mut self, _f: F)
+    where
+        F: FnMut(usize, Vec<u8>),
+    {
+    }
+
+    /// For an operator that contains internal state, this method must set that
+    /// state to `_state` previously obtained from `get_state()`.  The caller
+    /// may move partitions between workers.
+    ///
+    /// Operators that don't contain internal state can use the default
+    /// implementation.
+    fn set_state<'a>(&mut self, _state: impl Iterator<Item = &'a (usize, Vec<u8>)>) {}
+
+    /// For an operator that contains internal state, this method must report
+    /// the changes in that state since the "base state", which is the last time
+    /// `get_state()`, `set_state()`, or `apply_delta()` was called.  For each
+    /// state partition that has changed inside the operator, it must call `f`
+    /// one or more times to report the changes.
+    ///
+    /// Operators that don't contain internal state can use the default
+    /// implementation.
+    fn get_delta<F>(&mut self, _f: F)
+    where
+        F: FnMut(usize, Vec<u8>),
+    {
+    }
+
+    /// For an operator that contains internal state, this method must apply a
+    /// delta previously obtained from `get_delta()`.  The state before the call
+    /// must be the same as the base state at the time `get_delta()` was called,
+    /// on a per-partition basis.  The caller may move partitions between
+    /// workers.
+    ///
+    /// Operators that don't contain internal state can use the default
+    /// implementation.
+    fn apply_delta<'a>(&mut self, _delta: impl Iterator<Item = &'a (usize, Vec<u8>)>) {}
 }
 
 /// A source operator that injects data from the outside world or from the
