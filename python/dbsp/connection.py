@@ -3,6 +3,7 @@ import dbsp_api_client
 from dbsp_api_client.models.new_program_request import NewProgramRequest
 from dbsp_api_client.api.program import list_programs
 from dbsp_api_client.api.program import new_program
+from dbsp_api_client.api.program import program_status
 from dbsp.program import DBSPProgram
 
 class DBSPConnection:
@@ -18,6 +19,29 @@ class DBSPConnection:
                 timeout = 20.0)
 
         list_programs.sync_detailed(client = self.api_client).unwrap("Failed to fetch program list from the DBSP server")
+
+    def open_program(self, *, name: str) -> DBSPProgram:
+        """Open an existing program with the given name.  Program
+        names must be unique, so there will only be one.
+
+        Args:
+            name (str): Program name
+
+        Raises:
+            httpx.TimeoutException: If the request takes longer than Client.timeout.
+            dbsp.DBSPServerError: If the DBSP server returns an error.
+
+        Returns:
+            DBSPProgram
+
+        """
+
+        open_program_response = program_status.sync_detailed(client = self.api_client, name=name).unwrap(f'Failed to find a program named "{name}"')
+
+        return DBSPProgram(
+            api_client=self.api_client,
+            program_id=open_program_response.program_id,
+            program_version=open_program_response.version)
 
     def create_program(self, *, name: str, sql_code: str, description: str = '') -> DBSPProgram:
         """Create a new program.

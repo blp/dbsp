@@ -130,6 +130,9 @@ def main():
     status = program.status()
     print("Project status: " + status)
 
+    program2 = dbsp.open_program(name="foo")
+    assert program2.program_id == program.program_id
+
     pipeline = DBSPPipelineConfig(program, 6)
 
     if (connector_type == "file"):

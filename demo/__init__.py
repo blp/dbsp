@@ -3,7 +3,7 @@ import argparse
 from dbsp import DBSPConnection
 
 
-def execute(dbsp_url, actions, name, code_file, make_pipeline_fn, prepare_fn=None, verify_fn=None):
+def execute(dbsp_url, actions, name, code_file, make_pipeline_fn, prepare_fn=None, verify_fn=None, populate_fn=None):
     dbsp = DBSPConnection(dbsp_url + "/v0")
     sql_code = open(code_file, "r").read()
     program = dbsp.create_or_replace_program(
@@ -20,6 +20,10 @@ def execute(dbsp_url, actions, name, code_file, make_pipeline_fn, prepare_fn=Non
         print("Preparing...")
         prepare_fn()
 
+    if populate_fn and 'populate' in actions:
+        print("Populating data...")
+        prepare_fn()
+
     if 'run' in actions:
         try:
             pipeline.run()
@@ -33,7 +37,7 @@ def execute(dbsp_url, actions, name, code_file, make_pipeline_fn, prepare_fn=Non
         verify_fn()
 
 
-def run_demo(name, code_file, make_pipeline_fn, prepare_fn=None, verify_fn=None):
+def run_demo(name, code_file, make_pipeline_fn, prepare_fn=None, verify_fn=None, populate_fn=None):
     parser = argparse.ArgumentParser(
         description='What do you want to do with the demo.')
     parser.add_argument('--dbsp_url', required=True)
@@ -55,4 +59,4 @@ def run_demo(name, code_file, make_pipeline_fn, prepare_fn=None, verify_fn=None)
         actions.add('run')
     prepare = prepare_fn if args.prepare_args == None else lambda: prepare_fn(args.prepare_args)
     execute(dbsp_url, actions, name, code_file,
-            make_pipeline_fn, prepare, verify_fn)
+            make_pipeline_fn, prepare, verify_fn, populate_fn)

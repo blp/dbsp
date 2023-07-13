@@ -93,5 +93,6 @@ def make_config(project):
 
 if __name__ == "__main__":
     run_demo(
-        "SecOps demo", os.path.join(SCRIPT_DIR, "project.sql"), make_config, prepare
+        "SecOps demo", os.path.join(SCRIPT_DIR, "project.sql"),
+        make_config, prepare_fn=prepare, populate_fn=populate
     )
