@@ -41,19 +41,6 @@ $ cargo update
 
 (`temp` is the directory where the tests write the generated Rust code.)
 
-## Running
-
-To run the tests:
-
-```
-$ cd SQL-compiler
-$ ./run-tests.sh
-```
-
-Beware that the full sql logic tests can run for a few weeks, there
-are more than 5 million of them!  Most of the time is spent compiling Rust,
-hopefully we'll be able to speed that up at some point.
-
 ## Incremental view maintenance
 
 The DBSP runtime is optimized for performing incremental view
@@ -123,13 +110,25 @@ Compilation proceeds in several stages:
 
 ### Unit tests
 
-Unit tests are written using JUnit and test pointwise parts of the compiler.
-They can be executed usign `mvn test`.
+Unit tests are written using JUnit and test pointwise parts of the
+compiler.  They can be executed using `mvn test`.  They also run as a
+side effect of `mvn package` (omitting `-DskipTests`).
 
 ### SQL logic tests
 
 One of the means of testing the compiler is using sqllogictests:
 <https://www.sqlite.org/sqllogictest/doc/trunk/about.wiki>.
+
+The sqllogictests includes more than 5 million tests.  It takes weeks
+to run all of them.  Most of the time is spent compiling Rust.
+We hopet to speed that up at some point.
+
+To start running these tests:
+
+```
+$ cd SQL-compiler
+$ ./run-tests.sh
+```
 
 We have implemented a [general-purpose testing
 framework](https://github.com/hydromatic/sql-logic-test) in Java for

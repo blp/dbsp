@@ -43,17 +43,13 @@ public class PostgresDateTests extends PostgresBaseTest {
     @Override
     public void prepareData(DBSPCompiler compiler) {
         String data = "CREATE TABLE DATE_TBL (f1 date);\n" +
-                "INSERT INTO DATE_TBL VALUES ('1957-04-09');\n" +
-                "INSERT INTO DATE_TBL VALUES ('1957-06-13');\n" +
-                "INSERT INTO DATE_TBL VALUES ('1996-02-28');\n" +
+                "INSERT INTO DATE_TBL VALUES (' 1957-04-09');\n" +
+                "INSERT INTO DATE_TBL VALUES ('1957-06-13 ');\n" +
+                "INSERT INTO DATE_TBL VALUES (' 1996-02-28 ');\n" +
                 "INSERT INTO DATE_TBL VALUES ('1996-02-29');\n" +
                 "INSERT INTO DATE_TBL VALUES ('1996-03-01');\n" +
                 "INSERT INTO DATE_TBL VALUES ('1996-03-02');\n" +
                 "INSERT INTO DATE_TBL VALUES ('1997-02-28');\n" +
-                // leading and trailing white space
-                "INSERT INTO DATE_TBL VALUES (' 1996-03-01');\n" +
-                "INSERT INTO DATE_TBL VALUES ('1996-03-02 ');\n" +
-                "INSERT INTO DATE_TBL VALUES (' 1997-02-28 ');\n" +
                 // illegal date; this fails in Postgres, but inserts a NULL in Calcite.
                 "INSERT INTO DATE_TBL VALUES ('1997-02-29');\n" +
                 "INSERT INTO DATE_TBL VALUES ('1997-03-01');\n" +
@@ -78,9 +74,6 @@ public class PostgresDateTests extends PostgresBaseTest {
                 "06-13-1957\n" +
                 "02-28-1996\n" +
                 "02-29-1996\n" +
-                "03-01-1996\n" +
-                "03-02-1996\n" +
-                "02-28-1997\n" +
                 "03-01-1996\n" +
                 "03-02-1996\n" +
                 "02-28-1997\n" +
