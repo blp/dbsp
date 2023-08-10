@@ -400,7 +400,7 @@ mod proptests {
         strategy::Strategy, test_runner::TestCaseResult,
     };
     use proptest_derive::Arbitrary;
-    use rust_decimal::Decimal;
+    use dbsp::algebra::Decimal;
     use size_of::SizeOf;
     use std::{
         cmp::Ordering,

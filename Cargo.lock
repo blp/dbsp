@@ -2259,7 +2259,6 @@ dependencies = [
  "pretty",
  "proptest",
  "proptest-derive",
- "rust_decimal",
  "schemars",
  "serde",
  "serde_json",
@@ -5602,7 +5601,6 @@ dependencies = [
  "num",
  "paste",
  "regex",
- "rust_decimal",
  "serde",
  "size-of",
 ]
@@ -5612,7 +5610,6 @@ name = "sqlvalue"
 version = "0.1.0"
 dependencies = [
  "dbsp",
- "rust_decimal",
  "sqllib",
 ]
 
