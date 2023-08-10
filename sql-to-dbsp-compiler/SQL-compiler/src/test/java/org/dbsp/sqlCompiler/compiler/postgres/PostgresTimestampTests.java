@@ -67,6 +67,10 @@ public class PostgresTimestampTests extends PostgresBaseTest {
                 "INSERT INTO TIMESTAMP_TBL VALUES ('1997-02-10 17:32:01.4');\n" +        // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.4 1997 PST');
                 "INSERT INTO TIMESTAMP_TBL VALUES ('1997-02-10 17:32:01.5');\n" +        // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.5 1997 PST');
                 "INSERT INTO TIMESTAMP_TBL VALUES ('1997-02-10 17:32:01.6');\n" +        // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.6 1997 PST');
+                // -- Leading and trailing white space.
+                "INSERT INTO TIMESTAMP_TBL VALUES (' 1997-02-10 17:32:01.4');\n" +       // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.4 1997 PST');
+                "INSERT INTO TIMESTAMP_TBL VALUES ('1997-02-10 17:32:01.5 ');\n" +       // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.5 1997 PST');
+                "INSERT INTO TIMESTAMP_TBL VALUES (' 1997-02-10 17:32:01.6 ');\n" +      // INSERT INTO TIMESTAMP_TBL VALUES ('Mon Feb 10 17:32:01.6 1997 PST');
                 // -- ISO 8601 format
                 "INSERT INTO TIMESTAMP_TBL VALUES ('1997-01-02');\n" +                   // INSERT INTO TIMESTAMP_TBL VALUES ('1997-01-02');
                 "INSERT INTO TIMESTAMP_TBL VALUES ('1997-01-02 03:04:05');\n" +          // INSERT INTO TIMESTAMP_TBL VALUES ('1997-01-02 03:04:05');
@@ -160,6 +164,9 @@ public class PostgresTimestampTests extends PostgresBaseTest {
                 " Mon Feb 10 17:32:01 1997\n" +
                 " Mon Feb 10 17:32:01 1997\n" +
                 " Mon Feb 10 17:32:02 1997\n" +
+                " Mon Feb 10 17:32:01.4 1997\n" +
+                " Mon Feb 10 17:32:01.5 1997\n" +
+                " Mon Feb 10 17:32:01.6 1997\n" +
                 " Mon Feb 10 17:32:01.4 1997\n" +
                 " Mon Feb 10 17:32:01.5 1997\n" +
                 " Mon Feb 10 17:32:01.6 1997\n" +

@@ -23,19 +23,21 @@ public class PostgresIntervalTests extends PostgresBaseTest {
         // Had to add the symbolic intervals by hand in many places
         // Postgres allows individual signs on fragments, the
         // standard doesn't
-        this.qs("SELECT INTERVAL '01:00' HOUR TO MINUTE AS \"One hour\";\n" +
+        //
+        // Also, test with leading and trailing white space.
+        this.qs("SELECT INTERVAL ' 01:00' HOUR TO MINUTE AS \"One hour\";\n" +
                 " One hour \n" +
                 "----------\n" +
                 " 01:00:00\n" +
                 "(1 row)\n" +
                 "\n" +
-                "SELECT INTERVAL '+02:00' HOUR TO MINUTE AS \"Two hours\";\n" +
+                "SELECT INTERVAL '+02:00 ' HOUR TO MINUTE AS \"Two hours\";\n" +
                 " Two hours \n" +
                 "-----------\n" +
                 " 02:00:00\n" +
                 "(1 row)\n" +
                 "\n" +
-                "SELECT INTERVAL '-08:00' HOUR TO MINUTE AS \"Eight hours\";\n" +
+                "SELECT INTERVAL ' -08:00 ' HOUR TO MINUTE AS \"Eight hours\";\n" +
                 " Eight hours \n" +
                 "-------------\n" +
                 " -08:00:00\n" +

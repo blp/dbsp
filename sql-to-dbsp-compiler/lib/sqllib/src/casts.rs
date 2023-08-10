@@ -119,7 +119,7 @@ pub fn cast_to_bN_bN(value: Option<bool>) -> Option<bool> {
 
 #[inline]
 pub fn cast_to_Date_s(value: String) -> Date {
-    let dt = NaiveDate::parse_from_str(&value, "%Y-%m-%d").ok();
+    let dt = NaiveDate::parse_from_str(&value, "%Y-%m-%d ").ok();
     match dt {
         Some(value) => Date::new((value.and_hms_opt(0, 0, 0).unwrap().timestamp() / 86400) as i32),
         None => Date::default(),
@@ -135,7 +135,7 @@ pub fn cast_to_DateN_nullN(_value: Option<()>) -> Option<Date> {
 
 #[inline]
 pub fn cast_to_DateN_s(value: String) -> Option<Date> {
-    let dt = NaiveDate::parse_from_str(&value, "%Y-%m-%d");
+    let dt = NaiveDate::parse_from_str(&value, "%Y-%m-%d ");
     dt.ok()
         .map(|value| Date::new((value.and_hms_opt(0, 0, 0).unwrap().timestamp() / 86400) as i32))
 }
@@ -151,7 +151,7 @@ pub fn cast_to_DateN_date(value: Date) -> Option<Date> {
 
 #[inline]
 pub fn cast_to_Time_s(value: String) -> Time {
-    let time = NaiveTime::parse_from_str(&value, "%H:%M:%S.f").ok();
+    let time = NaiveTime::parse_from_str(&value, "%H:%M:%S.f ").ok();
     match time {
         None => Time::default(),
         Some(value) => Time::from_time(value),
@@ -167,7 +167,7 @@ pub fn cast_to_TimeN_nullN(_value: Option<()>) -> Option<Time> {
 
 #[inline]
 pub fn cast_to_TimeN_s(value: String) -> Option<Time> {
-    let time = NaiveTime::parse_from_str(&value, "%H:%M:%S.f");
+    let time = NaiveTime::parse_from_str(&value, "%H:%M:%S.f ");
     time.ok().map(|time| Time::from_time(time))
 }
 
@@ -1199,7 +1199,7 @@ pub fn cast_to_TimestampN_nullN(_value: Option<()>) -> Option<Timestamp> {
 
 #[inline]
 pub fn cast_to_TimestampN_s(value: String) -> Option<Timestamp> {
-    if let Ok(v) = NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f") {
+    if let Ok(v) = NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f ") {
         // round the number of milliseconds
         let nanos = v.timestamp_subsec_nanos();
         let nanos = (nanos + 500000) / 1000000;
@@ -1211,7 +1211,7 @@ pub fn cast_to_TimestampN_s(value: String) -> Option<Timestamp> {
 
     // Try just a date.
     // parse_from_str fails to parse a datetime if there is no time in the format!
-    if let Ok(v) = NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
+    if let Ok(v) = NaiveDate::parse_from_str(&value, "%Y-%m-%d ") {
         let dt = v.and_hms_opt(0, 0, 0).unwrap();
         let result = Timestamp::new(dt.timestamp_millis());
         //println!("Parsed successfully {} using {} into {:?} ({})",
