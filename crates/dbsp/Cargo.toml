@@ -44,6 +44,7 @@ arc-swap = "1.5.1"
 mimalloc-rust-sys = "1.7.2"
 rand = "0.8.5"
 rust_decimal = "1.29"
+rkyv = "0.7.42"
 
     [dependencies.size-of]
     version = "0.1.5"

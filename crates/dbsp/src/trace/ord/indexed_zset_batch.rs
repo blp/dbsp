@@ -17,6 +17,7 @@ use crate::{
     DBData, DBWeight, NumEntries,
 };
 use rand::Rng;
+use rkyv::{Archive, Serialize, Deserialize};
 use size_of::SizeOf;
 use std::{
     fmt::{self, Debug, Display},
@@ -28,7 +29,7 @@ use std::{
 type Layers<K, V, R, O> = OrderedLayer<K, ColumnLayer<V, R>, O>;
 
 /// An immutable collection of update tuples.
-#[derive(Debug, Clone, Eq, PartialEq, SizeOf)]
+#[derive(Debug, Clone, Eq, PartialEq, SizeOf, Archive, Serialize, Deserialize)]
 pub struct OrdIndexedZSet<K, V, R, O = usize>
 where
     K: Ord,

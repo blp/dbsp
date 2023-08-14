@@ -5,6 +5,7 @@ use crate::{
     trace::ord::OrdValBatch,
     DBData, DBTimestamp, DBWeight,
 };
+use rkyv::{Archive, Serialize, Deserialize};
 use size_of::SizeOf;
 use std::fmt::{Debug, Display, Formatter};
 
@@ -19,8 +20,9 @@ use std::fmt::{Debug, Display, Formatter};
     Ord,
     PartialOrd,
     SizeOf,
-    bincode::Decode,
-    bincode::Encode,
+    Archive,
+    Serialize,
+    Deserialize,
 )]
 pub struct Product<TOuter, TInner> {
     /// Outer timestamp.

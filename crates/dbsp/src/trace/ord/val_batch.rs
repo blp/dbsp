@@ -14,6 +14,7 @@ use crate::{
     DBData, DBTimestamp, DBWeight, NumEntries,
 };
 use rand::Rng;
+use rkyv::{Archive, Serialize, Deserialize};
 use size_of::SizeOf;
 use std::{
     fmt::{Debug, Display, Formatter},
@@ -25,7 +26,7 @@ pub type OrdValBatchLayer<K, V, T, R, O> =
 
 /// An immutable collection of update tuples, from a contiguous interval of
 /// logical times.
-#[derive(Debug, Clone, SizeOf)]
+#[derive(Debug, Clone, SizeOf, Archive, Serialize, Deserialize)]
 pub struct OrdValBatch<K, V, T, R, O = usize>
 where
     K: Ord,

@@ -8,6 +8,7 @@ use crate::{
     utils::VecExt,
     Circuit, DBData, DBTimestamp, DBWeight, OrdIndexedZSet, Stream,
 };
+use rkyv::{Archive, Serialize, Deserialize};
 use size_of::SizeOf;
 use std::{
     hash::Hash,
@@ -22,7 +23,7 @@ use std::{
 /// average value can be obtained by dividing `sum` by `count`.  `Avg` forms a
 /// commutative monoid with point-wise plus operation `(sum1, count1) + (sum2,
 /// count2) = (sum1 + sum2, count1 + count2)`.
-#[derive(Debug, Default, Clone, Eq, Hash, PartialEq, Ord, PartialOrd, SizeOf)]
+#[derive(Debug, Default, Clone, Eq, Hash, PartialEq, Ord, PartialOrd, SizeOf, Archive, Serialize, Deserialize)]
 pub struct Avg<T, R> {
     sum: T,
     count: R,

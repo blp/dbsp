@@ -7,9 +7,10 @@ mod product;
 use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
-    trace::{ord::OrdValBatch, Batch},
+    trace::{ord::OrdValBatch, Batch, Deserializable, Serializer},
     DBData, DBWeight, OrdIndexedZSet,
 };
+use rkyv::{Archive, Serialize, Deserialize};
 use size_of::SizeOf;
 use std::{fmt::Debug, hash::Hash};
 
@@ -73,7 +74,7 @@ pub use product::Product;
 // TODO: Conversion to/from the most general time representation (`[usize]`).
 // TODO: Model overflow by having `advance` return Option<Self>.
 pub trait Timestamp:
-    PartialOrder + Lattice + Debug + Clone + Ord + PartialEq + Eq + Hash + 'static
+    PartialOrder + Lattice + Debug + Clone + Ord + PartialEq + Eq + Hash + Archive + Serialize<Serializer> + Deserializable + 'static
 {
     type Nested: Timestamp;
 
@@ -175,7 +176,7 @@ pub trait Timestamp:
 /// This type is only used to bootstrap the recursive definition of
 /// the `WithClock` trait.
 #[derive(
-    Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq, SizeOf, bincode::Encode, bincode::Decode,
+    Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq, SizeOf, Archive, Serialize, Deserialize
 )]
 pub struct UnitTimestamp;
 

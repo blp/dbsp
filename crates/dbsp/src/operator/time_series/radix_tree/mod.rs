@@ -81,6 +81,7 @@ use crate::{
     trace::Cursor,
 };
 use num::PrimInt;
+use rkyv::{Archive, Deserialize, Serialize};
 use size_of::SizeOf;
 use std::{
     cmp::min,
@@ -342,7 +343,20 @@ where
 }
 
 /// Describes a range of timestamps that share a common prefix.
-#[derive(Clone, Debug, Default, SizeOf, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    SizeOf,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Archive,
+    Serialize,
+    Deserialize,
+)]
 pub struct Prefix<TS> {
     /// Prefix bits.
     key: TS,
@@ -510,8 +524,8 @@ where
 }
 
 /// Pointer to a child node.
-#[derive(Clone, Debug, SizeOf, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct ChildPtr<TS, A> {
+#[derive(Clone, Debug, SizeOf, PartialEq, Eq, Hash, PartialOrd, Ord, Archive, Serialize, Deserialize)]
+pub struct ChildPtr<TS, A> {
     /// Unique prefix of a child subtree, which serves as a pointer
     /// to the child node.  Given this prefix the child node can
     /// be located using `Cursor::seek_key`, unless
@@ -584,7 +598,20 @@ where
 }
 
 /// Radix tree node.
-#[derive(Clone, Debug, Default, SizeOf, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    SizeOf,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Archive,
+    Serialize,
+    Deserialize,
+)]
 pub struct TreeNode<TS, A> {
     /// Array of children.
     // `Option` doesn't introduce space overhead.
