@@ -2,7 +2,7 @@
 //!
 //! Based on the equivalent [Nexmark Flink Java model classes](https://github.com/nexmark/nexmark/blob/v0.2.0/nexmark-flink/src/main/java/com/github/nexmark/flink/model).
 
-use arcstr::ArcStr;
+use dbsp::algebra::ArcStr;
 use rkyv::{Archive, Deserialize, Serialize};
 use size_of::SizeOf;
 

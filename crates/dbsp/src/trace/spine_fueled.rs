@@ -90,6 +90,7 @@ use crate::{
     NumEntries,
 };
 use rand::Rng;
+use rkyv::{Archive, Serialize, ser::Serializer};
 use size_of::SizeOf;
 use std::{
     cmp::max,
@@ -138,6 +139,24 @@ where
 {
     fn clone(&self) -> Self {
         unimplemented!()
+    }
+}
+
+impl<B> Archive for Spine<B>
+where
+    B: Batch,
+{
+    type Archived = ();
+    type Resolver = ();
+
+    unsafe fn resolve(&self, _pos: usize, _resolver: Self::Resolver, _out: *mut Self::Archived) {
+        unimplemented!();
+    }
+}
+
+impl<B: Batch, S: Serializer + ?Sized> Serialize<S> for Spine<B> {
+    fn serialize(&self, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        unimplemented!();
     }
 }
 

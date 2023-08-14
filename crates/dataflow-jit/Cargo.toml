@@ -49,6 +49,7 @@ serde = { version = "1.0.152", features = ["derive"] }
 
 # Argument parsing for the binary
 clap = { version = "4.1.8", features = ["derive"], optional = true }
+rkyv = "0.7.42"
 
     [dependencies.tracing-subscriber]
     version = "0.3.16"

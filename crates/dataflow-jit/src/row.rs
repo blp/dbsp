@@ -14,6 +14,7 @@ use bincode::{
     Decode, Encode,
 };
 use chrono::NaiveTime;
+use rkyv::{Serialize, ser::Serializer, Archive, Deserialize, Fallible};
 use size_of::SizeOf;
 use std::{
     alloc::Layout,
@@ -294,6 +295,28 @@ impl SizeOf for Row {
             context.add_distinct_allocation().add(self.vtable().size_of);
             unsafe { (self.vtable().size_of_children)(self.as_ptr(), context) };
         }
+    }
+}
+
+impl Archive for Row
+{
+    type Archived = ();
+    type Resolver = ();
+
+    unsafe fn resolve(&self, _pos: usize, _resolver: Self::Resolver, _out: *mut Self::Archived) {
+        unimplemented!();
+    }
+}
+
+impl<S: Serializer + ?Sized> Serialize<S> for Row {
+    fn serialize(&self, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        unimplemented!();
+    }
+}
+
+impl<D: Fallible> Deserialize<Row, D> for () {
+    fn deserialize(&self, _deserializer: &mut D) -> Result<Row, D::Error> {
+        unimplemented!();
     }
 }
 
