@@ -3,32 +3,32 @@ use csv::Reader;
 use dbsp::{
     operator::FilterMap, CollectionHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, RootCircuit,
 };
-use serde::Deserialize;
+use rkyv::{Archive, Serialize, Deserialize, with::Skip};
 use size_of::SizeOf;
 use time::Date;
 
 #[derive(
     Clone,
     Debug,
-    Deserialize,
     Eq,
     PartialEq,
     Ord,
     PartialOrd,
     Hash,
     SizeOf,
-    bincode::Decode,
-    bincode::Encode,
+    Archive,
+    Serialize,
+    Deserialize,
 )]
 struct Record {
     location: String,
-    #[bincode(with_serde)]
+    #[with(Skip)]
     date: Date,
     daily_vaccinations: Option<u64>,
 }
 
 #[derive(
-    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, SizeOf, bincode::Decode, bincode::Encode,
+    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, SizeOf, Archive, Serialize, Deserialize,
 )]
 struct VaxMonthly {
     count: u64,

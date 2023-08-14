@@ -1,26 +1,27 @@
 use anyhow::Result;
 use csv::Reader;
 use dbsp::{CollectionHandle, RootCircuit, ZSet};
-use serde::Deserialize;
+use rkyv::{Archive, Archived, Serialize, with::{ArchiveWith, SerializeWith, DeserializeWith}, Resolver, Fallible};
 use size_of::SizeOf;
 use time::Date;
 
 #[derive(
     Clone,
     Debug,
-    Deserialize,
     Eq,
     PartialEq,
     Ord,
     PartialOrd,
     Hash,
     SizeOf,
-    bincode::Decode,
-    bincode::Encode,
+    Archive,
+    Serialize,
+    serde::Deserialize,
+    rkyv::Deserialize,
 )]
 struct Record {
     location: String,
-    #[bincode(with_serde)]
+    #[with(AsCalendarDate)]
     date: Date,
     daily_vaccinations: Option<u64>,
 }
@@ -53,4 +54,37 @@ fn main() -> Result<()> {
 
     // ...read output from circuit...
     Ok(())
+}
+
+struct AsCalendarDate;
+
+impl ArchiveWith<Date> for AsCalendarDate {
+    type Archived = Archived<(i32, u16)>;
+    type Resolver = Resolver<(i32, u16)>;
+
+    unsafe fn resolve_with(field: &Date, pos: usize, _: ((), ()), out: *mut Self::Archived) {
+        let ord = field.to_ordinal_date();
+        ord.resolve(pos, ((), ()), out);
+    }
+}
+
+impl<S: Fallible + ?Sized> SerializeWith<Date, S> for AsCalendarDate
+where
+    i32: Serialize<S>,
+{
+    fn serialize_with(field: &Date, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        let ord = field.to_ordinal_date();
+        ord.serialize(serializer)
+    }
+}
+
+impl<D: Fallible + ?Sized> DeserializeWith<Archived<(i32, u16)>, Date, D> for AsCalendarDate
+where
+    Archived<i32>: rkyv::Deserialize<i32, D>,
+{
+    fn deserialize_with(field: &Archived<(i32, u16)>, deserializer: &mut D) -> Result<Date, D::Error> {
+        use rkyv::Deserialize;
+        let (year, ordinal) = field.deserialize(deserializer)?;
+        Ok(Date::from_ordinal_date(year, ordinal).unwrap())
+    }
 }

@@ -3,7 +3,7 @@ use csv::Reader;
 use dbsp::{
     operator::FilterMap, CollectionHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, RootCircuit,
 };
-use serde::Deserialize;
+use rkyv::{Archive, Deserialize, with::Skip};
 use size_of::SizeOf;
 use time::Date;
 
@@ -17,12 +17,13 @@ use time::Date;
     PartialOrd,
     Hash,
     SizeOf,
-    bincode::Decode,
-    bincode::Encode,
+    Archive,
+    Serialize,
+    Deserialize,
 )]
 struct Record {
     location: String,
-    #[bincode(with_serde)]
+    #[with(Skip)]
     date: Date,
     daily_vaccinations: Option<u64>,
 }
