@@ -2238,7 +2238,6 @@ name = "dataflow-jit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "bitflags 2.3.3",
  "bitvec",
  "chrono",
@@ -2336,7 +2335,6 @@ dependencies = [
  "anyhow",
  "async-stream",
  "awc",
- "bincode",
  "bstr",
  "bytestring",
  "chrono",

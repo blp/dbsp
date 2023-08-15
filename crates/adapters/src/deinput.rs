@@ -404,7 +404,6 @@ mod test {
         format::string_record_deserializer, DeCollectionHandle, DeMapHandle, DeScalarHandle,
         DeScalarHandleImpl, DeSetHandle, DeZSetHandle,
     };
-    use bincode::{Decode, Encode};
     use csv::{Reader as CsvReader, Writer as CsvWriter};
     use dbsp::{
         algebra::F32, trace::Batch, DBSPHandle, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime,
@@ -419,8 +418,6 @@ mod test {
     #[derive(
         Clone,
         Debug,
-        Encode,
-        Decode,
         Default,
         Hash,
         PartialEq,
