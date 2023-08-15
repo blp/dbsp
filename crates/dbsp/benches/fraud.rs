@@ -87,9 +87,9 @@ use std::{
     hash::Hash,
     io::{stdin, Read},
     thread::spawn,
-    time::Instant,
 };
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use time::Instant;
+use chrono::{NaiveDate, NaiveDateTime};
 
 // TODO: add a test harness.
 
@@ -329,7 +329,7 @@ impl FraudBenchmark {
                 true => {
                     let chunk_start = Instant::now();
                     self.dbsp.step().unwrap();
-                    println!("compute: {}", Duration::from_std(chunk_start.elapsed()).unwrap());
+                    println!("compute: {}", chunk_start.elapsed());
                 }
                 false => {
                     self.dbsp.kill().unwrap();
@@ -349,7 +349,7 @@ impl FraudBenchmark {
                 })
                 .collect();
             self.transactions.append(&mut batch);
-            println!("{total_size} parsing: {} ", Duration::from_std(chunk_start.elapsed()).unwrap());
+            println!("{total_size} parsing: {} ", chunk_start.elapsed());
             total_size += batch_size;
 
             tx.send(true).unwrap();
@@ -358,7 +358,7 @@ impl FraudBenchmark {
         tx.send(false).unwrap();
         thread_handle.join().unwrap();
 
-        println!("total time: {}", Duration::from_std(start.elapsed()).unwrap());
+        println!("total time: {}", start.elapsed());
     }
 }
 
