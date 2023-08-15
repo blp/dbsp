@@ -13,6 +13,7 @@ use dbsp::{
 };
 use derive_more::{Add, AddAssign, From, Into, Neg, Sub};
 use paste::paste;
+use rkyv::Archive;
 use serde::{Deserialize, Serialize};
 use size_of::*;
 use sqlvalue::{SqlRow, SqlValue, ToSqlRow};
@@ -22,7 +23,6 @@ use sqlx::{
 };
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::{fs::File, io::BufReader, path::Path};
-use bincode::{Encode, Decode};
 
 pub fn read_csv<T, Weight>(source_file_path: &str) -> OrdZSet<T, Weight>
 where

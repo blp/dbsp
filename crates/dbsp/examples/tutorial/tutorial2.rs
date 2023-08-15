@@ -1,9 +1,9 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use csv::Reader;
 use dbsp::{CollectionHandle, RootCircuit, ZSet};
-use rkyv::{Archive, Archived, Serialize, with::{ArchiveWith, SerializeWith, DeserializeWith}, Resolver, Fallible};
+use rkyv::{Archive, Serialize};
 use size_of::SizeOf;
-use time::Date;
 
 #[derive(
     Clone,
@@ -16,13 +16,12 @@ use time::Date;
     SizeOf,
     Archive,
     Serialize,
-    serde::Deserialize,
     rkyv::Deserialize,
+    serde::Deserialize,
 )]
 struct Record {
     location: String,
-    #[with(AsCalendarDate)]
-    date: Date,
+    date: NaiveDate,
     daily_vaccinations: Option<u64>,
 }
 fn build_circuit(circuit: &mut RootCircuit) -> Result<CollectionHandle<Record, isize>> {
@@ -55,7 +54,7 @@ fn main() -> Result<()> {
     // ...read output from circuit...
     Ok(())
 }
-
+/*
 struct AsCalendarDate;
 
 impl ArchiveWith<Date> for AsCalendarDate {
@@ -82,9 +81,12 @@ impl<D: Fallible + ?Sized> DeserializeWith<Archived<(i32, u16)>, Date, D> for As
 where
     Archived<i32>: rkyv::Deserialize<i32, D>,
 {
-    fn deserialize_with(field: &Archived<(i32, u16)>, deserializer: &mut D) -> Result<Date, D::Error> {
-        use rkyv::Deserialize;
+    fn deserialize_with(
+        field: &Archived<(i32, u16)>,
+        deserializer: &mut D,
+    ) -> Result<Date, D::Error> {
         let (year, ordinal) = field.deserialize(deserializer)?;
         Ok(Date::from_ordinal_date(year, ordinal).unwrap())
     }
 }
+*/

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{Datelike, NaiveDate};
 use csv::Reader;
 use dbsp::{
     operator::{
@@ -7,14 +8,12 @@ use dbsp::{
     },
     CollectionHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, RootCircuit,
 };
-use rkyv::{Archive, Deserialize, with::Skip};
+use rkyv::{Archive, Serialize};
 use size_of::SizeOf;
-use time::Date;
 
 #[derive(
     Clone,
     Debug,
-    Deserialize,
     Eq,
     PartialEq,
     Ord,
@@ -23,12 +22,12 @@ use time::Date;
     SizeOf,
     Archive,
     Serialize,
-    Deserialize
+    rkyv::Deserialize,
+    serde::Deserialize,
 )]
 struct Record {
     location: String,
-    #[with(Skip)]
-    date: Date,
+    date: NaiveDate,
     daily_vaccinations: Option<u64>,
 }
 

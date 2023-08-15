@@ -108,7 +108,7 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case::decimal_price_converted(2_000_000, 0, "", zset![Q14Output(1, Decimal::new(1_816_000_000, 3), BidTimeType::Night, 0, ArcStr::new(), 0) => 1])]
+    #[case::decimal_price_converted(2_000_000, 0, "", zset![Q14Output(1, 1, Decimal::new(1_816_000_000, 3), BidTimeType::Night, 0, ArcStr::new(), 0) => 1])]
     #[case::decimal_price_converted_outside_range(1_000_000, 0, "", zset![])]
     #[case::decimal_price_converted_on_exclusive_boundary(1_000_000, 0, "", zset![])]
     #[case::date_time_is_nighttime(2_000_000, 20*60*60*1000 + 1, "", zset![Q14Output(1, 1, Decimal::new(1_816_000_000, 3), BidTimeType::Night, 20*60*60*1000 + 1, ArcStr::new(), 0) => 1])]

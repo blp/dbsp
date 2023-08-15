@@ -3,9 +3,9 @@ use csv::Reader;
 use dbsp::{
     operator::FilterMap, CollectionHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, RootCircuit,
 };
-use rkyv::{Archive, Serialize, Deserialize, with::Skip};
+use rkyv::{Archive, Serialize};
 use size_of::SizeOf;
-use time::Date;
+use chrono::{NaiveDate, Datelike};
 
 #[derive(
     Clone,
@@ -18,17 +18,17 @@ use time::Date;
     SizeOf,
     Archive,
     Serialize,
-    Deserialize,
+    rkyv::Deserialize,
+    serde::Deserialize,
 )]
 struct Record {
     location: String,
-    #[with(Skip)]
-    date: Date,
+    date: NaiveDate,
     daily_vaccinations: Option<u64>,
 }
 
 #[derive(
-    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, SizeOf, Archive, Serialize, Deserialize,
+    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, SizeOf, Archive, Serialize, rkyv::Deserialize, serde::Deserialize,
 )]
 struct VaxMonthly {
     count: u64,

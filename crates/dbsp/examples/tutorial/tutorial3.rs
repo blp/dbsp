@@ -1,14 +1,13 @@
 use anyhow::Result;
 use csv::Reader;
 use dbsp::{operator::FilterMap, CollectionHandle, OrdZSet, OutputHandle, RootCircuit, ZSet};
-use rkyv::{Archive, Deserialize, with::Skip};
+use rkyv::{Archive, Serialize};
 use size_of::SizeOf;
-use time::Date;
+use chrono::NaiveDate;
 
 #[derive(
     Clone,
     Debug,
-    Deserialize,
     Eq,
     PartialEq,
     Ord,
@@ -17,12 +16,12 @@ use time::Date;
     SizeOf,
     Archive,
     Serialize,
-    Deserialize,
+    rkyv::Deserialize,
+    serde::Deserialize,
 )]
 struct Record {
     location: String,
-    #[with(Skip)]
-    date: Date,
+    date: NaiveDate,
     daily_vaccinations: Option<u64>,
 }
 fn build_circuit(
