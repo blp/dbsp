@@ -1573,6 +1573,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "rkyv",
  "serde",
  "time 0.1.45",
  "wasm-bindgen",
@@ -2285,6 +2286,7 @@ dependencies = [
  "arcstr",
  "bincode",
  "bitvec",
+ "chrono",
  "clap 3.2.25",
  "criterion",
  "crossbeam",
@@ -4006,6 +4008,7 @@ checksum = "2fc2dbde8f8a79f2102cc474ceb0ad68e3b80b85289ea62389b60e66777e4213"
 dependencies = [
  "num-traits",
  "rand",
+ "rkyv",
  "serde",
 ]
 
@@ -5498,7 +5501,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4e36eca171fddeda53901b0a436573b3f2391eaa9189d439b2bd8ea8cebd7e3"
 dependencies = [
  "arcstr",
+ "chrono",
  "hashbrown 0.13.2",
+ "ordered-float",
  "rust_decimal",
  "size-of-derive",
  "time 0.3.22",
