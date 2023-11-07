@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 18ec2ffbf45bbf1413b6d7539bce7e92700c0473509f67360a334e67c02593de # shrinks to cl = ColumnLayer { keys: [], diffs: [], lower_bound: 0 }

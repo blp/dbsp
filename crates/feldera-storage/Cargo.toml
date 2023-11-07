@@ -1,0 +1,20 @@
+[package]
+name = "feldera-storage"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rkyv = { version = "0.7.42", default-features = false, features = ["std", "size_64", "validation"] }
+arcstr = { version = "1.1.5" }
+dbsp = { path = "../dbsp" }
+size-of = { version = "0.1.5", features = ["hashbrown", "time-std", "xxhash-xxh3", "arcstr", "chrono", "ordered-float"] }
+rand = "0.8.5"
+
+#[dependencies.cfg(target_os = "linux")]
+#io-uring = "0.6"
+
+[dev-dependencies]
+proptest = "1.4.0"
+proptest-derive = "0.4.0"
