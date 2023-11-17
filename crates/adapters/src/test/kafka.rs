@@ -18,6 +18,7 @@ use rdkafka::{
     ClientConfig, ClientContext, Message,
 };
 use std::{
+    env,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -154,16 +155,18 @@ impl KafkaResources {
 
 impl Drop for KafkaResources {
     fn drop(&mut self) {
-        let topic_names = self
-            .topics
-            .iter()
-            .map(|topic_name| &**topic_name)
-            .collect::<Vec<_>>();
-        let _ = block_on(
-            self.admin_client
-                .delete_topics(&topic_names, &AdminOptions::new()),
-        )
-        .map_err(|e| error!("Failed to delete topics {topic_names:?}: {e}"));
+        if env::var("TEST_KEEP_KAFKA_TOPICS").is_err() {
+            let topic_names = self
+                .topics
+                .iter()
+                .map(|topic_name| &**topic_name)
+                .collect::<Vec<_>>();
+            let _ = block_on(
+                self.admin_client
+                    .delete_topics(&topic_names, &AdminOptions::new()),
+            )
+            .map_err(|e| error!("Failed to delete topics {topic_names:?}: {e}"));
+        }
     }
 }
 
