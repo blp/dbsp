@@ -72,7 +72,9 @@ fn wait_for_completion<C: ClientContext>(admin_client: &AdminClient<C>, topics: 
     let mut backoff = 100;
     let mut n_retries = 0;
     while let Err(err) = check_topics(admin_client.inner(), topics) {
-        info!("KafkaResources::create_topics {topic_names:?}: unable to connect to newly created topics, retrying: {err}");
+        if n_retries > 0 {
+            info!("KafkaResources::create_topics {topic_names:?}: unable to connect to newly created topics, retrying: {err}");
+        }
         if start.elapsed() > MAX_TOPIC_PROBE_TIMEOUT {
             panic!("KafkaResources::create_topics {topic_names:?}: unable to connect to newly created topics, giving up after {}ms: {err}", MAX_TOPIC_PROBE_TIMEOUT.as_millis());
         }
@@ -80,7 +82,7 @@ fn wait_for_completion<C: ClientContext>(admin_client: &AdminClient<C>, topics: 
         backoff = 1000.min(backoff * 2);
         n_retries += 1;
     }
-    if n_retries > 0 {
+    if n_retries > 1 {
         info!("KafkaResources::create_topics {topic_names:?}: success after {n_retries} tries");
     }
 }
