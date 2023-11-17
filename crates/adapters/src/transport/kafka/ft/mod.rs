@@ -48,6 +48,9 @@ use super::{rdkafka_loglevel_from, DeferredLogging};
 #[cfg(test)]
 pub mod test;
 
+#[cfg(test)]
+pub mod model_test;
+
 const POLL_TIMEOUT: Duration = Duration::from_millis(1);
 
 /// Set `option` to `val`; return an error if `option` is set to a different

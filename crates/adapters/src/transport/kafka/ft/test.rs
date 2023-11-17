@@ -67,7 +67,7 @@ fn wait_for_output_unordered(zset: &MockDeZSet<TestStruct>, data: &[Vec<TestStru
     assert_eq!(zset_sorted, data_sorted);
 }
 
-fn init_test_logger() {
+pub(crate) fn init_test_logger() {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
         .is_test(true)
         .format(move |buf, record| {
@@ -136,7 +136,7 @@ fn ft_kafka_end_to_end_test(
     let output_topic = format!("{test_name}_output_topic_{uuid}");
 
     // Create topics.
-    let mut _kafka_resources = KafkaResources::create_topics(&[
+    let _kafka_resources = KafkaResources::create_topics(&[
         (&input_topic, 1),
         (&input_index_topic, 0),
         (&output_topic, 1),
@@ -406,7 +406,7 @@ struct DummyInputReceiver {
 struct DummyInputReceiverInner {
     unparker: Unparker,
     calls: Mutex<Vec<ConsumerCall>>,
-    committed: Mutex<Option<Step>>,
+    completed: Mutex<Option<Step>>,
 }
 
 impl DummyInputReceiver {
@@ -417,13 +417,13 @@ impl DummyInputReceiver {
             inner: Arc::new(DummyInputReceiverInner {
                 unparker,
                 calls: Mutex::new(Vec::new()),
-                committed: Mutex::new(None),
+                completed: Mutex::new(None),
             }),
             parker,
         }
     }
 
-    /// Wait some time for the input consumer to report that `committed` was
+    /// Wait some time for the input consumer to report that `completed` was
     /// called.  However, we don't expect it to have been called, so we panic
     /// with an error if it has.
     ///
@@ -474,8 +474,8 @@ impl DummyInputReceiver {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             assert!(Instant::now() < deadline);
-            if let Some(committed) = *self.inner.committed.lock().unwrap() {
-                if committed >= step {
+            if let Some(completed) = *self.inner.completed.lock().unwrap() {
+                if completed >= step {
                     return;
                 }
             }
@@ -527,7 +527,7 @@ impl InputConsumer for DummyInputConsumer {
     }
     fn committed(&mut self, step: Step) {
         info!("step {step} committed");
-        let mut completed = self.0.committed.lock().unwrap();
+        let mut completed = self.0.completed.lock().unwrap();
         if let Some(committed) = *completed {
             assert_eq!(committed + 1, step);
         }

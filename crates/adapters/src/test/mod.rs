@@ -23,6 +23,8 @@ mod mock_dezset;
 mod mock_input_consumer;
 mod mock_output_consumer;
 
+pub mod model_test;
+
 pub use data::{
     generate_test_batch, generate_test_batches, generate_test_batches_with_weights, TestStruct,
 };
