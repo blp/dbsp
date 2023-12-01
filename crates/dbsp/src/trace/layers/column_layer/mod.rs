@@ -43,7 +43,7 @@ where
     pub lower_bound: usize,
 }
 
-#[cfg(feature = "proptest-derive")]
+#[cfg(feature = "with-arbitrary")]
 impl<K: Arbitrary + 'static, R: Arbitrary + 'static> Arbitrary for ColumnLayer<K, R> {
     type Parameters = usize;
 

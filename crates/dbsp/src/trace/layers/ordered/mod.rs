@@ -30,7 +30,7 @@ use textwrap::indent;
 /// .. offs[i+1]]`.
 // False positive from clippy
 #[derive(Debug, SizeOf, PartialEq, Eq, Clone, Archive, Serialize, Deserialize)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(feature = "with-arbitrary", derive(proptest_derive::Arbitrary))]
 pub struct OrderedLayer<K, L, O = usize>
 where
     K: 'static,
