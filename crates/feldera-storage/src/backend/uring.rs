@@ -1,13 +1,11 @@
+use crate::backend::StorageBackend;
+use io_uring::squeue::Entry;
+use io_uring::{opcode, types, IoUring};
+use rkyv::AlignedVec;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io;
-use io_uring::squeue::Entry;
-use io_uring::{IoUring, opcode, types};
-use io_uring::{opcode, types};
-use io_uring::squeue::Entry;
-use rkyv::AlignedVec;
-use std::os::fd::{AsRawFd};
-use crate::backend::StorageBackend;
+use std::os::fd::AsRawFd;
 
 pub(crate) fn make_write_entry(fd: &File, offset: u64, buf: &AlignedVec) -> Entry {
     opcode::Write::new(types::Fd(fd.as_raw_fd()), buf.as_ptr(), buf.len() as _)
@@ -21,13 +19,13 @@ pub(crate) fn make_read_entry(fd: &File, offset: u64, buf: &mut AlignedVec) -> E
         buf.as_mut_ptr(),
         buf.capacity() as _,
     )
-        .offset(offset)
-        .build()
+    .offset(offset)
+    .build()
 }
 
-struct IoUringBackend {
+pub(crate) struct IoUringBackend {
     ring: IoUring,
-    outstanding: VecDeque<AlignedVec>
+    outstanding: VecDeque<AlignedVec>,
 }
 
 impl StorageBackend for IoUringBackend {
@@ -37,11 +35,9 @@ impl StorageBackend for IoUringBackend {
         offset: u64,
         buf: AlignedVec,
         reply_with: u64,
-    ) -> io::Result<()>
-    {
+    ) -> io::Result<()> {
         println!("submit_write len buf: {:?} at offset {offset}", buf.len());
-        let write_entry =
-            uring::make_write_entry(&fd, offset, &buf).user_data(reply_with);
+        let write_entry = make_write_entry(&fd, offset, &buf).user_data(reply_with);
         self.outstanding.push_back(buf);
         self.submit_entry(write_entry)?;
         Ok(())
@@ -93,10 +89,14 @@ impl StorageBackend for IoUringBackend {
 }
 
 impl IoUringBackend {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         let ring = IoUring::new(8)?;
-        Ok(Self { ring, outstanding: VecDeque::with_capacity(1) })
+        Ok(Self {
+            ring,
+            outstanding: VecDeque::with_capacity(1),
+        })
     }
+
     fn submit_entry(&mut self, entry: Entry) -> io::Result<()> {
         // TODO the unsafe here probably isn't at the right place and we can
         // make it safer

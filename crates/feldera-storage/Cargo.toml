@@ -12,8 +12,8 @@ dbsp = { path = "../dbsp" }
 size-of = { version = "0.1.5", features = ["hashbrown", "time-std", "xxhash-xxh3", "arcstr", "chrono", "ordered-float"] }
 rand = "0.8.5"
 
-#[dependencies.cfg(target_os = "linux")]
-#io-uring = "0.6"
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.6"
 
 [dev-dependencies]
 dbsp = { path = "../dbsp", features = [ "with-arbitrary" ] }

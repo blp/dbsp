@@ -3,14 +3,15 @@ use std::fs::File;
 use std::io;
 
 pub(crate) mod fs;
-//mod uring;
+#[cfg(target_os = "linux")]
+mod uring;
 
 pub(crate) mod metadata;
 
 pub(crate) const FILE_VERSION_FORMAT: u32 = 0x01;
 
 pub(crate) enum Backend {
-    #[allow(unused)]
+    #[cfg(target_os = "linux")]
     IoUring,
     Posix,
 }
@@ -18,7 +19,8 @@ pub(crate) enum Backend {
 impl Backend {
     pub(crate) fn create(&self) -> Box<dyn StorageBackend> {
         match self {
-            Backend::IoUring => unreachable!(), // Box::new(IoUringBackend::new()),
+            #[cfg(target_os = "linux")]
+            Backend::IoUring => Box::new(uring::IoUringBackend::new().unwrap()),
             Backend::Posix => Box::new(fs::PosixBackend::new()),
         }
     }
