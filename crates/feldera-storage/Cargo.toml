@@ -16,5 +16,6 @@ rand = "0.8.5"
 #io-uring = "0.6"
 
 [dev-dependencies]
-proptest = "1.4.0"
-proptest-derive = "0.4.0"
+dbsp = { path = "../dbsp", features = [ "with-arbitrary" ] }
+proptest-derive = { version = "0.3.0" }
+proptest = { version = "1.0.0" }
