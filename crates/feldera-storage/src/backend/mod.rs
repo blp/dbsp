@@ -10,7 +10,7 @@ pub(crate) mod metadata;
 
 pub(crate) const FILE_VERSION_FORMAT: u32 = 0x01;
 
-pub(crate) enum Backend {
+pub enum Backend {
     #[cfg(target_os = "linux")]
     IoUring,
     Posix,
@@ -26,7 +26,7 @@ impl Backend {
     }
 }
 
-pub(crate) trait StorageBackend {
+pub trait StorageBackend {
     fn submit_write(
         &mut self,
         fd: &File,

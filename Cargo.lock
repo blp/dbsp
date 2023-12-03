@@ -2634,11 +2634,13 @@ dependencies = [
  "arcstr",
  "dbsp",
  "io-uring",
+ "log",
  "proptest",
  "proptest-derive",
  "rand 0.8.5",
  "rkyv",
  "size-of 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "textwrap 0.15.2",
 ]
 
 [[package]]

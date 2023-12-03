@@ -1,6 +1,5 @@
-use rkyv::{Deserialize, Infallible};
 use std::cell::RefCell;
-use std::fmt::{self, Display};
+use std::fmt::{self, Debug, Display};
 
 use crate::Persistence;
 use dbsp::trace::Deserializable;
@@ -14,8 +13,8 @@ use super::PersistedColumnLayer;
 #[derive(Debug, Clone)]
 pub struct ScrapSpace<K, R>
 where
-    K: DBData,
-    R: DBWeight,
+    K: Clone + Debug,
+    R: Clone + Debug,
 {
     pub(crate) cur_key: RefCell<Option<K>>,
     pub(crate) cur_r: RefCell<Option<R>>,
@@ -23,8 +22,8 @@ where
 
 impl<K, R> ScrapSpace<K, R>
 where
-    K: DBData,
-    R: DBWeight,
+    K: Clone + Debug,
+    R: Clone + Debug,
 {
     pub(crate) fn new() -> Self {
         Self {

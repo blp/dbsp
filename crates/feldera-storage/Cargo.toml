@@ -11,6 +11,8 @@ arcstr = { version = "1.1.5" }
 dbsp = { path = "../dbsp" }
 size-of = { version = "0.1.5", features = ["hashbrown", "time-std", "xxhash-xxh3", "arcstr", "chrono", "ordered-float"] }
 rand = "0.8.5"
+textwrap = "0.15.0"
+log = "0.4.20"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.6"

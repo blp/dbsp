@@ -1,5 +1,5 @@
 mod builders;
-mod cursor;
+pub(crate) mod cursor;
 
 use rkyv::util::to_bytes;
 use rkyv::{AlignedVec, Archive, Deserialize};

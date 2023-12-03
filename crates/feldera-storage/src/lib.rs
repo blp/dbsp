@@ -2,14 +2,16 @@ use std::io;
 use std::path::Path;
 
 use crate::backend::{Backend, StorageBackend};
+use dbsp::trace::layers::Trie;
 use dbsp::trace::{Deserializable, Serializer};
 use rkyv::{Archive, Infallible, Serialize};
 
 mod backend;
 mod column_layer;
 mod ordered_layer;
+mod utils;
 
-pub(crate) trait Persistence {
+pub trait Persistence {
     type Persist: Archive + Serialize<Serializer> + Deserializable;
 
     fn data(&self) -> &<<Self as Persistence>::Persist as Archive>::Archived;
