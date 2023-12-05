@@ -154,10 +154,8 @@ where
         unsafe { self.assume_invariants() }
 
         let (trie1, trie2) = (cursor1.storage(), cursor2.storage());
-        unsafe {
-            trie1.assume_invariants();
-            trie2.assume_invariants();
-        }
+        trie1.assume_invariants();
+        trie2.assume_invariants();
 
         let (_, upper1) = cursor1.bounds();
         let mut lower1 = cursor1.position();

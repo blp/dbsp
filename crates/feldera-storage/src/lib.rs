@@ -2,7 +2,6 @@ use std::io;
 use std::path::Path;
 
 use crate::backend::{Backend, StorageBackend};
-use dbsp::trace::layers::Trie;
 use dbsp::trace::{Deserializable, Serializer};
 use rkyv::{Archive, Infallible, Serialize};
 

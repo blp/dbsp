@@ -18,7 +18,7 @@ use std::path::Path;
 use crate::backend::metadata::{FileHeader, Metadata, PageSection};
 use crate::backend::{Backend, StorageBackend, FILE_VERSION_FORMAT};
 use crate::column_layer::builders::PersistedColumnLayerBuilder;
-use crate::column_layer::cursor::{PersistedColumnLayerCursor, ScrapSpace};
+use crate::column_layer::cursor::PersistedColumnLayerCursor;
 use crate::{Infallible, Persistence};
 
 pub struct PersistedColumnLayer<K, R> {
@@ -166,7 +166,7 @@ where
     }
 
     fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor<'_> {
-        unsafe { self.assume_invariants() }
+        self.assume_invariants();
         PersistedColumnLayerCursor::new(lower, self, (lower, upper))
     }
 
