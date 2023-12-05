@@ -6,9 +6,9 @@ pub(crate) mod fs;
 #[cfg(target_os = "linux")]
 mod uring;
 
-pub(crate) mod metadata;
+pub mod metadata;
 
-pub(crate) const FILE_VERSION_FORMAT: u32 = 0x01;
+pub const FILE_VERSION_FORMAT: u32 = 0x01;
 
 pub enum Backend {
     #[cfg(target_os = "linux")]
@@ -17,7 +17,7 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub(crate) fn create(&self) -> Box<dyn StorageBackend> {
+    pub fn create(&self) -> Box<dyn StorageBackend> {
         match self {
             #[cfg(target_os = "linux")]
             Backend::IoUring => Box::new(uring::IoUringBackend::new().unwrap()),

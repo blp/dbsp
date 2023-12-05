@@ -1,8 +1,9 @@
-use dbsp::trace::Deserializable;
 use rand::{seq::index::sample, Rng};
 use rkyv::{Archive, Deserialize, Infallible};
 use std::fmt::Display;
 use std::hint::unreachable_unchecked;
+
+use crate::trace::Deserializable;
 
 /// Tells the optimizer that a condition is always true
 ///

@@ -2,24 +2,25 @@ mod builders;
 pub(crate) mod cursor;
 
 use rkyv::util::to_bytes;
-use rkyv::{AlignedVec, Archive, Deserialize};
+use rkyv::{AlignedVec, Archive, Deserialize, Infallible};
 use std::cmp::min;
 use std::fmt::Debug;
 use std::fs::OpenOptions;
 use std::io;
 
-use dbsp::algebra::MonoidValue;
-use dbsp::trace::layers::column_layer::{ArchivedColumnLayer, ColumnLayer};
-use dbsp::trace::layers::Trie;
-use dbsp::trace::Deserializable;
-use dbsp::{DBData, DBWeight};
+use crate::algebra::MonoidValue;
+use crate::trace::layers::column_layer::{ArchivedColumnLayer, ColumnLayer};
+use crate::trace::layers::persistent::column_layer::builders::PersistedColumnLayerBuilder;
+use crate::trace::layers::persistent::column_layer::cursor::PersistedColumnLayerCursor;
+use crate::trace::layers::Trie;
+use crate::trace::Deserializable;
+use crate::{DBData, DBWeight};
 use std::path::Path;
 
-use crate::backend::metadata::{FileHeader, Metadata, PageSection};
-use crate::backend::{Backend, StorageBackend, FILE_VERSION_FORMAT};
-use crate::column_layer::builders::PersistedColumnLayerBuilder;
-use crate::column_layer::cursor::PersistedColumnLayerCursor;
-use crate::{Infallible, Persistence};
+use super::Persistence;
+
+use feldera_storage::backend::metadata::{FileHeader, Metadata, PageSection};
+use feldera_storage::backend::{Backend, StorageBackend, FILE_VERSION_FORMAT};
 
 pub struct PersistedColumnLayer<K, R> {
     header: FileHeader,
@@ -184,8 +185,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::column_layer::ColumnLayer;
-    use crate::test::mkcl;
+    use crate::trace::layers::column_layer::ColumnLayer;
+    use crate::trace::layers::persistent::tests::mkcl;
     use proptest::proptest;
 
     fn write_cl_to_file<K: DBData, V: DBWeight>(

@@ -11,6 +11,10 @@ pub mod erased;
 pub mod ordered;
 pub mod ordered_leaf;
 pub mod unordered;
+
+#[cfg(feature = "persistence2")]
+pub mod persistent;
+
 // pub mod hashed;
 // pub mod weighted;
 

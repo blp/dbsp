@@ -1,14 +1,16 @@
-use crate::column_layer::PersistedColumnLayer;
-use crate::Persistence;
-use dbsp::algebra::{AddAssignByRef, HasZero, MonoidValue};
-use dbsp::trace::Deserializable;
-use dbsp::{
+use std::cmp::{min, Ordering};
+
+use rkyv::{Archive, Deserialize, Infallible};
+use size_of::SizeOf;
+
+use super::PersistedColumnLayer;
+use crate::algebra::{AddAssignByRef, HasZero, MonoidValue};
+use crate::trace::layers::persistent::Persistence;
+use crate::trace::Deserializable;
+use crate::{
     trace::layers::{advance, Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
     DBData, DBWeight,
 };
-use rkyv::{Archive, Deserialize, Infallible};
-use size_of::SizeOf;
-use std::cmp::{min, Ordering};
 
 /// A builder for ordered values
 #[derive(SizeOf, Debug, Clone)]

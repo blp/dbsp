@@ -7,9 +7,10 @@ use std::{
     ops::{Add, AddAssign, Neg},
 };
 
-use dbsp::trace::Deserializable;
-use dbsp::{
+use crate::trace::Deserializable;
+use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
+    trace::layers::persistent::column_layer::cursor::ScrapSpace,
     trace::layers::{
         advance, retreat, Builder, Cursor, MergeBuilder, OrdOffset, Trie, TupleBuilder,
     },
@@ -20,10 +21,10 @@ use rkyv::{AlignedVec, Archive, Deserialize, Infallible, Serialize};
 use size_of::SizeOf;
 use textwrap::indent;
 
-use crate::backend::metadata::{FileHeader, Metadata};
-use crate::column_layer::cursor::ScrapSpace;
-use crate::utils::sample_slice;
-use crate::Persistence;
+use super::utils::sample_slice;
+use super::Persistence;
+
+use feldera_storage::backend::metadata::{FileHeader, Metadata};
 
 /// A level of the trie, with keys and offsets into a lower layer.
 ///

@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 use std::fmt::{self, Debug, Display};
 
-use crate::Persistence;
-use dbsp::trace::Deserializable;
-use dbsp::{
+use crate::trace::Deserializable;
+use crate::{
+    trace::layers::persistent::Persistence,
     trace::layers::{advance, retreat, Cursor},
     DBData, DBWeight,
 };

@@ -2187,6 +2187,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-utils",
  "csv",
+ "feldera-storage",
  "futures",
  "hashbrown 0.14.2",
  "impl-trait-for-tuples",
@@ -2632,7 +2633,6 @@ name = "feldera-storage"
 version = "0.1.0"
 dependencies = [
  "arcstr",
- "dbsp",
  "io-uring",
  "log",
  "proptest",
