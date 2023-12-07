@@ -12,7 +12,7 @@ pub fn advance<T, F>(slice: &[T], function: F) -> usize
 where
     F: Fn(&T) -> bool,
 {
-    advance_raw::<T, F, DEFAULT_SMALL_LIMIT>(slice, function)
+    advance_raw::<_, DEFAULT_SMALL_LIMIT>(slice.len(), |index| function(&slice[index]))
 }
 
 /// Reports the number of elements satisfying the predicate with the additional
@@ -22,21 +22,21 @@ where
 /// stays false once it becomes false, a joint property of the predicate
 /// and the slice. This allows `advance` to use exponential search to
 /// count the number of elements in time logarithmic in the result.
-pub fn advance_raw<T, F, const SMALL_LIMIT: usize>(slice: &[T], function: F) -> usize
+pub fn advance_raw<F, const SMALL_LIMIT: usize>(len: usize, function: F) -> usize
 where
-    F: Fn(&T) -> bool,
+    F: Fn(usize) -> bool,
 {
     // Exponential search if the answer isn't within `SMALL_LIMIT`.
-    if slice.len() > SMALL_LIMIT && function(&slice[SMALL_LIMIT]) {
+    if len > SMALL_LIMIT && function(SMALL_LIMIT) {
         // Skip `slice[..SMALL_LIMIT]` outright, the above condition established
         // that nothing within it satisfies the predicate
         let mut index = SMALL_LIMIT + 1;
 
         // FIXME: This is kinda weird
-        if index < slice.len() && function(&slice[index]) {
+        if index < len && function(index) {
             // Advance in exponentially growing steps
             let mut step = 1;
-            while index + step < slice.len() && function(&slice[index + step]) {
+            while index + step < len && function(index + step) {
                 index += step;
                 step <<= 1;
             }
@@ -44,7 +44,7 @@ where
             // Advance in exponentially shrinking steps
             step >>= 1;
             while step > 0 {
-                if index + step < slice.len() && function(&slice[index + step]) {
+                if index + step < len && function(index + step) {
                     index += step;
                 }
                 step >>= 1;
@@ -60,10 +60,9 @@ where
     } else {
         // Clamp to the length of the slice, this branch will also be hit if the slice
         // is smaller than SMALL_LIMIT
-        let limit = min(slice.len(), SMALL_LIMIT);
+        let limit = min(len, SMALL_LIMIT);
 
-        slice[..limit]
-            .iter()
+        (0..limit)
             .position(|x| !function(x))
             // If nothing within `slice[..limit]` satisfies the predicate, we can advance
             // past the searched prefix

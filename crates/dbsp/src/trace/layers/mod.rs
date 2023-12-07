@@ -15,6 +15,8 @@ pub mod unordered;
 #[cfg(feature = "persistence2")]
 pub mod persistent;
 
+pub mod file;
+
 // pub mod hashed;
 // pub mod weighted;
 
