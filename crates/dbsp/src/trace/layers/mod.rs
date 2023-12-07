@@ -12,8 +12,10 @@ pub mod ordered;
 pub mod ordered_leaf;
 pub mod unordered;
 
-#[cfg(feature = "persistence2")]
-pub mod persistent;
+//#[cfg(feature = "persistence2")]
+//pub mod persistent;
+
+pub mod file;
 
 // pub mod hashed;
 // pub mod weighted;

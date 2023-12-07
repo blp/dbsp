@@ -4,6 +4,7 @@ use crate::trace::Cursor;
 use num::PrimInt;
 use std::{
     cmp::max,
+    fmt::Debug,
     marker::PhantomData,
     ops::{Add, Neg, Sub},
 };
@@ -263,7 +264,7 @@ where
 
 impl<TS, V, R, C> RangeCursor<TS, V, R, C>
 where
-    TS: PrimInt,
+    TS: PrimInt + Debug,
     C: Cursor<TS, V, (), R>,
 {
     /// Create a new `RangeCursor` that restricts keys in `cursor` to `ranges`.
@@ -300,7 +301,7 @@ where
 
 impl<TS, V, R, C> Cursor<TS, V, (), R> for RangeCursor<TS, V, R, C>
 where
-    TS: PrimInt,
+    TS: PrimInt + Debug,
     C: Cursor<TS, V, (), R>,
 {
     fn key_valid(&self) -> bool {

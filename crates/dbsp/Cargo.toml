@@ -22,7 +22,6 @@ publish = true
 # main.yml and coverage.yml:
 default = ["with-serde"]
 persistence = ["rocksdb", "uuid"]
-persistence2 = ["feldera-storage"]
 with-serde = ["serde"]
 with-csv = ["csv"]
 with-arbitrary = ["proptest", "proptest-derive"]
@@ -61,7 +60,9 @@ tokio = { version = "1.25.0", features = ["macros", "rt", "rt-multi-thread"] }
 log = "0.4.20"
 proptest-derive = { version = "0.3.0", optional = true }
 proptest = { version = "1.0.0", optional = true }
-feldera-storage = { path = "../feldera-storage", optional = true }
+feldera-storage = { path = "../feldera-storage" }
+tempfile = "3.8.1"
+ouroboros = "0.18.1"
 
 [dev-dependencies]
 csv = "1.2.2"
