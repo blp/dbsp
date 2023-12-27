@@ -2,13 +2,13 @@
 
 //pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
-    reader::Reader,
+    reader::{Cursor as FileCursor, Reader},
     writer::{Parameters, Writer2},
 };
 use tempfile::tempfile;
 
 use crate::{
-    trace::layers::{Builder, Cursor, MergeBuilder, OrdOffset, Trie, TupleBuilder},
+    trace::layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
     DBData, DBWeight, NumEntries,
 };
 use std::{
@@ -17,7 +17,6 @@ use std::{
     fs::File,
     marker::PhantomData,
 };
-use textwrap::indent;
 
 pub struct FileOrderedLayer<K, V, R>
 where
@@ -112,7 +111,7 @@ where
         todo!()
     }
 
-    fn done(mut self) -> Self::Trie {
+    fn done(self) -> Self::Trie {
         FileOrderedLayer {
             file: Reader::new(self.0.close().unwrap()).unwrap(),
             lower_bound: 0,
@@ -149,7 +148,8 @@ where
                 self.0.write2(value_cursor.item()).unwrap();
                 value_cursor.step();
             }
-            self.0.write1(cursor.item()).unwrap();
+            let item = cursor.take_current_item().unwrap();
+            self.0.write1((&item.0, &item.1)).unwrap();
             cursor.step();
         }
     }
@@ -166,13 +166,14 @@ where
         let mut cursor = other.cursor_from(lower, upper);
         while cursor.valid() {
             let item = cursor.current_item();
-            if filter(item) {
+            if filter(&item.0) {
                 let mut value_cursor = cursor.values();
                 while value_cursor.valid() {
                     self.0.write2(value_cursor.item()).unwrap();
                     value_cursor.step();
                 }
-                self.0.write1(cursor.current_item()).unwrap();
+                let item = cursor.take_current_item().unwrap();
+                self.0.write1((&item.0, &item.1)).unwrap();
             }
             cursor.step();
         }
@@ -219,7 +220,7 @@ where
     }
 
     fn tuples(&self) -> usize {
-        self.vals.tuples()
+        todo!()
     }
 
     fn push_tuple(&mut self, (key, val): (K, (V, R))) {
@@ -227,7 +228,6 @@ where
     }
 }
 
-/// A cursor with a child cursor that is updated as we move.
 #[derive(Debug)]
 pub struct FileOrderedCursor<'s, K, V, R>
 where
@@ -235,7 +235,30 @@ where
     V: DBData,
     R: DBWeight,
 {
-    data: PhantomData<&'s (K, V, R)>
+    storage: &'s FileOrderedLayer<K, V, R>,
+    item: Option<(K, ())>,
+    cursor: FileCursor<'s, K, ()>,
+}
+
+impl<'s, K, V, R> FileOrderedCursor<'s, K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    pub fn current_key(&self) -> &K {
+        &self.item.as_ref().unwrap().0
+    }
+
+    pub fn current_item(&self) -> &(K, ()) {
+        self.item.as_ref().unwrap()
+    }
+
+    pub fn take_current_item(&mut self) -> Option<(K, ())> {
+        let item = self.item.take();
+        self.step();
+        item
+    }
 }
 
 impl<'s, K, V, R> Cursor<'s> for FileOrderedCursor<'s, K, V, R>
@@ -250,40 +273,22 @@ where
     where
         Self: 'k;
 
-    type ValueCursor = L::Cursor<'s>;
+    type ValueCursor = FileOrderedValueCursor<'s, K, V, R>;
 
-    #[inline]
     fn keys(&self) -> usize {
-        self.bounds.1 - self.bounds.0
+        todo!()
     }
 
-    #[inline]
     fn item(&self) -> Self::Item<'s> {
-        &self.storage.keys[self.pos as usize]
+        todo!()
     }
 
-    fn values(&self) -> L::Cursor<'s> {
-        if self.valid() {
-            self.storage.vals.cursor_from(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            )
-        } else {
-            self.storage.vals.cursor_from(0, 0)
-        }
+    fn values(&self) -> FileOrderedValueCursor<'s, K, V, R> {
+        todo!()
     }
 
     fn step(&mut self) {
-        self.pos += 1;
-
-        if self.pos < self.bounds.1 as isize {
-            self.child.reposition(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            );
-        } else {
-            self.pos = self.bounds.1 as isize;
-        }
+        todo!()
     }
 
     fn seek(&mut self, key: &Self::Key) {
@@ -291,47 +296,23 @@ where
     }
 
     fn valid(&self) -> bool {
-        self.pos >= self.bounds.0 as isize && self.pos < self.bounds.1 as isize
+        todo!()
     }
 
     fn rewind(&mut self) {
-        self.pos = self.bounds.0 as isize;
-
-        if self.valid() {
-            self.child.reposition(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            );
-        }
+        todo!()
     }
 
     fn position(&self) -> usize {
-        self.pos as usize
+        todo!()
     }
 
     fn reposition(&mut self, lower: usize, upper: usize) {
-        self.pos = lower as isize;
-        self.bounds = (lower, upper);
-
-        if self.valid() {
-            self.child.reposition(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            );
-        }
+        todo!()
     }
 
     fn step_reverse(&mut self) {
-        self.pos -= 1;
-
-        if self.pos >= self.bounds.0 as isize {
-            self.child.reposition(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            );
-        } else {
-            self.pos = self.bounds.0 as isize - 1;
-        }
+        todo!()
     }
 
     fn seek_reverse(&mut self, key: &Self::Key) {
@@ -339,14 +320,7 @@ where
     }
 
     fn fast_forward(&mut self) {
-        self.pos = self.bounds.1 as isize - 1;
-
-        if self.valid() {
-            self.child.reposition(
-                self.storage.offs[self.pos as usize].into_usize(),
-                self.storage.offs[self.pos as usize + 1].into_usize(),
-            );
-        }
+        todo!()
     }
 }
 
@@ -357,17 +331,80 @@ where
     R: DBWeight,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        let mut cursor: FileOrderedCursor<'_, K, V, R> = self.clone();
-
-        while cursor.valid() {
-            let key = cursor.item();
-            writeln!(f, "{key:?}:")?;
-            let val_str = cursor.values().to_string();
-
-            f.write_str(&indent(&val_str, "    "))?;
-            cursor.step();
-        }
-
-        Ok(())
+        todo!()
     }
 }
+
+#[derive(Debug)]
+pub struct FileOrderedValueCursor<'s, K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    storage: &'s FileOrderedLayer<K, V, R>,
+    item: Option<(V, R)>,
+    cursor: FileCursor<'s, V, R>,
+}
+
+impl<'s, K, V, R> Cursor<'s> for FileOrderedValueCursor<'s, K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    type Key = V;
+
+    type Item<'k> = (&'k V, &'k R)
+    where
+        Self: 'k;
+
+    type ValueCursor = ();
+
+    fn keys(&self) -> usize {
+        todo!()
+    }
+
+    fn item(&self) -> Self::Item<'s> {
+        todo!()
+    }
+
+    fn values(&self) {}
+
+    fn step(&mut self) {
+        todo!()
+    }
+
+    fn seek(&mut self, key: &Self::Key) {
+        todo!()
+    }
+
+    fn valid(&self) -> bool {
+        todo!()
+    }
+
+    fn rewind(&mut self) {
+        todo!()
+    }
+
+    fn position(&self) -> usize {
+        todo!()
+    }
+
+    fn reposition(&mut self, lower: usize, upper: usize) {
+        todo!()
+    }
+
+    fn step_reverse(&mut self) {
+        todo!()
+    }
+
+    fn seek_reverse(&mut self, key: &Self::Key) {
+        todo!()
+    }
+
+    fn fast_forward(&mut self) {
+        todo!()
+    }
+}
+

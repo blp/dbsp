@@ -60,7 +60,8 @@ where
     fn copy_range(&mut self, other: &Self::Trie, lower: usize, upper: usize) {
         let mut cursor = other.cursor_from(lower, upper);
         while cursor.valid() {
-            self.0.write(cursor.current_item()).unwrap();
+            let item = cursor.current_item();
+            self.0.write((&item.0, &item.1)).unwrap();
             cursor.step();
         }
     }
@@ -78,7 +79,7 @@ where
         while cursor.valid() {
             let item = cursor.current_item();
             if filter(&item.0) {
-                self.0.write(item).unwrap();
+                self.0.write((&item.0, &item.1)).unwrap();
             }
             cursor.step();
         }
@@ -92,7 +93,8 @@ where
         while cursor1.valid() && cursor2.valid() {
             match cursor1.current_key().cmp(cursor2.current_key()) {
                 Ordering::Less => {
-                    self.0.write(cursor1.current_item()).unwrap();
+                    let item = cursor1.current_item();
+                    self.0.write((&item.0, &item.1)).unwrap();
                     cursor1.step();
                 }
                 Ordering::Equal => {
@@ -101,26 +103,25 @@ where
 
                     if !sum.is_zero() {
                         let item = (cursor1.current_key().clone(), sum);
-                        self.0.write(&item).unwrap();
+                        self.0.write((&item.0, &item.1)).unwrap();
                     }
                     cursor1.step();
                     cursor2.step();
                 }
 
                 Ordering::Greater => {
-                    self.0.write(cursor2.current_item()).unwrap();
+                    let item = cursor2.current_item();
+                    self.0.write((&item.0, &item.1)).unwrap();
                     cursor2.step();
                 }
             }
         }
 
-        while cursor1.valid() {
-            self.0.write(cursor1.current_item()).unwrap();
-            cursor1.step();
+        while let Some(item) = cursor1.take_current_item() {
+            self.0.write((&item.0, &item.1)).unwrap();
         }
-        while cursor2.valid() {
-            self.0.write(cursor2.current_item()).unwrap();
-            cursor2.step();
+        while let Some(item) = cursor2.take_current_item() {
+            self.0.write((&item.0, &item.1)).unwrap();
         }
     }
 
@@ -135,8 +136,9 @@ where
         while cursor1.valid() && cursor2.valid() {
             match cursor1.current_key().cmp(cursor2.current_key()) {
                 Ordering::Less => {
-                    if filter(cursor1.current_key()) {
-                        self.0.write(cursor1.current_item()).unwrap();
+                    let item = cursor1.current_item();
+                    if filter(&item.0) {
+                        self.0.write((&item.0, &item.1)).unwrap();
                     }
                     cursor1.step();
                 }
@@ -145,33 +147,31 @@ where
                     sum.add_assign_by_ref(cursor2.current_diff());
 
                     if !sum.is_zero() && filter(cursor1.current_key()) {
-                        let item = (cursor1.current_key().clone(), sum);
-                        self.0.write(&item).unwrap();
+                        self.0.write(((cursor1.current_key()), &sum)).unwrap();
                     }
                     cursor1.step();
                     cursor2.step();
                 }
 
                 Ordering::Greater => {
-                    if filter(cursor2.current_key()) {
-                        self.0.write(cursor2.current_item()).unwrap();
+                    let item = cursor2.current_item();
+                    if filter(&item.0) {
+                        self.0.write((&item.0, &item.1)).unwrap();
                     }
                     cursor2.step();
                 }
             }
         }
 
-        while cursor1.valid() {
-            if filter(cursor1.current_key()) {
-                self.0.write(cursor1.current_item()).unwrap();
+        while let Some(item) = cursor1.take_current_item() {
+            if filter(&item.0) {
+                self.0.write((&item.0, &item.1)).unwrap();
             }
-            cursor1.step();
         }
-        while cursor2.valid() {
-            if filter(cursor2.current_key()) {
-                self.0.write(cursor2.current_item()).unwrap();
+        while let Some(item) = cursor2.take_current_item() {
+            if filter(&item.0) {
+                self.0.write((&item.0, &item.1)).unwrap();
             }
-            cursor2.step();
         }
     }
 }
@@ -198,6 +198,6 @@ where
     }
 
     fn push_tuple(&mut self, item: (K, R)) {
-        self.0.write(&item).unwrap();
+        self.0.write((&item.0, &item.1)).unwrap();
     }
 }

@@ -11,8 +11,8 @@ use binrw::{
 };
 use crc32c::crc32c;
 use rkyv::{
-    archived_value, ser::serializers::AlignedSerializer, AlignedVec, Archived, Deserialize,
-    Infallible,
+    archived_value, ser::serializers::AlignedSerializer, with::Inline, AlignedVec, Archive,
+    Archived, Deserialize, Infallible, Serialize,
 };
 
 use crate::file::BlockLocation;
@@ -251,7 +251,7 @@ impl ColumnWriter {
     fn add_item<W, K, A>(
         &mut self,
         writer: &mut W,
-        item: &(K, A),
+        item: (&K, &A),
         row_group: &Option<Range<u64>>,
     ) -> IoResult<()>
     where
@@ -326,6 +326,12 @@ struct DataBlock {
     n_values: usize,
 }
 
+#[derive(Archive, Serialize)]
+struct Item<'a, K, A>(#[with(Inline)] &'a K, #[with(Inline)] &'a A)
+where
+    K: Rkyv,
+    A: Rkyv;
+
 impl DataBlockBuilder {
     fn new(parameters: &Rc<Parameters>) -> Self {
         let mut raw = AlignedVec::with_capacity(parameters.min_data_block);
@@ -345,7 +351,7 @@ impl DataBlockBuilder {
     fn take(&mut self) -> DataBlockBuilder {
         replace(self, Self::new(&self.parameters))
     }
-    fn try_add_item<K, A>(&mut self, item: &(K, A), row_group: &Option<Range<u64>>) -> bool
+    fn try_add_item<K, A>(&mut self, item: (&K, &A), row_group: &Option<Range<u64>>) -> bool
     where
         K: Rkyv,
         A: Rkyv,
@@ -353,7 +359,7 @@ impl DataBlockBuilder {
         let old_len = self.raw.len();
         let old_stride = self.value_offset_stride;
 
-        let offset = rkyv_serialize(&mut self.raw, item);
+        let offset = rkyv_serialize(&mut self.raw, &Item(item.0, item.1));
         self.value_offsets.push(offset);
         self.value_offset_stride.push(offset);
         if let Some(row_group) = row_group.as_ref() {
@@ -381,7 +387,11 @@ impl DataBlockBuilder {
 
         true
     }
-    fn add_item<K, A>(&mut self, item: &(K, A), row_group: &Option<Range<u64>>) -> Option<DataBlock>
+    fn add_item<K, A>(
+        &mut self,
+        item: (&K, &A),
+        row_group: &Option<Range<u64>>,
+    ) -> Option<DataBlock>
     where
         K: Rkyv,
         A: Rkyv,
@@ -553,7 +563,7 @@ where
 
 fn rkyv_serialize<T>(dst: &mut AlignedVec, value: &T) -> usize
 where
-    T: Rkyv,
+    T: Archive + for<'a> Serialize<Serializer<'a>>,
 {
     let old_len = dst.len();
 
@@ -775,7 +785,7 @@ where
         Ok(writer)
     }
 
-    fn write<K, A>(&mut self, column: usize, item: &(K, A)) -> IoResult<()>
+    fn write<K, A>(&mut self, column: usize, item: (&K, &A)) -> IoResult<()>
     where
         K: Rkyv,
         A: Rkyv,
@@ -853,7 +863,7 @@ where
             _phantom: PhantomData,
         })
     }
-    pub fn write(&mut self, item: &(K1, A1)) -> IoResult<()> {
+    pub fn write(&mut self, item: (&K1, &A1)) -> IoResult<()> {
         self.inner.write(0, item)
     }
     pub fn n_rows(&self) -> u64 {
@@ -891,10 +901,10 @@ where
             _phantom: PhantomData,
         })
     }
-    pub fn write1(&mut self, item: &(K1, A1)) -> IoResult<()> {
+    pub fn write1(&mut self, item: (&K1, &A1)) -> IoResult<()> {
         self.inner.write(0, item)
     }
-    pub fn write2(&mut self, item: &(K2, A2)) -> IoResult<()> {
+    pub fn write2(&mut self, item: (&K2, &A2)) -> IoResult<()> {
         self.inner.write(1, item)
     }
     pub fn n_rows(&self) -> u64 {
