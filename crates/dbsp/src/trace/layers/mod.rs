@@ -223,7 +223,7 @@ pub trait Cursor<'s> {
     /// Key used to search the contents of the cursor.
     type Key: DBData;
 
-    type ValueStorage: Trie;
+    type ValueCursor: Cursor<'s>;
 
     fn keys(&self) -> usize;
 
@@ -231,7 +231,7 @@ pub trait Cursor<'s> {
     fn item(&self) -> Self::Item<'_>;
 
     /// Returns cursor over values associted with the current key.
-    fn values(&self) -> <Self::ValueStorage as Trie>::Cursor<'s>;
+    fn values(&self) -> Self::ValueCursor;
 
     /// Advances the cursor by one element.
     fn step(&mut self);
@@ -403,7 +403,7 @@ impl<'s> Cursor<'s> for () {
     type Key = ();
     type Item<'k> = &'k ();
 
-    type ValueStorage = ();
+    type ValueCursor = ();
 
     fn keys(&self) -> usize {
         0

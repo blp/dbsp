@@ -618,6 +618,10 @@ impl Reader {
         self.columns.len()
     }
 
+    pub fn n_rows(&self, column: usize) -> u64 {
+        self.columns[column].n_rows
+    }
+
     pub fn rows(&self) -> RowGroup {
         RowGroup::new(self, 0, 0..self.columns[0].n_rows)
     }

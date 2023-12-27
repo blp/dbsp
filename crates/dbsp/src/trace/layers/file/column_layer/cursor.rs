@@ -68,7 +68,7 @@ where
 
     type Key = K;
 
-    type ValueStorage = ();
+    type ValueCursor = ();
 
     fn keys(&self) -> usize {
         self.cursor.n_rows() as usize
