@@ -9,7 +9,7 @@ use tempfile::tempfile;
 
 use crate::{
     trace::layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
-    DBData, DBWeight, NumEntries,
+    DBData, DBWeight, NumEntries, Rkyv,
 };
 use std::{
     cmp::{min, Ordering},
@@ -120,16 +120,17 @@ where
         cursor.step();
     }
 
-    fn copy_value(&mut self, cursor: &mut FileOrderedValueCursor<K, V, R>)
-    {
-        self.0.write2((cursor.current_value(), cursor.current_diff())).unwrap();
+    fn copy_value(&mut self, cursor: &mut FileOrderedValueCursor<V, R>) {
+        self.0
+            .write2((cursor.current_value(), cursor.current_diff()))
+            .unwrap();
         cursor.step();
     }
 
     fn merge_values<'a>(
         &mut self,
-        mut cursor1: FileOrderedValueCursor<'a, K, V, R>,
-        mut cursor2: FileOrderedValueCursor<'a, K, V, R>,
+        mut cursor1: FileOrderedValueCursor<'a, V, R>,
+        mut cursor2: FileOrderedValueCursor<'a, V, R>,
     ) -> bool {
         let mut n = 0;
         while cursor1.valid() && cursor2.valid() {
@@ -386,6 +387,11 @@ where
         self.step();
         key
     }
+
+    fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, K, ()>)) {
+        f(&mut self.cursor);
+        self.key = unsafe { self.cursor.key() };
+    }
 }
 
 impl<'s, K, V, R> Cursor<'s> for FileOrderedCursor<'s, K, V, R>
@@ -400,7 +406,7 @@ where
     where
         Self: 'k;
 
-    type ValueCursor = FileOrderedValueCursor<'s, K, V, R>;
+    type ValueCursor = FileOrderedValueCursor<'s, V, R>;
 
     fn keys(&self) -> usize {
         self.cursor.n_rows() as usize
@@ -410,7 +416,7 @@ where
         self.current_key()
     }
 
-    fn values(&self) -> FileOrderedValueCursor<'s, K, V, R> {
+    fn values(&self) -> FileOrderedValueCursor<'s, V, R> {
         if self.valid() {
             todo!()
         } else {
@@ -442,14 +448,15 @@ where
     }
 
     fn reposition(&mut self, lower: usize, upper: usize) {
-        self.cursor = self
-            .storage
-            .file
-            .rows()
-            .subset(lower as u64..upper as u64)
-            .first()
-            .unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| {
+            *cursor = self
+                .storage
+                .file
+                .rows()
+                .subset(lower as u64..upper as u64)
+                .first()
+                .unwrap()
+        });
     }
 
     fn step_reverse(&mut self) {
@@ -469,23 +476,29 @@ where
 }
 
 #[derive(Debug)]
-pub struct FileOrderedValueCursor<'s, K, V, R>
+pub struct FileOrderedValueCursor<'s, V, R>
 where
-    K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    storage: &'s FileOrderedLayer<K, V, R>,
     item: Option<(V, R)>,
     cursor: FileCursor<'s, V, R>,
 }
 
-impl<'s, K, V, R> FileOrderedValueCursor<'s, K, V, R>
+impl<'s, V, R> FileOrderedValueCursor<'s, V, R>
 where
-    K: DBData,
     V: DBData,
     R: DBWeight,
 {
+    pub fn new<K>(parent_row: &'s FileCursor<K, ()>) -> Self
+    where
+        K: Rkyv,
+    {
+        let cursor = parent_row.next_column().unwrap().first().unwrap();
+        let item = unsafe { cursor.item() };
+        Self { cursor, item }
+    }
+
     pub fn current_value(&self) -> &V {
         &self.item.as_ref().unwrap().0
     }
@@ -511,9 +524,8 @@ where
     }
 }
 
-impl<'s, K, V, R> Cursor<'s> for FileOrderedValueCursor<'s, K, V, R>
+impl<'s, V, R> Cursor<'s> for FileOrderedValueCursor<'s, V, R>
 where
-    K: DBData,
     V: DBData,
     R: DBWeight,
 {
@@ -555,16 +567,8 @@ where
         self.cursor.position() as usize
     }
 
-    fn reposition(&mut self, lower: usize, upper: usize) {
-        self.move_cursor(|cursor| {
-            *cursor = self
-                .storage
-                .file
-                .rows()
-                .subset(lower as u64..upper as u64)
-                .first()
-                .unwrap()
-        });
+    fn reposition(&mut self, _lower: usize, _upper: usize) {
+        todo!()
     }
 
     fn step_reverse(&mut self) {
