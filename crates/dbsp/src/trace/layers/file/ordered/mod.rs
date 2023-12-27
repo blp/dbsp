@@ -11,7 +11,12 @@ use crate::{
     trace::layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
     DBData, DBWeight, NumEntries,
 };
-use std::{cmp::min, fmt::Debug, fs::File, marker::PhantomData};
+use std::{
+    cmp::{min, Ordering},
+    fmt::Debug,
+    fs::File,
+    marker::PhantomData,
+};
 
 pub struct FileOrderedLayer<K, V, R>
 where
@@ -89,6 +94,80 @@ where
     V: DBData,
     R: DBWeight;
 
+impl<K, V, R> FileOrderedMergeBuilder<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn copy_key_if<'a, F>(&mut self, cursor: &mut FileOrderedCursor<K, V, R>, filter: &F)
+    where
+        F: Fn(
+            &<<<FileOrderedMergeBuilder<K, V, R> as Builder>::Trie as Trie>::Cursor<'a> as Cursor<
+                'a,
+            >>::Key,
+        ) -> bool,
+    {
+        let key = cursor.current_key();
+        if filter(key) {
+            let mut value_cursor = cursor.values();
+            while value_cursor.valid() {
+                self.0.write2(value_cursor.item()).unwrap();
+                value_cursor.step();
+            }
+            self.0.write1((&key, &())).unwrap();
+        }
+        cursor.step();
+    }
+
+    fn copy_value(&mut self, cursor: &mut FileOrderedValueCursor<K, V, R>)
+    {
+        self.0.write2((cursor.current_value(), cursor.current_diff())).unwrap();
+        cursor.step();
+    }
+
+    fn merge_values<'a>(
+        &mut self,
+        mut cursor1: FileOrderedValueCursor<'a, K, V, R>,
+        mut cursor2: FileOrderedValueCursor<'a, K, V, R>,
+    ) -> bool {
+        let mut n = 0;
+        while cursor1.valid() && cursor2.valid() {
+            let value1 = cursor1.current_value();
+            let value2 = cursor2.current_value();
+            match value1.cmp(value2) {
+                Ordering::Less => {
+                    self.copy_value(&mut cursor1);
+                }
+                Ordering::Equal => {
+                    let mut sum = cursor1.current_diff().clone();
+                    sum.add_assign_by_ref(cursor2.current_diff());
+                    if !sum.is_zero() {
+                        self.0.write2((value1, &sum)).unwrap();
+                        n += 1;
+                    }
+                    cursor1.step();
+                    cursor2.step();
+                }
+
+                Ordering::Greater => {
+                    self.copy_value(&mut cursor2);
+                }
+            }
+        }
+
+        while cursor1.valid() {
+            self.copy_value(&mut cursor1);
+            n += 1;
+        }
+        while cursor2.valid() {
+            self.copy_value(&mut cursor2);
+            n += 1;
+        }
+        n > 0
+    }
+}
+
 impl<K, V, R> Builder for FileOrderedMergeBuilder<K, V, R>
 where
     K: DBData,
@@ -130,20 +209,6 @@ where
         self.0.n_rows() as usize
     }
 
-    fn copy_range(&mut self, other: &Self::Trie, lower: usize, upper: usize) {
-        let mut cursor = other.cursor_from(lower, upper);
-        while cursor.valid() {
-            let mut value_cursor = cursor.values();
-            while value_cursor.valid() {
-                self.0.write2(value_cursor.item()).unwrap();
-                value_cursor.step();
-            }
-            let item = cursor.take_current_key().unwrap();
-            self.0.write1((&item, &())).unwrap();
-            cursor.step();
-        }
-    }
-
     fn copy_range_retain_keys<'a, F>(
         &mut self,
         other: &'a Self::Trie,
@@ -168,23 +233,41 @@ where
         }
     }
 
-    fn push_merge<'a>(
-        &'a mut self,
-        cursor1: <Self::Trie as Trie>::Cursor<'a>,
-        cursor2: <Self::Trie as Trie>::Cursor<'a>,
-    ) {
-        todo!()
-    }
-
     fn push_merge_retain_keys<'a, F>(
         &'a mut self,
-        cursor1: <Self::Trie as Trie>::Cursor<'a>,
-        cursor2: <Self::Trie as Trie>::Cursor<'a>,
+        mut cursor1: <Self::Trie as Trie>::Cursor<'a>,
+        mut cursor2: <Self::Trie as Trie>::Cursor<'a>,
         filter: &F,
     ) where
         F: Fn(&<<Self::Trie as Trie>::Cursor<'a> as Cursor<'a>>::Key) -> bool,
     {
-        todo!()
+        while cursor1.valid() && cursor2.valid() {
+            let key1 = cursor1.current_key();
+            let key2 = cursor2.current_key();
+            match key1.cmp(key2) {
+                Ordering::Less => {
+                    self.copy_key_if(&mut cursor1, filter);
+                }
+                Ordering::Equal => {
+                    if filter(key1) && self.merge_values(cursor1.values(), cursor2.values()) {
+                        self.0.write1((key1, &())).unwrap();
+                    }
+                    cursor1.step();
+                    cursor2.step();
+                }
+
+                Ordering::Greater => {
+                    self.copy_key_if(&mut cursor2, filter);
+                }
+            }
+        }
+
+        while cursor1.valid() {
+            self.copy_key_if(&mut cursor1, filter);
+        }
+        while cursor2.valid() {
+            self.copy_key_if(&mut cursor2, filter);
+        }
     }
 }
 

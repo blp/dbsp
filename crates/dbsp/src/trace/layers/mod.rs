@@ -142,7 +142,9 @@ pub trait MergeBuilder: Builder {
     fn keys(&self) -> usize;
 
     /// Copy a range of `other` into this collection.
-    fn copy_range(&mut self, other: &Self::Trie, lower: usize, upper: usize);
+    fn copy_range(&mut self, other: &Self::Trie, lower: usize, upper: usize) {
+        self.copy_range_retain_keys(other, lower, upper, &|_| true)
+    }
 
     /// Copy a range of `other` into this collection, only retaining
     /// entries whose keys satisfy the `filter` condition.
@@ -160,7 +162,9 @@ pub trait MergeBuilder: Builder {
         &'a mut self,
         other1: <Self::Trie as Trie>::Cursor<'a>,
         other2: <Self::Trie as Trie>::Cursor<'a>,
-    );
+    ) {
+        self.push_merge_retain_keys(other1, other2, &|_| true)
+    }
 
     /// Merges two sub-collections into one sub-collection, only
     /// retaining entries whose keys satisfy the `filter` condition.

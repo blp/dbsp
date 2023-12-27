@@ -57,15 +57,6 @@ where
         self.0.n_rows() as usize
     }
 
-    fn copy_range(&mut self, other: &Self::Trie, lower: usize, upper: usize) {
-        let mut cursor = other.cursor_from(lower, upper);
-        while cursor.valid() {
-            let item = cursor.current_item();
-            self.0.write((&item.0, &item.1)).unwrap();
-            cursor.step();
-        }
-    }
-
     fn copy_range_retain_keys<'a, F>(
         &mut self,
         other: &'a Self::Trie,
@@ -82,46 +73,6 @@ where
                 self.0.write((&item.0, &item.1)).unwrap();
             }
             cursor.step();
-        }
-    }
-
-    fn push_merge<'a>(
-        &'a mut self,
-        mut cursor1: <Self::Trie as Trie>::Cursor<'a>,
-        mut cursor2: <Self::Trie as Trie>::Cursor<'a>,
-    ) {
-        while cursor1.valid() && cursor2.valid() {
-            match cursor1.current_key().cmp(cursor2.current_key()) {
-                Ordering::Less => {
-                    let item = cursor1.current_item();
-                    self.0.write((&item.0, &item.1)).unwrap();
-                    cursor1.step();
-                }
-                Ordering::Equal => {
-                    let mut sum = cursor1.current_diff().clone();
-                    sum.add_assign_by_ref(cursor2.current_diff());
-
-                    if !sum.is_zero() {
-                        let item = (cursor1.current_key().clone(), sum);
-                        self.0.write((&item.0, &item.1)).unwrap();
-                    }
-                    cursor1.step();
-                    cursor2.step();
-                }
-
-                Ordering::Greater => {
-                    let item = cursor2.current_item();
-                    self.0.write((&item.0, &item.1)).unwrap();
-                    cursor2.step();
-                }
-            }
-        }
-
-        while let Some(item) = cursor1.take_current_item() {
-            self.0.write((&item.0, &item.1)).unwrap();
-        }
-        while let Some(item) = cursor2.take_current_item() {
-            self.0.write((&item.0, &item.1)).unwrap();
         }
     }
 
