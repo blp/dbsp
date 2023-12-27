@@ -228,7 +228,7 @@ pub trait Cursor<'s> {
     fn keys(&self) -> usize;
 
     /// Reveals the current item.
-    fn item(&self) -> Self::Item<'_>;
+    fn item<'a>(&'a self) -> Self::Item<'a>;
 
     /// Returns cursor over values associted with the current key.
     fn values(&self) -> Self::ValueCursor;
