@@ -3,27 +3,97 @@ mod consumer;
 pub(crate) mod cursor;
 
 use feldera_storage::file::reader::Reader;
+use rand::{seq::index::sample, Rng};
+use rkyv::ser::Serializer;
+use rkyv::{Archive, Archived, Deserialize, Fallible, Serialize};
+use size_of::SizeOf;
 use std::cmp::min;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::marker::PhantomData;
 
-use crate::trace::layers::Trie;
-use crate::{DBData, DBWeight};
+use crate::trace::layers::{Cursor, Trie};
+use crate::{DBData, DBWeight, NumEntries};
 
 pub use self::builders::FileColumnLayerBuilder;
-pub use consumer::{FileColumnLayerConsumer, FileColumnLayerValues};
 pub use self::cursor::FileColumnLayerCursor;
+pub use consumer::{FileColumnLayerConsumer, FileColumnLayerValues};
 
 pub struct FileColumnLayer<K, R> {
     file: Reader,
     lower_bound: usize,
-    _phantom: std::marker::PhantomData<(K, R)>,
+    _phantom: PhantomData<(K, R)>,
+}
+
+impl<K, R> FileColumnLayer<K, R> {
+    pub fn len(&self) -> u64 {
+        self.file.rows().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.file.rows().is_empty()
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            file: Reader::empty(1).unwrap(),
+            lower_bound: 0,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, output: &mut Vec<K>)
+    where
+        K: DBData,
+        R: DBWeight,
+        RG: Rng,
+    {
+        let size = self.len();
+
+        let mut cursor = self.cursor();
+        if sample_size as u64 >= size {
+            output.reserve(size as usize);
+
+            while let Some((key, _)) = cursor.take_current_item() {
+                output.push(key);
+            }
+        } else {
+            output.reserve(sample_size);
+
+            let mut indexes = sample(rng, size as usize, sample_size).into_vec();
+            indexes.sort_unstable();
+            for index in indexes.into_iter() {
+                cursor.move_to_row(index);
+                output.push(cursor.current_key().clone());
+            }
+        }
+    }
+}
+
+impl<K, R> Clone for FileColumnLayer<K, R> {
+    fn clone(&self) -> Self {
+        Self {
+            file: self.file.clone(),
+            lower_bound: self.lower_bound,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<K, R> Debug for FileColumnLayer<K, R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         f.debug_struct("FileColumnLayer")
             .field("lower_bound", &self.lower_bound)
             .finish()
+    }
+}
+
+impl<K, R> Display for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        Display::fmt(&self.cursor(), f)
     }
 }
 
@@ -50,7 +120,8 @@ where
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        self.cursor_from(0, self.file.rows().len() as usize) // XXX this cast is risky
+        self.cursor_from(0, self.file.rows().len() as usize) // XXX this cast is
+                                                             // risky
     }
 
     fn truncate_below(&mut self, lower_bound: usize) {
@@ -61,5 +132,97 @@ where
 
     fn lower_bound(&self) -> usize {
         self.lower_bound
+    }
+}
+
+impl<K, R> Archive for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type Archived = ();
+    type Resolver = ();
+
+    unsafe fn resolve(&self, _pos: usize, _resolver: Self::Resolver, _out: *mut Self::Archived) {
+        unimplemented!();
+    }
+}
+
+impl<K, R, S> Serialize<S> for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+    S: Serializer + ?Sized,
+{
+    fn serialize(&self, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        unimplemented!();
+    }
+}
+
+impl<K, R, D> Deserialize<FileColumnLayer<K, R>, D> for Archived<FileColumnLayer<K, R>>
+where
+    K: DBData,
+    R: DBWeight,
+    D: Fallible,
+{
+    fn deserialize(&self, _deserializer: &mut D) -> Result<FileColumnLayer<K, R>, D::Error> {
+        unimplemented!();
+    }
+}
+
+impl<K, R> SizeOf for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn size_of_children(&self, context: &mut size_of::Context) {
+        // XXX
+    }
+}
+
+impl<K, R> PartialEq for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if self.lower_bound != other.lower_bound {
+            false
+        } else if let Some(equality) = self.file.equal(&other.file) {
+            equality
+        } else if self.keys() != other.keys() {
+            false
+        } else {
+            let mut cursor1 = self.cursor();
+            let mut cursor2 = other.cursor();
+            while cursor1.valid() && cursor2.valid() {
+                if cursor1.take_current_item() != cursor2.take_current_item() {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
+impl<K, R> Eq for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+}
+
+impl<K, R> NumEntries for FileColumnLayer<K, R> {
+    const CONST_NUM_ENTRIES: Option<usize> = None;
+
+    #[inline]
+    fn num_entries_shallow(&self) -> usize {
+        self.len() as usize
+    }
+
+    #[inline]
+    fn num_entries_deep(&self) -> usize {
+        // FIXME: Doesn't take element sizes into account
+        self.len() as usize
     }
 }

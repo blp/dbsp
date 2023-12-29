@@ -1,12 +1,11 @@
 use crate::{
-    algebra::{AddAssignByRef, AddByRef, HasZero, NegByRef},
+    algebra::{AddAssignByRef, AddByRef, NegByRef},
     time::AntichainRef,
     trace::{
-        consolidation::consolidate_payload_from,
         layers::{
-            column_layer::{
-                ColumnLayer, ColumnLayerBuilder, ColumnLayerConsumer, ColumnLayerCursor,
-                ColumnLayerValues,
+            file::column_layer::{
+                FileColumnLayer, FileColumnLayerBuilder, FileColumnLayerConsumer,
+                FileColumnLayerCursor, FileColumnLayerValues,
             },
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
@@ -29,17 +28,21 @@ use std::{
 #[derive(Debug, Clone, Eq, PartialEq, SizeOf, Archive, Serialize, Deserialize)]
 pub struct OrdZSet<K, R>
 where
-    K: 'static,
-    R: 'static,
+    K: DBData,
+    R: DBWeight,
 {
     #[doc(hidden)]
-    pub layer: ColumnLayer<K, R>,
+    pub layer: FileColumnLayer<K, R>,
 }
 
-impl<K, R> OrdZSet<K, R> {
+impl<K, R> OrdZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
     #[inline]
     pub fn len(&self) -> usize {
-        self.layer.len()
+        self.layer.len() as usize
     }
 
     #[inline]
@@ -52,23 +55,7 @@ impl<K, R> OrdZSet<K, R> {
     where
         F: FnMut(&K, &R) -> bool,
     {
-        self.layer.retain(retain);
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    pub fn from_columns(mut keys: Vec<K>, mut diffs: Vec<R>) -> Self
-    where
-        K: Ord,
-        R: HasZero + AddAssign,
-    {
-        consolidate_payload_from(&mut keys, &mut diffs, 0);
-
-        Self {
-            // Safety: We've ensured that keys and diffs are the same length
-            // and are sorted & consolidated
-            layer: unsafe { ColumnLayer::from_parts(keys, diffs, 0) },
-        }
+        todo!()
     }
 }
 
@@ -86,14 +73,22 @@ where
     }
 }
 
-impl<K, R> From<ColumnLayer<K, R>> for OrdZSet<K, R> {
-    fn from(layer: ColumnLayer<K, R>) -> Self {
+impl<K, R> From<FileColumnLayer<K, R>> for OrdZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn from(layer: FileColumnLayer<K, R>) -> Self {
         Self { layer }
     }
 }
 
-impl<K, R> From<ColumnLayer<K, R>> for Rc<OrdZSet<K, R>> {
-    fn from(layer: ColumnLayer<K, R>) -> Self {
+impl<K, R> From<FileColumnLayer<K, R>> for Rc<OrdZSet<K, R>>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn from(layer: FileColumnLayer<K, R>) -> Self {
         Rc::new(From::from(layer))
     }
 }
@@ -103,7 +98,7 @@ where
     K: DBData,
     R: DBWeight,
 {
-    const CONST_NUM_ENTRIES: Option<usize> = <ColumnLayer<K, R>>::CONST_NUM_ENTRIES;
+    const CONST_NUM_ENTRIES: Option<usize> = <FileColumnLayer<K, R>>::CONST_NUM_ENTRIES;
 
     fn num_entries_shallow(&self) -> usize {
         self.layer.num_entries_shallow()
@@ -114,10 +109,14 @@ where
     }
 }
 
-impl<K, R> Default for OrdZSet<K, R> {
+impl<K, R> Default for OrdZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
     fn default() -> Self {
         Self {
-            layer: ColumnLayer::empty(),
+            layer: FileColumnLayer::empty(),
         }
     }
 }
@@ -218,7 +217,7 @@ where
     #[inline]
     fn consumer(self) -> Self::Consumer {
         OrdZSetConsumer {
-            consumer: ColumnLayerConsumer::from(self.layer),
+            consumer: FileColumnLayerConsumer::from(self.layer),
         }
     }
 
@@ -243,7 +242,7 @@ where
     }
 
     fn truncate_keys_below(&mut self, lower_bound: &Self::Key) {
-        self.layer.truncate_keys_below(lower_bound);
+        todo!()
     }
 
     fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, sample: &mut Vec<Self::Key>)
@@ -279,9 +278,7 @@ where
     fn recede_to(&mut self, _frontier: &()) {}
 
     fn empty(_time: Self::Time) -> Self {
-        Self {
-            layer: ColumnLayer::empty(),
-        }
+        Self { layer: FileColumnLayer::empty() }
     }
 }
 
@@ -293,7 +290,7 @@ where
     R: DBWeight,
 {
     // result that we are currently assembling.
-    result: <ColumnLayer<K, R> as Trie>::MergeBuilder,
+    result: <FileColumnLayer<K, R> as Trie>::MergeBuilder,
 }
 
 impl<K, R> Merger<K, (), (), R, OrdZSet<K, R>> for OrdZSetMerger<K, R>
@@ -304,7 +301,7 @@ where
 {
     fn new_merger(batch1: &OrdZSet<K, R>, batch2: &OrdZSet<K, R>) -> Self {
         Self {
-            result: <<ColumnLayer<K, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
+            result: <<FileColumnLayer<K, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
                 &batch1.layer,
                 &batch2.layer,
             ),
@@ -352,7 +349,7 @@ where
     R: DBWeight,
 {
     valid: bool,
-    cursor: ColumnLayerCursor<'s, K, R>,
+    cursor: FileColumnLayerCursor<'s, K, R>,
 }
 
 impl<'s, K, R> Cursor<K, (), (), R> for OrdZSetCursor<'s, K, R>
@@ -418,7 +415,7 @@ where
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.cursor.seek_key_with(|k| !predicate(k));
+        self.cursor.seek_with(|k| !predicate(k));
         self.valid = true;
     }
 
@@ -426,7 +423,7 @@ where
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.cursor.seek_key_with_reverse(|k| !predicate(k));
+        self.cursor.seek_with_reverse(|k| !predicate(k));
         self.valid = true;
     }
 
@@ -488,10 +485,10 @@ where
 #[derive(SizeOf)]
 pub struct OrdZSetBuilder<K, R>
 where
-    K: Ord,
+    K: DBData,
     R: DBWeight,
 {
-    builder: ColumnLayerBuilder<K, R>,
+    builder: FileColumnLayerBuilder<K, R>,
 }
 
 impl<K, R> Builder<K, (), R, OrdZSet<K, R>> for OrdZSetBuilder<K, R>
@@ -503,14 +500,14 @@ where
     #[inline]
     fn new_builder(_time: ()) -> Self {
         Self {
-            builder: ColumnLayerBuilder::new(),
+            builder: FileColumnLayerBuilder::new(),
         }
     }
 
     #[inline]
     fn with_capacity(_time: (), capacity: usize) -> Self {
         Self {
-            builder: <ColumnLayerBuilder<K, R> as TupleBuilder>::with_capacity(capacity),
+            builder: <FileColumnLayerBuilder<K, R> as TupleBuilder>::with_capacity(capacity),
         }
     }
 
@@ -535,14 +532,18 @@ where
 #[derive(Debug, SizeOf)]
 pub struct OrdZSetConsumer<K, R>
 where
-    K: 'static,
-    R: 'static,
+    K: DBData,
+    R: DBWeight,
 {
-    consumer: ColumnLayerConsumer<K, R>,
+    consumer: FileColumnLayerConsumer<K, R>,
 }
 
-impl<K, R> Consumer<K, (), R, ()> for OrdZSetConsumer<K, R> {
-    type ValueConsumer<'a> = OrdZSetValueConsumer<'a, K, R>
+impl<K, R> Consumer<K, (), R, ()> for OrdZSetConsumer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type ValueConsumer<'a> = OrdZSetValueConsumer<R>
     where
         Self: 'a;
 
@@ -568,15 +569,17 @@ impl<K, R> Consumer<K, (), R, ()> for OrdZSetConsumer<K, R> {
 }
 
 #[derive(Debug)]
-pub struct OrdZSetValueConsumer<'a, K, R>
+pub struct OrdZSetValueConsumer<R>
 where
-    K: 'static,
-    R: 'static,
+    R: DBWeight,
 {
-    values: ColumnLayerValues<'a, K, R>,
+    values: FileColumnLayerValues<R>,
 }
 
-impl<'a, K, R> ValueConsumer<'a, (), R, ()> for OrdZSetValueConsumer<'a, K, R> {
+impl<'a, R> ValueConsumer<'a, (), R, ()> for OrdZSetValueConsumer<R>
+where
+    R: DBWeight,
+{
     fn value_valid(&self) -> bool {
         self.values.value_valid()
     }

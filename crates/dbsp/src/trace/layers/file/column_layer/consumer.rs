@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Formatter, Result as FmtResult};
+
 use crate::{
     trace::{layers::Trie, Consumer, ValueConsumer},
     DBData, DBWeight,
@@ -20,6 +22,16 @@ where
     #[borrows(storage)]
     #[covariant]
     cursor: FileColumnLayerCursor<'this, K, R>,
+}
+
+impl<K, R> Debug for FileColumnLayerConsumer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        write!(f, "FileColumnLayerConsumer")
+    }
 }
 
 impl<K, R> Consumer<K, (), R, ()> for FileColumnLayerConsumer<K, R>

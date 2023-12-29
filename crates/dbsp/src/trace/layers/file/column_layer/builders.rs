@@ -8,6 +8,7 @@ use feldera_storage::file::{
     reader::Reader,
     writer::{Parameters, Writer1},
 };
+use size_of::SizeOf;
 use std::{cmp::Ordering, fs::File, marker::PhantomData};
 use tempfile::tempfile;
 
@@ -150,5 +151,15 @@ where
 
     fn push_tuple(&mut self, item: (K, R)) {
         self.0.write((&item.0, &item.1)).unwrap();
+    }
+}
+
+impl<K, R> SizeOf for FileColumnLayerBuilder<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn size_of_children(&self, context: &mut size_of::Context) {
+        // XXX
     }
 }

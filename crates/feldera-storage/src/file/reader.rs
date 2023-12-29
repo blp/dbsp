@@ -6,6 +6,7 @@ use std::{
     ops::Range,
     os::unix::fs::FileExt,
     rc::Rc,
+    sync::Arc,
 };
 
 use binrw::{
@@ -14,6 +15,7 @@ use binrw::{
 };
 use crc32c::crc32c;
 use rkyv::{archived_value, AlignedVec, Deserialize, Infallible};
+use tempfile::tempfile;
 
 use super::{
     BlockLocation, CorruptionError, DataBlockHeader, Error, FileHeader, FileTrailer,
@@ -541,9 +543,18 @@ impl Column {
             n_rows: info.n_rows,
         })
     }
+    fn empty() -> Self {
+        Self {
+            root: None,
+            n_rows: 0,
+        }
+    }
 }
 
-pub struct Reader {
+#[derive(Clone)]
+pub struct Reader(Arc<ReaderInner>);
+
+struct ReaderInner {
     file: File,
     columns: Vec<Column>,
 }
@@ -611,20 +622,48 @@ impl Reader {
             }
         }
 
-        Ok(Self { file, columns })
+        Ok(Self(Arc::new(ReaderInner { file, columns })))
+    }
+
+    pub fn empty(n_columns: usize) -> Result<Self, Error> {
+        Ok(Self(Arc::new(ReaderInner {
+            file: tempfile()?,
+            columns: (0..n_columns).map(|_| Column::empty()).collect(),
+        })))
+    }
+
+    pub fn equal(&self, other: &Reader) -> Option<bool> {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            // Definitely the same.
+            Some(true)
+        } else if self.0.columns.len() != other.0.columns.len() {
+            // Definitely different.
+            Some(false)
+        } else {
+            is_same_file(&self.0.file, &other.0.file)
+        }
     }
 
     pub fn n_columns(&self) -> usize {
-        self.columns.len()
+        self.0.columns.len()
     }
 
     pub fn n_rows(&self, column: usize) -> u64 {
-        self.columns[column].n_rows
+        self.0.columns[column].n_rows
     }
 
     pub fn rows(&self) -> RowGroup {
-        RowGroup::new(self, 0, 0..self.columns[0].n_rows)
+        RowGroup::new(self, 0, 0..self.0.columns[0].n_rows)
     }
+}
+
+fn is_same_file(file1: &File, file2: &File) -> Option<bool> {
+    #[cfg(unix)]
+    if let (Ok(md1), Ok(md2)) = (file1.metadata(), file2.metadata()) {
+        use std::os::unix::fs::MetadataExt;
+        return Some(md1.dev() == md2.dev() && md1.ino() == md2.ino());
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -762,6 +801,16 @@ where
             .move_to_row(&self.row_group, self.row_group.rows.end - 1)
     }
 
+    pub fn move_to_row(&mut self, row: u64) -> Result<(), Error> {
+        if row < self.row_group.rows.end - self.row_group.rows.start {
+            self.position
+                .move_to_row(&self.row_group, self.row_group.rows.start + row)
+        } else {
+            self.position = Position::After;
+            Ok(())
+        }
+    }
+
     pub unsafe fn key(&self) -> Option<K> {
         self.position.key::<K, A>()
     }
@@ -839,7 +888,7 @@ impl Path {
         Self::for_row_from_ancestor(
             row_group.reader,
             Vec::new(),
-            row_group.reader.columns[row_group.column].root.unwrap(),
+            row_group.reader.0.columns[row_group.column].root.unwrap(),
             row,
         )
     }
@@ -850,7 +899,7 @@ impl Path {
         row: u64,
     ) -> Result<Path, Error> {
         loop {
-            let block = node.read(&reader.file)?;
+            let block = node.read(&reader.0.file)?;
             let next = block.lookup_row(row)?;
             match block {
                 TreeBlock::Data(data) => return Ok(Path { row, indexes, data }),
@@ -912,11 +961,11 @@ impl Path {
         A: Rkyv,
     {
         let mut indexes = Vec::new();
-        let Some(mut node) = row_group.reader.columns[row_group.column].root else {
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
             return Ok(None);
         };
         loop {
-            match node.read(&row_group.reader.file)? {
+            match node.read(&row_group.reader.0.file)? {
                 TreeBlock::Index(index_block) => {
                     let Some(child_idx) = index_block.min_ge(&row_group.rows, value) else {
                         return Ok(None);
@@ -946,11 +995,11 @@ impl Path {
         A: Rkyv,
     {
         let mut indexes = Vec::new();
-        let Some(mut node) = row_group.reader.columns[row_group.column].root else {
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
             return Ok(None);
         };
         loop {
-            match node.read(&row_group.reader.file)? {
+            match node.read(&row_group.reader.0.file)? {
                 TreeBlock::Index(index_block) => {
                     let Some(child_idx) = index_block.max_le(&row_group.rows, value) else {
                         return Ok(None);

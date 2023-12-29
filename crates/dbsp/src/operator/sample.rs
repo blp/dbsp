@@ -149,8 +149,10 @@ where
                     let mut builder =
                         <<OrdZSet<_, _> as Batch>::Builder>::with_capacity((), num_quantiles);
                     for i in 0..num_quantiles {
+/*
                         let key = sample.layer.keys()[(i * sample_size) / num_quantiles].clone();
                         builder.push((key, HasOne::one()));
+*/
                     }
                     builder.done()
                 }
@@ -183,8 +185,10 @@ where
                     let mut builder =
                         <<OrdZSet<_, _> as Batch>::Builder>::with_capacity((), num_quantiles);
                     for i in 0..num_quantiles {
+/*
                         let key = sample.layer.keys()[(i * sample_size) / num_quantiles].clone();
                         builder.push((key, HasOne::one()));
+*/
                     }
                     builder.done()
                 }

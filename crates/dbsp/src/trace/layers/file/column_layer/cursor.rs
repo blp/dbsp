@@ -1,4 +1,4 @@
-use std::fmt::{self, Debug, Display};
+use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use feldera_storage::file::reader::Cursor as FileCursor;
 
@@ -7,7 +7,7 @@ use crate::{trace::layers::Cursor, DBData, DBWeight};
 use super::FileColumnLayer;
 
 /// A cursor for walking through a [`FileColumnLayer`].
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct FileColumnLayerCursor<'s, K, R>
 where
     K: DBData,
@@ -54,6 +54,24 @@ where
         let item = self.item.take();
         self.step();
         item
+    }
+
+    pub fn seek_with<P>(&mut self, predicate: P)
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        todo!()
+    }
+
+    pub fn seek_with_reverse<P>(&mut self, predicate: P)
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        todo!()
+    }
+
+    pub fn move_to_row(&mut self, row: usize) {
+        self.cursor.move_to_row(row as u64).unwrap();
     }
 }
 
@@ -135,7 +153,7 @@ where
     K: DBData,
     R: DBWeight,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         let mut cursor: FileColumnLayerCursor<K, R> = self.clone();
 
         while cursor.valid() {
