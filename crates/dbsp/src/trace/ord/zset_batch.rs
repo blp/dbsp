@@ -53,9 +53,19 @@ where
     #[inline]
     pub fn retain<F>(&mut self, retain: F)
     where
-        F: FnMut(&K, &R) -> bool,
+        F: Fn(&K, &R) -> bool,
     {
-        todo!()
+        let mut cursor = self.cursor();
+        let mut builder = FileColumnLayerBuilder::new();
+        while cursor.key_valid() {
+            while cursor.val_valid() {
+                let weight = cursor.weight();
+                let key = cursor.key();
+                if retain(key, &weight) {
+                    builder.push_tuple((key.clone(), weight));
+                }
+            }
+        }
     }
 }
 
