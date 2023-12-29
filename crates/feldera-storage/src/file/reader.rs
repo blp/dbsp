@@ -820,6 +820,22 @@ impl<'a> RowGroup<'a> {
         self.rows.end - self.rows.start
     }
 
+    pub fn before<K, A>(self) -> Cursor<'a, K, A>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
+        Cursor::<K, A>::new(self, Position::Before)
+    }
+
+    pub fn after<K, A>(self) -> Cursor<'a, K, A>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
+        Cursor::<K, A>::new(self, Position::After)
+    }
+
     pub fn first<K, A>(self) -> Result<Cursor<'a, K, A>, Error>
     where
         K: Rkyv,
@@ -830,7 +846,7 @@ impl<'a> RowGroup<'a> {
         } else {
             Position::for_row(&self, self.rows.start)?
         };
-        Cursor::<K, A>::new(self, position)
+        Ok(Cursor::<K, A>::new(self, position))
     }
 
     pub fn last<K, A>(self) -> Result<Cursor<'a, K, A>, Error>
@@ -843,7 +859,7 @@ impl<'a> RowGroup<'a> {
         } else {
             Position::for_row(&self, self.rows.end - 1)?
         };
-        Cursor::<K, A>::new(self, position)
+        Ok(Cursor::<K, A>::new(self, position))
     }
 
     pub fn nth<K, A>(self, row: u64) -> Result<Cursor<'a, K, A>, Error>
@@ -856,7 +872,7 @@ impl<'a> RowGroup<'a> {
         } else {
             Position::After
         };
-        Cursor::<K, A>::new(self, position)
+        Ok(Cursor::<K, A>::new(self, position))
     }
 
     pub fn subset(mut self, subset: Range<u64>) -> Self {
@@ -897,12 +913,12 @@ where
     K: Rkyv,
     A: Rkyv,
 {
-    fn new(row_group: RowGroup<'a>, position: Position) -> Result<Self, Error> {
-        Ok(Self {
+    fn new(row_group: RowGroup<'a>, position: Position) -> Self {
+        Self {
             row_group,
             position,
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn move_next(&mut self) -> Result<(), Error> {
@@ -1121,7 +1137,8 @@ impl Path {
         loop {
             match node.read(&row_group.reader.0.file)? {
                 TreeBlock::Index(index_block) => {
-                    let Some(child_idx) = index_block.find_first(&row_group.rows, &predicate) else {
+                    let Some(child_idx) = index_block.find_first(&row_group.rows, &predicate)
+                    else {
                         return Ok(None);
                     };
                     node = index_block.get_child(child_idx);

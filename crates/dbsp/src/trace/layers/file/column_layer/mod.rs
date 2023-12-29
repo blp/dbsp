@@ -72,6 +72,17 @@ impl<K, R> FileColumnLayer<K, R> {
             }
         }
     }
+
+    /// Remove keys smaller than `lower_bound` from the batch.
+    pub fn truncate_keys_below(&mut self, lower_bound: &K)
+    where
+        K: DBData,
+        R: DBWeight,
+    {
+        let mut cursor = self.file.rows().before::<K, R>();
+        unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
+        self.truncate_below(cursor.position() as usize);
+    }
 }
 
 impl<K, R> Clone for FileColumnLayer<K, R> {

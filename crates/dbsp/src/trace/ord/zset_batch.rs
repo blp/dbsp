@@ -251,8 +251,9 @@ where
         AntichainRef::empty()
     }
 
-    fn truncate_keys_below(&mut self, _lower_bound: &Self::Key) {
-        todo!()
+    fn truncate_keys_below(&mut self, lower_bound: &Self::Key) {
+        self.layer.truncate_keys_below(lower_bound);
+        
     }
 
     fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, sample: &mut Vec<Self::Key>)
