@@ -60,18 +60,21 @@ where
     where
         P: Fn(&K) -> bool + Clone,
     {
-        todo!()
+        unsafe { self.cursor.seek_forward_until(predicate) }.unwrap();
+        self.item = unsafe { self.cursor.item() };
     }
 
     pub fn seek_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        todo!()
+        unsafe { self.cursor.seek_backward_until(predicate) }.unwrap();
+        self.item = unsafe { self.cursor.item() };
     }
 
     pub fn move_to_row(&mut self, row: usize) {
         self.cursor.move_to_row(row as u64).unwrap();
+        self.item = unsafe { self.cursor.item() };
     }
 }
 

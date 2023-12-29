@@ -180,7 +180,7 @@ where
     K: DBData,
     R: DBWeight,
 {
-    fn size_of_children(&self, context: &mut size_of::Context) {
+    fn size_of_children(&self, _context: &mut size_of::Context) {
         // XXX
     }
 }

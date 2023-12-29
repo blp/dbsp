@@ -224,6 +224,66 @@ impl DataBlock {
         self.item::<K, A>((row - self.first_row as u64) as usize)
     }
 
+    unsafe fn find_first<K, A, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut start = 0;
+        let mut end = self.n_values();
+        let mut best = None;
+        while start < end {
+            let mid = (start + end) / 2;
+            let key = self.key::<K, A>(mid);
+            let row = self.first_row + mid as u64;
+            let cmp = range_compare(target_rows, row);
+            match cmp {
+                Ordering::Equal => {
+                    if predicate(&key) {
+                        best = Some(mid);
+                        end = mid;
+                    } else {
+                        start = mid + 1;
+                    }
+                }
+                Ordering::Less => end = mid,
+                Ordering::Greater => start = mid + 1,
+            };
+        }
+        best
+    }
+
+    unsafe fn find_last<K, A, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut start = 0;
+        let mut end = self.n_values();
+        let mut best = None;
+        while start < end {
+            let mid = (start + end) / 2;
+            let key = self.key::<K, A>(mid);
+            let row = self.first_row + mid as u64;
+            let cmp = range_compare(target_rows, row);
+            match cmp {
+                Ordering::Equal => {
+                    if predicate(&key) {
+                        best = Some(mid);
+                        start = mid + 1;
+                    } else {
+                        end = mid;
+                    }
+                }
+                Ordering::Less => end = mid,
+                Ordering::Greater => start = mid + 1,
+            };
+        }
+        best
+    }
+
     unsafe fn min_ge<K, A>(&self, target_rows: &Range<u64>, target_key: &K) -> Option<usize>
     where
         K: Rkyv + Ord,
@@ -446,6 +506,70 @@ impl IndexBlock {
         let offset = self.bounds.get(&self.raw, index) as usize;
         let archived = archived_value::<K>(&self.raw, offset);
         archived.deserialize(&mut Infallible).unwrap()
+    }
+
+    unsafe fn find_first<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    where
+        K: Rkyv + Ord,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut start = 0;
+        let mut end = self.n_children() * 2;
+        let mut best = None;
+        while start < end {
+            let mid = (start + end) / 2;
+            let bound = self.get_bound::<K>(mid);
+            let row = self.get_row2(mid);
+            let cmp = range_compare(target_rows, row);
+            match cmp {
+                Ordering::Equal => {
+                    if predicate(&bound) {
+                        best = Some(mid / 2);
+                        end = mid;
+                    } else {
+                        start = mid + 1;
+                    }
+                }
+                Ordering::Less => {
+                    best = Some(mid / 2);
+                    end = mid;
+                }
+                Ordering::Greater => start = mid + 1,
+            };
+        }
+        best
+    }
+
+    unsafe fn find_last<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    where
+        K: Rkyv + Ord,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut start = 0;
+        let mut end = self.n_children() * 2;
+        let mut best = None;
+        while start < end {
+            let mid = (start + end) / 2;
+            let bound = self.get_bound::<K>(mid);
+            let row = self.get_row2(mid);
+            let cmp = range_compare(target_rows, row);
+            match cmp {
+                Ordering::Equal => {
+                    if predicate(&bound) {
+                        best = Some(mid / 2);
+                        start = mid + 1;
+                    } else {
+                        end = mid;
+                    }
+                }
+                Ordering::Less => {
+                    best = Some(mid / 2);
+                    end = mid;
+                }
+                Ordering::Greater => start = mid + 1,
+            };
+        }
+        best
     }
 
     unsafe fn min_ge<K>(&self, target_rows: &Range<u64>, target: &K) -> Option<usize>
@@ -848,6 +972,38 @@ where
     K: Rkyv + ?Sized + Ord,
     A: Rkyv,
 {
+    pub unsafe fn seek_forward_until<P>(&mut self, predicate: P) -> Result<(), Error>
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        // XXX optimization possibilities here
+        let position = Position::find_first::<K, A, P>(&self.row_group, predicate)?;
+        if let Position::Row(ref old_path) = self.position {
+            if let Position::Row(ref new_path) = position {
+                if new_path.row < old_path.row {
+                    return Ok(());
+                }
+            }
+        }
+        self.position = position;
+        Ok(())
+    }
+    pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        // XXX optimization possibilities here
+        let position = Position::find_last::<K, A, P>(&self.row_group, predicate)?;
+        if let Position::Row(ref old_path) = self.position {
+            if let Position::Row(ref new_path) = position {
+                if new_path.row < old_path.row {
+                    return Ok(());
+                }
+            }
+        }
+        self.position = position;
+        Ok(())
+    }
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
         let position = Position::for_value_or_larger::<K, A>(&self.row_group, target)?;
@@ -951,6 +1107,74 @@ impl Path {
             *self = Self::for_row_from_hint(reader, self, row)?;
         }
         Ok(())
+    }
+    unsafe fn find_first<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Option<Path>, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut indexes = Vec::new();
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
+            return Ok(None);
+        };
+        loop {
+            match node.read(&row_group.reader.0.file)? {
+                TreeBlock::Index(index_block) => {
+                    let Some(child_idx) = index_block.find_first(&row_group.rows, &predicate) else {
+                        return Ok(None);
+                    };
+                    node = index_block.get_child(child_idx);
+                    indexes.push(index_block);
+                }
+                TreeBlock::Data(data_block) => {
+                    let Some(child_idx) =
+                        data_block.find_first::<K, A, _>(&row_group.rows, &predicate)
+                    else {
+                        return Ok(None);
+                    };
+                    return Ok(Some(Path {
+                        row: data_block.first_row + child_idx as u64,
+                        indexes,
+                        data: data_block,
+                    }));
+                }
+            }
+        }
+    }
+    unsafe fn find_last<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Option<Path>, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        let mut indexes = Vec::new();
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
+            return Ok(None);
+        };
+        loop {
+            match node.read(&row_group.reader.0.file)? {
+                TreeBlock::Index(index_block) => {
+                    let Some(child_idx) = index_block.find_last(&row_group.rows, &predicate) else {
+                        return Ok(None);
+                    };
+                    node = index_block.get_child(child_idx);
+                    indexes.push(index_block);
+                }
+                TreeBlock::Data(data_block) => {
+                    let Some(child_idx) =
+                        data_block.find_last::<K, A, _>(&row_group.rows, &predicate)
+                    else {
+                        return Ok(None);
+                    };
+                    return Ok(Some(Path {
+                        row: data_block.first_row + child_idx as u64,
+                        indexes,
+                        data: data_block,
+                    }));
+                }
+            }
+        }
     }
     unsafe fn for_value_or_larger<K, A>(
         row_group: &RowGroup,
@@ -1113,6 +1337,28 @@ impl Position {
     }
     fn has_value(&self) -> bool {
         self.path().is_some()
+    }
+    unsafe fn find_first<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        match Path::find_first::<K, A, P>(row_group, predicate)? {
+            Some(path) => Ok(Position::Row(path)),
+            None => Ok(Position::After),
+        }
+    }
+    unsafe fn find_last<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        match Path::find_last::<K, A, P>(row_group, predicate)? {
+            Some(path) => Ok(Position::Row(path)),
+            None => Ok(Position::Before),
+        }
     }
     unsafe fn for_value_or_larger<K, A>(row_group: &RowGroup, target: &K) -> Result<Self, Error>
     where

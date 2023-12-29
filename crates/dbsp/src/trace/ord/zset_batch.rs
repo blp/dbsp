@@ -241,7 +241,7 @@ where
         AntichainRef::empty()
     }
 
-    fn truncate_keys_below(&mut self, lower_bound: &Self::Key) {
+    fn truncate_keys_below(&mut self, _lower_bound: &Self::Key) {
         todo!()
     }
 
