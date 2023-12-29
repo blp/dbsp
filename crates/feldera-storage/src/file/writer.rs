@@ -173,7 +173,6 @@ impl ColumnWriter {
 
     fn get_index_block(&mut self, level: usize) -> &mut IndexBlockBuilder {
         if level >= self.index_blocks.len() {
-            println!("index level {level}");
             debug_assert_eq!(level, self.index_blocks.len());
             self.index_blocks.push(IndexBlockBuilder::new(
                 &self.parameters,

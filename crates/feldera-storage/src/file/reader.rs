@@ -763,8 +763,12 @@ impl Reader {
         } else if self.0.columns.len() != other.0.columns.len() {
             // Definitely different.
             Some(false)
+        } else if let Some(true) = is_same_file(&self.0.file, &other.0.file) {
+            // Definitely the same.
+            Some(true)
         } else {
-            is_same_file(&self.0.file, &other.0.file)
+            // Who knows?
+            None
         }
     }
 
@@ -785,9 +789,10 @@ fn is_same_file(file1: &File, file2: &File) -> Option<bool> {
     #[cfg(unix)]
     if let (Ok(md1), Ok(md2)) = (file1.metadata(), file2.metadata()) {
         use std::os::unix::fs::MetadataExt;
-        return Some(md1.dev() == md2.dev() && md1.ino() == md2.ino());
+        Some(md1.dev() == md2.dev() && md1.ino() == md2.ino())
+    } else {
+        None
     }
-    None
 }
 
 #[derive(Clone)]
@@ -876,7 +881,7 @@ impl<'a> RowGroup<'a> {
     }
 
     pub fn subset(mut self, subset: Range<u64>) -> Self {
-        assert!(subset.end < self.len());
+        assert!(subset.end <= self.len());
         self.rows.start += subset.start;
         self.rows.end = self.rows.start + (subset.end - subset.start);
         self

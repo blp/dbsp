@@ -95,11 +95,18 @@ impl<K, R> Clone for FileColumnLayer<K, R> {
     }
 }
 
-impl<K, R> Debug for FileColumnLayer<K, R> {
+impl<K, R> Debug for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        f.debug_struct("FileColumnLayer")
-            .field("lower_bound", &self.lower_bound)
-            .finish()
+        write!(f, "FileColumnLayer(lower_bound={}):", self.lower_bound)?;
+        let mut cursor = self.cursor();
+        while let Some((key, diff)) = cursor.take_current_item() {
+            write!(f, " ({key:?}, {diff:+?})")?;
+        }
+        Ok(())
     }
 }
 
