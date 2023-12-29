@@ -7,11 +7,16 @@ use rand::{seq::index::sample, Rng};
 use rkyv::ser::Serializer;
 use rkyv::{Archive, Archived, Deserialize, Fallible, Serialize};
 use size_of::SizeOf;
-use std::cmp::min;
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
-use std::marker::PhantomData;
+use std::ops::AddAssign;
+use std::{
+    cmp::min,
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
+    marker::PhantomData,
+    ops::{Add, Neg},
+};
 
-use crate::trace::layers::{Cursor, Trie};
+use crate::algebra::{AddAssignByRef, AddByRef, NegByRef};
+use crate::trace::layers::{Builder, Cursor, Trie, TupleBuilder};
 use crate::{DBData, DBWeight, NumEntries};
 
 pub use self::builders::FileColumnLayerBuilder;
@@ -224,5 +229,90 @@ impl<K, R> NumEntries for FileColumnLayer<K, R> {
     fn num_entries_deep(&self) -> usize {
         // FIXME: Doesn't take element sizes into account
         self.len() as usize
+    }
+}
+
+impl<K, R> Add<Self> for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if self.is_empty() {
+            rhs
+        } else if rhs.is_empty() {
+            self
+        } else {
+            self.merge(&rhs)
+        }
+    }
+}
+
+impl<K, R> AddAssign<Self> for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn add_assign(&mut self, rhs: Self) {
+        if !rhs.is_empty() {
+            *self = self.merge(&rhs);
+        }
+    }
+}
+
+impl<K, R> AddAssignByRef for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn add_assign_by_ref(&mut self, other: &Self) {
+        if !other.is_empty() {
+            *self = self.merge(other);
+        }
+    }
+}
+
+impl<K, R> AddByRef for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    fn add_by_ref(&self, rhs: &Self) -> Self {
+        self.merge(rhs)
+    }
+}
+
+impl<K, R> NegByRef for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight + NegByRef,
+{
+    fn neg_by_ref(&self) -> Self {
+        let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
+        let mut cursor = self.cursor();
+        while let Some((key, diff)) = cursor.take_current_item() {
+            let diff = diff.neg_by_ref();
+            tuple_builder.push_tuple((key, diff));
+        }
+        tuple_builder.done()
+    }
+}
+
+impl<K, R> Neg for FileColumnLayer<K, R>
+where
+    K: DBData,
+    R: DBWeight + Neg<Output = R>,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
+        let mut cursor = self.cursor();
+        while let Some((key, diff)) = cursor.take_current_item() {
+            tuple_builder.push_tuple((key, -diff));
+        }
+        tuple_builder.done()
     }
 }

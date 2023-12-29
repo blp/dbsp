@@ -146,13 +146,18 @@ where
                 if sample_size <= num_quantiles {
                     sample
                 } else {
+                    let mut keys = Vec::new();
+                    let mut cursor = sample.cursor();
+                    while cursor.val_valid() {
+                        keys.push(cursor.key().clone());
+                        cursor.step_key();
+                    }
+                    
                     let mut builder =
                         <<OrdZSet<_, _> as Batch>::Builder>::with_capacity((), num_quantiles);
                     for i in 0..num_quantiles {
-/*
-                        let key = sample.layer.keys()[(i * sample_size) / num_quantiles].clone();
+                        let key = keys[(i * sample_size) / num_quantiles].clone();
                         builder.push((key, HasOne::one()));
-*/
                     }
                     builder.done()
                 }
@@ -182,13 +187,18 @@ where
                 if sample_size <= num_quantiles {
                     sample
                 } else {
+                    let mut keys = Vec::new();
+                    let mut cursor = sample.cursor();
+                    while cursor.val_valid() {
+                        keys.push(cursor.key().clone());
+                        cursor.step_key();
+                    }
+                    
                     let mut builder =
                         <<OrdZSet<_, _> as Batch>::Builder>::with_capacity((), num_quantiles);
                     for i in 0..num_quantiles {
-/*
-                        let key = sample.layer.keys()[(i * sample_size) / num_quantiles].clone();
+                        let key = keys[(i * sample_size) / num_quantiles].clone();
                         builder.push((key, HasOne::one()));
-*/
                     }
                     builder.done()
                 }
