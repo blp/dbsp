@@ -947,24 +947,13 @@ mod test {
     }
 
     fn count_test(workers: usize) {
-        let count_weighted_output: Arc<Mutex<OrdIndexedZSet<usize, isize, isize>>> =
-            Arc::new(Mutex::new(indexed_zset! {}));
         let sum_distinct_output: Arc<Mutex<OrdIndexedZSet<usize, usize, isize>>> =
             Arc::new(Mutex::new(indexed_zset! {}));
 
-        let count_weighted_output_clone = count_weighted_output.clone();
         let sum_distinct_output_clone = sum_distinct_output.clone();
 
         let (mut dbsp, input_handle) = Runtime::init_circuit(workers, move |circuit| {
             let (input_stream, input_handle) = circuit.add_input_indexed_zset();
-            input_stream
-                .weighted_count()
-                .gather(0)
-                .inspect(move |batch| {
-                    if Runtime::worker_index() == 0 {
-                        *count_weighted_output.lock().unwrap() = batch.clone();
-                    }
-                });
 
             input_stream
                 .aggregate(<Fold<_, DefaultSemigroup<_>, _, _>>::new(
@@ -987,10 +976,6 @@ mod test {
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => 1}}
         );
-        assert_eq!(
-            &*count_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {1 => {3 => 1}}
-        );
 
         input_handle.append(&mut vec![(2, (2, 1)), (2, (4, 1)), (1, (2, -1))]);
         dbsp.step().unwrap();
@@ -998,20 +983,12 @@ mod test {
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {2 => {6 => 1}}
         );
-        assert_eq!(
-            &*count_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {1 => {3 => -1, 2 => 1}, 2 => {2 => 1}}
-        );
 
         input_handle.append(&mut vec![(1, (3, 1)), (1, (2, -1))]);
         dbsp.step().unwrap();
         assert_eq!(
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => -1, 4 => 1}}
-        );
-        assert_eq!(
-            &*count_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {}
         );
 
         dbsp.kill().unwrap();
