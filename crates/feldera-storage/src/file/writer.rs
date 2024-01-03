@@ -11,8 +11,8 @@ use binrw::{
 };
 use crc32c::crc32c;
 use rkyv::{
-    archived_value, ser::serializers::AlignedSerializer, with::Inline, AlignedVec, Archive,
-    Archived, Deserialize, Infallible, Serialize,
+    archived_value, ser::serializers::AlignedSerializer, AlignedVec, Archive, Archived,
+    Deserialize, Infallible, Serialize,
 };
 
 use crate::file::BlockLocation;
@@ -20,7 +20,7 @@ use crate::file::BlockLocation;
 use rkyv::ser::Serializer as RkyvSerializer;
 
 use super::{
-    DataBlockHeader, FileHeader, FileTrailer, FileTrailerColumn, FixedLen, IndexBlockHeader,
+    DataBlockHeader, FileHeader, FileTrailer, FileTrailerColumn, FixedLen, IndexBlockHeader, Item,
     NodeType, Rkyv, Serializer, Varint, VERSION_NUMBER,
 };
 
@@ -324,12 +324,6 @@ struct DataBlock {
     max_offset: usize,
     n_values: usize,
 }
-
-#[derive(Archive, Serialize)]
-struct Item<'a, K, A>(#[with(Inline)] &'a K, #[with(Inline)] &'a A)
-where
-    K: Rkyv,
-    A: Rkyv;
 
 impl DataBlockBuilder {
     fn new(parameters: &Rc<Parameters>) -> Self {
@@ -927,8 +921,21 @@ mod test {
         let mut layer_file =
             Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000i64 {
-            layer_file.write(&(i, ())).unwrap();
+            layer_file.write((&i, &())).unwrap();
         }
+        layer_file.close().unwrap();
+    }
+
+    #[test]
+    fn write_tuple() {
+        let mut layer_file =
+            Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
+        layer_file.write((&(1i32, 'a'), &2i32)).unwrap();
+        layer_file.write((&(3, 'b'), &4)).unwrap();
+        layer_file.write((&(5, 'a'), &6)).unwrap();
+        layer_file.write((&(7, 'c'), &8)).unwrap();
+        layer_file.write((&(9, 'a'), &10)).unwrap();
+        layer_file.write((&(11, 'b'), &12)).unwrap();
         layer_file.close().unwrap();
     }
 
@@ -937,7 +944,7 @@ mod test {
         let mut layer_file =
             Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000 {
-            layer_file.write(&(format!("{i:04}"), ())).unwrap();
+            layer_file.write((&format!("{i:04}"), &())).unwrap();
         }
         layer_file.close().unwrap();
     }
@@ -948,9 +955,9 @@ mod test {
             Writer2::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000_u32 {
             for j in 0..10_u32 {
-                layer_file.write2(&(j, ())).unwrap();
+                layer_file.write2((&j, &())).unwrap();
             }
-            layer_file.write1(&(i, ())).unwrap();
+            layer_file.write1((&i, &())).unwrap();
         }
         layer_file.close().unwrap();
     }

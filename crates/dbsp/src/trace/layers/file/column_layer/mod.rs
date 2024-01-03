@@ -52,9 +52,9 @@ impl<K, R> FileColumnLayer<K, R> {
         R: DBWeight,
         RG: Rng,
     {
-        let size = self.len();
+        let size = self.len() - self.lower_bound as u64;
 
-        let mut cursor = self.cursor();
+        let mut cursor = self.cursor_from(self.lower_bound, self.len() as usize);
         if sample_size as u64 >= size {
             output.reserve(size as usize);
 
@@ -140,11 +140,6 @@ where
 
     fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor<'_> {
         FileColumnLayerCursor::new(lower, self, (lower, upper))
-    }
-
-    fn cursor(&self) -> Self::Cursor<'_> {
-        self.cursor_from(0, self.file.rows().len() as usize) // XXX this cast is
-                                                             // risky
     }
 
     fn truncate_below(&mut self, lower_bound: usize) {

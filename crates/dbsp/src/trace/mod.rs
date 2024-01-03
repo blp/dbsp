@@ -37,14 +37,14 @@ pub mod consolidation;
 pub mod cursor;
 pub mod layers;
 pub mod ord;
-#[cfg(feature = "persistence")]
-pub mod persistent;
+//#[cfg(feature = "persistence")]
+//pub mod persistent;
 pub mod spine_fueled;
 
 pub use cursor::{Consumer, Cursor, ValueConsumer};
-#[cfg(feature = "persistence")]
-pub use persistent::PersistentTrace as Spine;
-#[cfg(not(feature = "persistence"))]
+//#[cfg(feature = "persistence")]
+//pub use persistent::PersistentTrace as Spine;
+//#[cfg(not(feature = "persistence"))]
 pub use spine_fueled::Spine;
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use rkyv::{
     ser::serializers::{AllocSerializer}, AlignedVec, Archive, Archived, Deserialize, Infallible,
-    Serialize,
+    Serialize, with::Inline,
 };
 use thiserror::Error as ThisError;
 
@@ -310,3 +310,9 @@ pub type Serializer<'a> = AllocSerializer<1024>;
 
 /// The particular [`rkyv`] deserializer that we use.
 pub type Deserializer = Infallible;
+
+#[derive(Archive, Serialize)]
+struct Item<'a, K, A>(#[with(Inline)] &'a K, #[with(Inline)] &'a A)
+where
+    K: Rkyv,
+    A: Rkyv;

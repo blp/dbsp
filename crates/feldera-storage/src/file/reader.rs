@@ -17,9 +17,11 @@ use crc32c::crc32c;
 use rkyv::{archived_value, AlignedVec, Deserialize, Infallible};
 use tempfile::tempfile;
 
+use crate::file::Item;
+
 use super::{
     BlockLocation, CorruptionError, DataBlockHeader, Error, FileHeader, FileTrailer,
-    FileTrailerColumn, IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER,
+    FileTrailerColumn, IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER, ArchivedItem,
 };
 
 #[derive(Clone)]
@@ -193,35 +195,47 @@ impl DataBlock {
             row_groups.get(&self.raw, index)..row_groups.get(&self.raw, index + 1)
         })
     }
-    unsafe fn key<K, A>(&self, index: usize) -> K
+    unsafe fn archived_item<K, A>(&self, index: usize) -> &ArchivedItem<K, A>
     where
         K: Rkyv,
         A: Rkyv,
     {
-        let archived = archived_value::<(K, A)>(&self.raw, self.value_map.get(&self.raw, index));
-        archived.0.deserialize(&mut Infallible).unwrap()
-    }
-    unsafe fn key_for_row<K, A>(&self, row: u64) -> K
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        self.key::<K, A>((row - self.first_row as u64) as usize)
+        archived_value::<Item<K, A>>(&self.raw, self.value_map.get(&self.raw, index))
     }
     unsafe fn item<K, A>(&self, index: usize) -> (K, A)
     where
         K: Rkyv,
         A: Rkyv,
     {
-        let archived = archived_value::<(K, A)>(&self.raw, self.value_map.get(&self.raw, index));
-        archived.deserialize(&mut Infallible).unwrap()
+        let item = self.archived_item::<K, A>(index);
+        let key = item.0.deserialize(&mut Infallible).unwrap();
+        let aux = item.1.deserialize(&mut Infallible).unwrap();
+        (key, aux)
     }
     unsafe fn item_for_row<K, A>(&self, row: u64) -> (K, A)
     where
         K: Rkyv,
         A: Rkyv,
     {
-        self.item::<K, A>((row - self.first_row as u64) as usize)
+        let index = (row - self.first_row) as usize;
+        self.item(index)
+    }
+    unsafe fn key<K, A>(&self, index: usize) -> K
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
+        let item = self.archived_item::<K, A>(index);
+        let key = item.0.deserialize(&mut Infallible).unwrap();
+        key
+    }
+    unsafe fn key_for_row<K, A>(&self, row: u64) -> K
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
+        let index = (row - self.first_row) as usize;
+        self.key::<K, A>(index)
     }
 
     unsafe fn find_first<K, A, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
@@ -942,8 +956,13 @@ where
     }
 
     pub fn move_last(&mut self) -> Result<(), Error> {
-        self.position
-            .move_to_row(&self.row_group, self.row_group.rows.end - 1)
+        if !self.row_group.is_empty() {
+            self.position
+                .move_to_row(&self.row_group, self.row_group.rows.end - 1)
+        } else {
+            self.position = Position::After;
+            Ok(())
+        }
     }
 
     pub fn move_to_row(&mut self, row: u64) -> Result<(), Error> {
@@ -1425,6 +1444,21 @@ mod test {
         unsafe { cursor.advance_to_value_or_larger(&997).unwrap() };
         while let Some(value) = unsafe { cursor.key() } {
             println!("{value}");
+            count += 1;
+            cursor.move_next().unwrap();
+        }
+        println!("count={count}");
+    }
+
+    #[test]
+    fn read_tuple() {
+        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
+        let mut cursor = reader.rows().first::<(i32, char), i32>().unwrap();
+        let mut count = 0;
+        while let Some(value) = unsafe { cursor.key() } {
+            let number = value.0;
+            let c = value.1;
+            println!("({number}, {c:?})");
             count += 1;
             cursor.move_next().unwrap();
         }
