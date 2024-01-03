@@ -2,7 +2,7 @@ mod consumer;
 
 pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
-    reader::{Cursor as FileCursor, Reader},
+    reader::{Cursor as FileCursor, Reader, RowGroup},
     writer::{Parameters, Writer2},
 };
 use rand::{seq::index::sample, Rng};
@@ -252,7 +252,7 @@ where
 
     fn copy_value<'a, VF>(
         &mut self,
-        cursor: &mut FileOrderedValueCursor<'a, V, R>,
+        cursor: &mut FileOrderedValueCursor<'a, K, V, R>,
         value_filter: &VF,
     ) -> u64
     where
@@ -271,8 +271,8 @@ where
 
     fn merge_values<'a, VF>(
         &mut self,
-        mut cursor1: FileOrderedValueCursor<'a, V, R>,
-        mut cursor2: FileOrderedValueCursor<'a, V, R>,
+        mut cursor1: FileOrderedValueCursor<'a, K, V, R>,
+        mut cursor2: FileOrderedValueCursor<'a, K, V, R>,
         value_filter: &VF,
     ) -> bool
     where
@@ -549,7 +549,9 @@ where
         key
     }
 
-    pub fn take_current_key_and_values(&mut self) -> Option<(K, FileOrderedValueCursor<'_, V, R>)> {
+    pub fn take_current_key_and_values(
+        &mut self,
+    ) -> Option<(K, FileOrderedValueCursor<'s, K, V, R>)> {
         if let Some(key) = self.key.take() {
             let values = self.values();
             self.step();
@@ -598,7 +600,7 @@ where
     where
         Self: 'k;
 
-    type ValueCursor = FileOrderedValueCursor<'s, V, R>;
+    type ValueCursor = FileOrderedValueCursor<'s, K, V, R>;
 
     fn keys(&self) -> usize {
         self.cursor.n_rows() as usize
@@ -608,8 +610,8 @@ where
         self.current_key()
     }
 
-    fn values(&self) -> FileOrderedValueCursor<'s, V, R> {
-        FileOrderedValueCursor::new(self)
+    fn values<'a>(&'a self) -> FileOrderedValueCursor<'s, K, V, R> {
+        FileOrderedValueCursor::new(self.storage, &self.cursor)
     }
 
     fn step(&mut self) {
@@ -664,74 +666,74 @@ where
 }
 
 #[derive(Debug)]
-pub struct FileOrderedValueCursor<'s, V, R>
+pub struct FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    item: Option<(V, R)>,
+    storage: &'s FileOrderedLayer<K, V, R>,
     cursor: FileCursor<'s, V, R>,
 }
 
-impl<'s, V, R> FileOrderedValueCursor<'s, V, R>
+impl<'s, K, V, R> FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    pub fn new<K>(cursor: &'s FileOrderedCursor<K, V, R>) -> Self
+    pub fn new(storage: &'s FileOrderedLayer<K, V, R>, cursor: &FileCursor<'s, K, ()>) -> Self
     where
         K: DBData,
     {
-        let cursor = cursor.cursor.next_column().first().unwrap();
-        let item = unsafe { cursor.item() };
-        Self { cursor, item }
+        Self {
+            storage, cursor: cursor.next_column().first().unwrap()
+        }
     }
 
     pub fn current_value(&self) -> &V {
-        &self.item.as_ref().unwrap().0
+        todo!()
     }
 
     pub fn current_diff(&self) -> &R {
-        &self.item.as_ref().unwrap().1
+        todo!()
     }
 
     pub fn current_item(&self) -> (&V, &R) {
-        let item = self.item.as_ref().unwrap();
-        (&item.0, &item.1)
+        todo!()
+
     }
 
     pub fn take_current_item(&mut self) -> Option<(V, R)> {
-        let item = self.item.take();
-        self.step();
-        item
+        todo!()
     }
 
     fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, V, R>)) {
-        f(&mut self.cursor);
-        self.item = unsafe { self.cursor.item() };
+        todo!()
     }
 
     pub fn remaining_rows(&self) -> u64 {
-        self.cursor.remaining_rows()
+        todo!()
     }
 
     pub fn seek_val_with<P>(&mut self, predicate: P)
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.move_cursor(|cursor| unsafe { cursor.seek_forward_until(&predicate) }.unwrap());
+        todo!()
     }
 
     pub fn seek_val_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.move_cursor(|cursor| unsafe { cursor.seek_backward_until(&predicate) }.unwrap());
+        todo!()
     }
 }
 
-impl<'s, V, R> Cursor<'s> for FileOrderedValueCursor<'s, V, R>
+impl<'s, K, V, R> Cursor<'s> for FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {
@@ -744,33 +746,34 @@ where
     type ValueCursor = ();
 
     fn keys(&self) -> usize {
-        self.cursor.n_rows() as usize
+        todo!()
+
     }
 
     fn item<'a>(&'a self) -> Self::Item<'a> {
-        self.current_item()
+        todo!()
     }
 
     fn values(&self) {}
 
     fn step(&mut self) {
-        self.move_cursor(|cursor| cursor.move_next().unwrap());
+        todo!()
     }
 
     fn seek(&mut self, key: &Self::Key) {
-        self.move_cursor(|cursor| unsafe { cursor.advance_to_value_or_larger(key) }.unwrap());
+        todo!()
     }
 
     fn valid(&self) -> bool {
-        self.cursor.has_value()
+        todo!()
     }
 
     fn rewind(&mut self) {
-        self.move_cursor(|cursor| cursor.move_first().unwrap());
+        todo!()
     }
 
     fn position(&self) -> usize {
-        self.cursor.position() as usize
+        todo!()
     }
 
     fn reposition(&mut self, _lower: usize, _upper: usize) {
@@ -778,15 +781,15 @@ where
     }
 
     fn step_reverse(&mut self) {
-        self.move_cursor(|cursor| cursor.move_prev().unwrap());
+        todo!()
     }
 
     fn seek_reverse(&mut self, key: &Self::Key) {
-        self.move_cursor(|cursor| unsafe { cursor.rewind_to_value_or_smaller(key) }.unwrap());
+        todo!()
     }
 
     fn fast_forward(&mut self) {
-        self.move_cursor(|cursor| cursor.move_last().unwrap());
+        todo!()
     }
 }
 

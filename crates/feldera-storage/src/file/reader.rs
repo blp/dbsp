@@ -983,7 +983,7 @@ where
         self.position.item::<K, A>()
     }
 
-    pub fn next_column(&self) -> RowGroup {
+    pub fn next_column<'b>(&'b self) -> RowGroup<'a> {
         RowGroup::new(
             self.row_group.reader,
             self.row_group.column + 1,
