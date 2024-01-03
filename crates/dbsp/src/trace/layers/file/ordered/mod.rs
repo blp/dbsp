@@ -1,6 +1,6 @@
-//mod consumer;
+mod consumer;
 
-//pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
+pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
     reader::{Cursor as FileCursor, Reader},
     writer::{Parameters, Writer2},
@@ -388,6 +388,16 @@ where
         key
     }
 
+    pub fn take_current_key_and_values(&mut self) -> Option<(K, FileOrderedValueCursor<'_, V, R>)> {
+        if let Some(key) = self.key.take() {
+            let values = self.values();
+            self.step();
+            Some((key, values))
+        } else {
+            None
+        }
+    }
+
     fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, K, ()>)) {
         f(&mut self.cursor);
         self.key = unsafe { self.cursor.key() };
@@ -521,6 +531,10 @@ where
     fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, V, R>)) {
         f(&mut self.cursor);
         self.item = unsafe { self.cursor.item() };
+    }
+
+    fn remaining_rows(&self) -> u64 {
+        self.cursor.remaining_rows()
     }
 }
 

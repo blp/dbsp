@@ -1005,6 +1005,10 @@ where
     pub fn position(&self) -> u64 {
         self.position.position(&self.row_group)
     }
+
+    pub fn remaining_rows(&self) -> u64 {
+        self.position.remaining_rows(&self.row_group)
+    }
 }
 
 impl<'a, K, A> Cursor<'a, K, A>
@@ -1426,6 +1430,13 @@ impl Position {
             Position::Before => 0,
             Position::Row(path) => path.row,
             Position::After => row_group.rows.end,
+        }
+    }
+    fn remaining_rows(&self, row_group: &RowGroup) -> u64 {
+        match self {
+            Position::Before => row_group.len(),
+            Position::Row(path) => path.row - row_group.rows.start,
+            Position::After => 0,
         }
     }
 }

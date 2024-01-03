@@ -1,10 +1,13 @@
 use crate::{
-    trace::{Consumer, ValueConsumer},
+    trace::{
+        layers::{Cursor, Trie},
+        Consumer, ValueConsumer,
+    },
     DBData, DBWeight,
 };
 use ouroboros::self_referencing;
 
-use super::{FileOrderedCursor, FileOrderedLayer};
+use super::{FileOrderedCursor, FileOrderedLayer, FileOrderedValueCursor};
 
 /// A [`Consumer`] implementation for [`FileOrderedLayer`]s that contain
 /// [`ColumnLayer`]s
@@ -33,7 +36,7 @@ where
         Self: 'a;
 
     fn key_valid(&self) -> bool {
-        self.with_cursor(|cursor| cursor.valid)
+        self.with_cursor(|cursor| cursor.valid())
     }
 
     fn peek_key(&self) -> &K {
@@ -41,14 +44,24 @@ where
     }
 
     fn next_key(&mut self) -> (K, Self::ValueConsumer<'_>) {
-        todo!()
+        self.with_mut(|fields| {
+            let (key, values) = fields.cursor.take_current_key_and_values().unwrap();
+            (
+                key,
+                FileOrderedLayerValuesBuilder {
+                    storage: &fields.storage,
+                    cursor_builder: |_| values,
+                }
+                .build(),
+            )
+        })
     }
 
     fn seek_key(&mut self, key: &K)
     where
         K: Ord,
     {
-        todo!()
+        self.with_cursor_mut(|cursor| cursor.seek(key))
     }
 }
 
@@ -59,49 +72,47 @@ where
     R: DBWeight,
 {
     fn from(layer: FileOrderedLayer<K, V, R>) -> Self {
-        todo!()
+        FileOrderedLayerConsumerBuilder {
+            storage: layer,
+            cursor_builder: |storage| storage.cursor(),
+        }
+        .build()
     }
 }
 
 /// A [`ValueConsumer`] impl for the values yielded by
 /// [`FileOrderedLayerConsumer`]
-#[derive(Debug)]
 #[self_referencing]
-pub struct FileOrderedLayerValues<K, V, R>
-where
-    K: DBData,
-    V: DBData,
-    R: DBWeight,
-{}
-
-/*
-impl<'a, K, V, R> FileOrderedLayerValues<'a, K, V, R>
+pub struct FileOrderedLayerValues<'a, K, V, R>
 where
     K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    pub fn new(consumer: &'a mut FileOrderedLayerConsumer<K, V, R>) -> Self {
-        todo!()
-    }
+    storage: &'a FileOrderedLayer<K, V, R>,
+    #[borrows(storage)]
+    #[covariant]
+    cursor: FileOrderedValueCursor<'this, V, R>,
 }
- */
 
-impl<'a, K, V, R> ValueConsumer<'a, K, V, R> for FileOrderedLayerValues<'a, K, V, R>
+impl<'a, K, V, R> ValueConsumer<'a, V, R, ()> for FileOrderedLayerValues<'a, K, V, R>
 where
     K: DBData,
     V: DBData,
     R: DBWeight,
 {
     fn value_valid(&self) -> bool {
-        todo!()
+        self.with_cursor(|cursor| cursor.valid())
     }
 
     fn next_value(&mut self) -> (V, R, ()) {
-        todo!()
+        self.with_cursor_mut(|cursor| {
+            let (value, diff) = cursor.take_current_item().unwrap();
+            (value, diff, ())
+        })
     }
 
     fn remaining_values(&self) -> usize {
-        todo!()
+        self.with_cursor(|cursor| cursor.remaining_rows() as usize)
     }
 }
