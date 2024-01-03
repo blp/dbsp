@@ -614,6 +614,7 @@ where
         } else {
             todo!()
         }
+        FileOrderedValueCursor::new(self)
     }
 
     fn step(&mut self) {
@@ -682,11 +683,11 @@ where
     V: DBData,
     R: DBWeight,
 {
-    pub fn new<K>(parent_row: &'s FileCursor<K, ()>) -> Self
+    pub fn new<K>(cursor: &'s FileOrderedCursor<K, V, R>) -> Self
     where
-        K: Rkyv,
+        K: DBData,
     {
-        let cursor = parent_row.next_column().unwrap().first().unwrap();
+        let cursor = cursor.cursor.next_column().first().unwrap();
         let item = unsafe { cursor.item() };
         Self { cursor, item }
     }
@@ -715,7 +716,7 @@ where
         self.item = unsafe { self.cursor.item() };
     }
 
-    fn remaining_rows(&self) -> u64 {
+    pub fn remaining_rows(&self) -> u64 {
         self.cursor.remaining_rows()
     }
 

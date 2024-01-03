@@ -20,8 +20,8 @@ use tempfile::tempfile;
 use crate::file::Item;
 
 use super::{
-    BlockLocation, CorruptionError, DataBlockHeader, Error, FileHeader, FileTrailer,
-    FileTrailerColumn, IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER, ArchivedItem,
+    ArchivedItem, BlockLocation, CorruptionError, DataBlockHeader, Error, FileHeader, FileTrailer,
+    FileTrailerColumn, IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER,
 };
 
 #[derive(Clone)]
@@ -983,10 +983,12 @@ where
         self.position.item::<K, A>()
     }
 
-    pub fn next_column(&self) -> Option<RowGroup> {
-        self.position
-            .row_group()
-            .map(|rows| RowGroup::new(self.row_group.reader, self.row_group.column + 1, rows))
+    pub fn next_column(&self) -> RowGroup {
+        RowGroup::new(
+            self.row_group.reader,
+            self.row_group.column + 1,
+            self.position.row_group(),
+        )
     }
 
     pub fn has_value(&self) -> bool {
@@ -1377,8 +1379,11 @@ impl Position {
     {
         self.path().map(|path| path.item::<K, A>())
     }
-    pub fn row_group(&self) -> Option<Range<u64>> {
-        self.path().map(|path| path.get_row_group())
+    pub fn row_group(&self) -> Range<u64> {
+        match self.path() {
+            Some(path) => path.get_row_group(),
+            None => 0..0,
+        }
     }
     fn has_value(&self) -> bool {
         self.path().is_some()
