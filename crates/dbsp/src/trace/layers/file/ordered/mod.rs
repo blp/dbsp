@@ -150,8 +150,8 @@ where
             let mut cursor1 = self.cursor();
             let mut cursor2 = other.cursor();
             while cursor1.valid() {
-                let (key1, values1) = cursor1.take_current_key_and_values().unwrap();
-                let (key2, values2) = cursor2.take_current_key_and_values().unwrap();
+                let (key1, mut values1) = cursor1.take_current_key_and_values().unwrap();
+                let (key2, mut values2) = cursor2.take_current_key_and_values().unwrap();
                 if key1 != key2 || values1.remaining_rows() != values2.remaining_rows() {
                     return false;
                 }
@@ -222,72 +222,137 @@ where
     V: DBData,
     R: DBWeight,
 {
-    fn copy_key_if<'a, F>(&mut self, cursor: &mut FileOrderedCursor<K, V, R>, filter: &F)
-    where
-        F: Fn(
-            &<<<FileOrderedMergeBuilder<K, V, R> as Builder>::Trie as Trie>::Cursor<'a> as Cursor<
-                'a,
-            >>::Key,
-        ) -> bool,
+    fn copy_values_if<'a, KF, VF>(
+        &mut self,
+        cursor: &mut FileOrderedCursor<K, V, R>,
+        key_filter: &KF,
+        value_filter: &VF,
+    ) where
+        KF: Fn(&K) -> bool,
+        VF: Fn(&V) -> bool,
     {
         let key = cursor.current_key();
-        if filter(key) {
+        if key_filter(key) {
             let mut value_cursor = cursor.values();
+            let mut n = 0;
             while value_cursor.valid() {
-                self.0.write2(value_cursor.item()).unwrap();
+                let (value, diff) = value_cursor.item();
+                if value_filter(value) {
+                    self.0.write2((value, diff)).unwrap();
+                    n += 1;
+                }
                 value_cursor.step();
             }
-            self.0.write1((&key, &())).unwrap();
+            if n > 0 {
+                self.0.write1((&key, &())).unwrap();
+            }
         }
         cursor.step();
     }
 
-    fn copy_value(&mut self, cursor: &mut FileOrderedValueCursor<V, R>) {
-        self.0
-            .write2((cursor.current_value(), cursor.current_diff()))
-            .unwrap();
+    fn copy_value<'a, VF>(
+        &mut self,
+        cursor: &mut FileOrderedValueCursor<'a, V, R>,
+        value_filter: &VF,
+    ) -> u64
+    where
+        VF: Fn(&V) -> bool,
+    {
+        let (value, diff) = cursor.current_item();
+        let retval = if value_filter(value) {
+            self.0.write2((value, diff)).unwrap();
+            1
+        } else {
+            0
+        };
         cursor.step();
+        retval
     }
 
-    fn merge_values<'a>(
+    fn merge_values<'a, VF>(
         &mut self,
         mut cursor1: FileOrderedValueCursor<'a, V, R>,
         mut cursor2: FileOrderedValueCursor<'a, V, R>,
-    ) -> bool {
+        value_filter: &VF,
+    ) -> bool
+    where
+        VF: Fn(&V) -> bool,
+    {
         let mut n = 0;
         while cursor1.valid() && cursor2.valid() {
             let value1 = cursor1.current_value();
             let value2 = cursor2.current_value();
             match value1.cmp(value2) {
                 Ordering::Less => {
-                    self.copy_value(&mut cursor1);
+                    n += self.copy_value(&mut cursor1, value_filter);
                 }
                 Ordering::Equal => {
-                    let mut sum = cursor1.current_diff().clone();
-                    sum.add_assign_by_ref(cursor2.current_diff());
-                    if !sum.is_zero() {
-                        self.0.write2((value1, &sum)).unwrap();
-                        n += 1;
+                    if value_filter(value1) {
+                        let mut sum = cursor1.current_diff().clone();
+                        sum.add_assign_by_ref(cursor2.current_diff());
+                        if !sum.is_zero() {
+                            self.0.write2((value1, &sum)).unwrap();
+                            n += 1;
+                        }
+                        cursor1.step();
+                        cursor2.step();
+                    }
+                }
+
+                Ordering::Greater => {
+                    n += self.copy_value(&mut cursor2, value_filter);
+                }
+            }
+        }
+
+        while cursor1.valid() {
+            n += self.copy_value(&mut cursor1, value_filter);
+        }
+        while cursor2.valid() {
+            n += self.copy_value(&mut cursor2, value_filter);
+        }
+        n > 0
+    }
+
+    pub fn push_merge_retain_values<'a, KF, VF>(
+        &'a mut self,
+        mut cursor1: <<FileOrderedMergeBuilder<K, V, R> as Builder>::Trie as Trie>::Cursor<'a>,
+        mut cursor2: <<FileOrderedMergeBuilder<K, V, R> as Builder>::Trie as Trie>::Cursor<'a>,
+        key_filter: &KF,
+        value_filter: &VF,
+    ) where
+        KF: Fn(&K) -> bool,
+        VF: Fn(&V) -> bool,
+    {
+        while cursor1.valid() && cursor2.valid() {
+            let key1 = cursor1.current_key();
+            let key2 = cursor2.current_key();
+            match key1.cmp(key2) {
+                Ordering::Less => {
+                    self.copy_values_if(&mut cursor1, key_filter, value_filter);
+                }
+                Ordering::Equal => {
+                    if key_filter(key1)
+                        && self.merge_values(cursor1.values(), cursor2.values(), value_filter)
+                    {
+                        self.0.write1((key1, &())).unwrap();
                     }
                     cursor1.step();
                     cursor2.step();
                 }
 
                 Ordering::Greater => {
-                    self.copy_value(&mut cursor2);
+                    self.copy_values_if(&mut cursor2, key_filter, value_filter);
                 }
             }
         }
 
         while cursor1.valid() {
-            self.copy_value(&mut cursor1);
-            n += 1;
+            self.copy_values_if(&mut cursor1, key_filter, value_filter);
         }
         while cursor2.valid() {
-            self.copy_value(&mut cursor2);
-            n += 1;
+            self.copy_values_if(&mut cursor2, key_filter, value_filter);
         }
-        n > 0
     }
 }
 
@@ -358,39 +423,13 @@ where
 
     fn push_merge_retain_keys<'a, F>(
         &'a mut self,
-        mut cursor1: <Self::Trie as Trie>::Cursor<'a>,
-        mut cursor2: <Self::Trie as Trie>::Cursor<'a>,
-        filter: &F,
+        cursor1: <Self::Trie as Trie>::Cursor<'a>,
+        cursor2: <Self::Trie as Trie>::Cursor<'a>,
+        key_filter: &F,
     ) where
         F: Fn(&<<Self::Trie as Trie>::Cursor<'a> as Cursor<'a>>::Key) -> bool,
     {
-        while cursor1.valid() && cursor2.valid() {
-            let key1 = cursor1.current_key();
-            let key2 = cursor2.current_key();
-            match key1.cmp(key2) {
-                Ordering::Less => {
-                    self.copy_key_if(&mut cursor1, filter);
-                }
-                Ordering::Equal => {
-                    if filter(key1) && self.merge_values(cursor1.values(), cursor2.values()) {
-                        self.0.write1((key1, &())).unwrap();
-                    }
-                    cursor1.step();
-                    cursor2.step();
-                }
-
-                Ordering::Greater => {
-                    self.copy_key_if(&mut cursor2, filter);
-                }
-            }
-        }
-
-        while cursor1.valid() {
-            self.copy_key_if(&mut cursor1, filter);
-        }
-        while cursor2.valid() {
-            self.copy_key_if(&mut cursor2, filter);
-        }
+        self.push_merge_retain_values(cursor1, cursor2, key_filter, &|_| true);
     }
 }
 
@@ -522,6 +561,22 @@ where
 
     fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, K, ()>)) {
         f(&mut self.cursor);
+        self.key = unsafe { self.cursor.key() };
+    }
+
+    pub fn seek_with<P>(&mut self, predicate: P)
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        unsafe { self.cursor.seek_forward_until(predicate) }.unwrap();
+        self.key = unsafe { self.cursor.key() };
+    }
+
+    pub fn seek_with_reverse<P>(&mut self, predicate: P)
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        unsafe { self.cursor.seek_backward_until(predicate) }.unwrap();
         self.key = unsafe { self.cursor.key() };
     }
 
@@ -663,6 +718,20 @@ where
     fn remaining_rows(&self) -> u64 {
         self.cursor.remaining_rows()
     }
+
+    pub fn seek_val_with<P>(&mut self, predicate: P)
+    where
+        P: Fn(&V) -> bool + Clone,
+    {
+        self.move_cursor(|cursor| unsafe { cursor.seek_forward_until(&predicate) }.unwrap());
+    }
+
+    pub fn seek_val_with_reverse<P>(&mut self, predicate: P)
+    where
+        P: Fn(&V) -> bool + Clone,
+    {
+        self.move_cursor(|cursor| unsafe { cursor.seek_backward_until(&predicate) }.unwrap());
+    }
 }
 
 impl<'s, V, R> Cursor<'s> for FileOrderedValueCursor<'s, V, R>
@@ -790,9 +859,9 @@ where
     fn neg_by_ref(&self) -> Self {
         let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
         let mut cursor = self.cursor();
-        while let Some((key, values)) = cursor.take_current_key_and_values() {
+        while let Some((key, mut values)) = cursor.take_current_key_and_values() {
             while let Some((value, diff)) = values.take_current_item() {
-                tuple_builder.push_tuple((key, (value, diff.neg_by_ref())));
+                tuple_builder.push_tuple((key.clone(), (value, diff.neg_by_ref())));
             }
         }
         tuple_builder.done()
@@ -810,9 +879,9 @@ where
     fn neg(self) -> Self {
         let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
         let mut cursor = self.cursor();
-        while let Some((key, values)) = cursor.take_current_key_and_values() {
+        while let Some((key, mut values)) = cursor.take_current_key_and_values() {
             while let Some((value, diff)) = values.take_current_item() {
-                tuple_builder.push_tuple((key, (value, -diff)));
+                tuple_builder.push_tuple((key.clone(), (value, -diff)));
             }
         }
         tuple_builder.done()

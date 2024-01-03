@@ -309,12 +309,12 @@ where
     R: DBWeight,
 {
     #[inline]
-    fn new_merger(batch1: &OrdIndexedZSet<K, V, R>, batch2: &OrdIndexedZSet<K, V, R>) -> Self {
+    fn new_merger(_batch1: &OrdIndexedZSet<K, V, R>, _batch2: &OrdIndexedZSet<K, V, R>) -> Self {
         Self { result: None }
     }
 
     #[inline]
-    fn done(self) -> OrdIndexedZSet<K, V, R> {
+    fn done(mut self) -> OrdIndexedZSet<K, V, R> {
         OrdIndexedZSet {
             layer: self.result.take().unwrap_or_default(),
         }
@@ -334,11 +334,20 @@ where
                     &source1.layer,
                     &source2.layer,
                 );
-            builder.push_merge_retain_keys(
-                source1.layer.cursor(),
-                source2.layer.cursor(),
-                &key_filter.unwrap_or(Box::new(|_| true)),
-            );
+            let cursor1 = source1.layer.cursor();
+            let cursor2 = source2.layer.cursor();
+            match (key_filter, value_filter) {
+                (None, None) => builder.push_merge(cursor1, cursor2),
+                (Some(key_filter), None) => {
+                    builder.push_merge_retain_keys(cursor1, cursor2, key_filter)
+                }
+                (Some(key_filter), Some(value_filter)) => {
+                    builder.push_merge_retain_values(cursor1, cursor2, key_filter, value_filter)
+                }
+                (None, Some(value_filter)) => {
+                    builder.push_merge_retain_values(cursor1, cursor2, &|_| true, value_filter)
+                }
+            };
             self.result = Some(builder.done());
         }
         *fuel = 0;
@@ -391,19 +400,19 @@ where
     R: DBWeight,
 {
     fn key(&self) -> &K {
-        self.cursor.item()
+        self.key_cursor.current_key()
     }
 
     fn val(&self) -> &V {
-        self.cursor.child.current_key()
+        self.val_cursor.current_value()
     }
 
     fn fold_times<F, U>(&mut self, init: U, mut fold: F) -> U
     where
         F: FnMut(U, &(), &R) -> U,
     {
-        if self.cursor.child.valid() {
-            fold(init, &(), self.cursor.child.current_diff())
+        if self.val_cursor.valid() {
+            fold(init, &(), self.val_cursor.current_diff())
         } else {
             init
         }
@@ -417,92 +426,100 @@ where
     }
 
     fn weight(&mut self) -> R {
-        debug_assert!(self.cursor.child.valid());
-        self.cursor.child.current_diff().clone()
+        debug_assert!(self.val_cursor.valid());
+        self.val_cursor.current_diff().clone()
     }
 
     fn key_valid(&self) -> bool {
-        self.cursor.valid()
+        self.key_cursor.valid()
     }
 
     fn val_valid(&self) -> bool {
-        self.cursor.child.valid()
+        self.val_cursor.valid()
     }
 
     fn step_key(&mut self) {
-        self.cursor.step();
+        self.key_cursor.step();
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn step_key_reverse(&mut self) {
-        self.cursor.step_reverse();
+        self.key_cursor.step_reverse();
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn seek_key(&mut self, key: &K) {
-        self.cursor.seek(key);
+        self.key_cursor.seek(key);
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn seek_key_with<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.cursor.seek_with(|k| !predicate(k));
+        self.key_cursor.seek_with(|k| !predicate(k));
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn seek_key_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.cursor.seek_with_reverse(|k| !predicate(k));
+        self.key_cursor.seek_with_reverse(|k| !predicate(k));
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn seek_key_reverse(&mut self, key: &K) {
-        self.cursor.seek_reverse(key);
+        self.key_cursor.seek_reverse(key);
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn step_val(&mut self) {
-        self.cursor.child.step();
+        self.val_cursor.step();
     }
 
     fn seek_val(&mut self, val: &V) {
-        self.cursor.child.seek(val);
+        self.val_cursor.seek(val);
     }
 
     fn seek_val_with<P>(&mut self, predicate: P)
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.cursor.child.seek_key_with(|v| !predicate(v));
+        self.val_cursor.seek_val_with(|v| !predicate(v));
     }
 
     fn rewind_keys(&mut self) {
-        self.cursor.rewind();
+        self.key_cursor.rewind();
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn fast_forward_keys(&mut self) {
-        self.cursor.fast_forward();
+        self.key_cursor.fast_forward();
+        self.val_cursor = self.key_cursor.values();
     }
 
     fn rewind_vals(&mut self) {
-        self.cursor.child.rewind();
+        self.val_cursor.rewind();
     }
 
     fn step_val_reverse(&mut self) {
-        self.cursor.child.step_reverse();
+        self.val_cursor.step_reverse();
     }
 
     fn seek_val_reverse(&mut self, val: &V) {
-        self.cursor.child.seek_reverse(val);
+        self.val_cursor.seek_reverse(val);
     }
 
     fn seek_val_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.cursor.child.seek_key_with_reverse(|v| !predicate(v));
+        self.val_cursor.seek_val_with_reverse(|v| !predicate(v));
     }
 
     fn fast_forward_vals(&mut self) {
-        self.cursor.child.fast_forward();
+        self.val_cursor.fast_forward();
     }
 }
 
@@ -540,8 +557,7 @@ where
     }
 
     #[inline]
-    fn reserve(&mut self, _additional: usize) {
-    }
+    fn reserve(&mut self, _additional: usize) {}
 
     #[inline]
     fn push(&mut self, ((key, val), diff): ((K, V), R)) {

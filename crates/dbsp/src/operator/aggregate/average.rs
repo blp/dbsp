@@ -218,7 +218,8 @@ where
 
         // We're the only possible consumer of the aggregated stream so we can use an
         // owned consumer to skip any cloning
-        let average = aggregate.map_index(|(k, avg)| (k.clone(), (avg.sum.clone()) / avg.count));
+        let average =
+            aggregate.map_index(|(k, avg)| (k.clone(), avg.sum.clone() / avg.count.clone()));
 
         // Note: Currently `.aggregate_linear()` is always sharded, but we just do this
         // check so that we don't get any unpleasant surprises if that ever changes
