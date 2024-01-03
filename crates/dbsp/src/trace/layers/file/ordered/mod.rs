@@ -5,9 +5,11 @@ use feldera_storage::file::{
     reader::{Cursor as FileCursor, Reader},
     writer::{Parameters, Writer2},
 };
+use rand::{seq::index::sample, Rng};
 use tempfile::tempfile;
 
 use crate::{
+    algebra::{AddAssignByRef, AddByRef, NegByRef},
     trace::layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
     DBData, DBWeight, NumEntries, Rkyv,
 };
@@ -16,6 +18,7 @@ use std::{
     fmt::Debug,
     fs::File,
     marker::PhantomData,
+    ops::{Add, AddAssign, Neg},
 };
 
 pub struct FileOrderedLayer<K, V, R>
@@ -27,6 +30,84 @@ where
     file: Reader,
     lower_bound: usize,
     _phantom: std::marker::PhantomData<(K, V, R)>,
+}
+
+impl<K, V, R> FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    pub fn empty() -> Self {
+        Self {
+            file: Reader::empty(2).unwrap(),
+            lower_bound: 0,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, output: &mut Vec<K>)
+    where
+        K: DBData,
+        R: DBWeight,
+        RG: Rng,
+    {
+        let size = self.keys();
+        let mut cursor = self.cursor();
+        if sample_size >= size {
+            output.reserve(size);
+
+            while let Some(key) = cursor.take_current_key() {
+                output.push(key);
+            }
+        } else {
+            output.reserve(sample_size);
+
+            let mut indexes = sample(rng, size, sample_size).into_vec();
+            indexes.sort_unstable();
+            for index in indexes.into_iter() {
+                cursor.move_to_row(index);
+                output.push(cursor.current_key().clone());
+            }
+        }
+    }
+
+    /// Remove keys smaller than `lower_bound` from the batch.
+    pub fn truncate_keys_below(&mut self, lower_bound: &K)
+    where
+        K: DBData,
+        R: DBWeight,
+    {
+        let mut cursor = self.file.rows().before::<K, R>();
+        unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
+        self.truncate_below(cursor.position() as usize);
+    }
+}
+
+impl<K, V, R> Default for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<K, V, R> Clone for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn clone(&self) -> Self {
+        Self {
+            file: self.file.clone(),
+            lower_bound: self.lower_bound,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<K, V, R> Debug for FileOrderedLayer<K, V, R> {
@@ -52,6 +133,47 @@ where
     fn num_entries_deep(&self) -> usize {
         self.file.n_rows(1) as usize
     }
+}
+
+impl<K, V, R> PartialEq for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if self.keys() != other.keys() {
+            false
+        } else if let Some(true) = self.file.equal(&other.file) {
+            self.lower_bound != other.lower_bound
+        } else {
+            let mut cursor1 = self.cursor();
+            let mut cursor2 = other.cursor();
+            while cursor1.valid() {
+                let (key1, values1) = cursor1.take_current_key_and_values().unwrap();
+                let (key2, values2) = cursor2.take_current_key_and_values().unwrap();
+                if key1 != key2 || values1.remaining_rows() != values2.remaining_rows() {
+                    return false;
+                }
+                while values1.valid() {
+                    let (value1, diff1) = values1.take_current_item().unwrap();
+                    let (value2, diff2) = values2.take_current_item().unwrap();
+                    if value1 != value2 || diff1 != diff2 {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+    }
+}
+
+impl<K, V, R> Eq for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
 }
 
 impl<K, V, R> Trie for FileOrderedLayer<K, V, R>
@@ -402,6 +524,11 @@ where
         f(&mut self.cursor);
         self.key = unsafe { self.cursor.key() };
     }
+
+    pub fn move_to_row(&mut self, row: usize) {
+        self.cursor.move_to_row(row as u64).unwrap();
+        self.key = unsafe { self.cursor.key() };
+    }
 }
 
 impl<'s, K, V, R> Cursor<'s> for FileOrderedCursor<'s, K, V, R>
@@ -595,5 +722,99 @@ where
 
     fn fast_forward(&mut self) {
         self.move_cursor(|cursor| cursor.move_last().unwrap());
+    }
+}
+
+impl<K, V, R> Add<Self> for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if self.is_empty() {
+            rhs
+        } else if rhs.is_empty() {
+            self
+        } else {
+            self.merge(&rhs)
+        }
+    }
+}
+
+impl<K, V, R> AddAssign<Self> for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn add_assign(&mut self, rhs: Self) {
+        if !rhs.is_empty() {
+            *self = self.merge(&rhs);
+        }
+    }
+}
+
+impl<K, V, R> AddAssignByRef for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn add_assign_by_ref(&mut self, other: &Self) {
+        if !other.is_empty() {
+            *self = self.merge(other);
+        }
+    }
+}
+
+impl<K, V, R> AddByRef for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
+    fn add_by_ref(&self, rhs: &Self) -> Self {
+        self.merge(rhs)
+    }
+}
+
+impl<K, V, R> NegByRef for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight + NegByRef,
+{
+    fn neg_by_ref(&self) -> Self {
+        let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
+        let mut cursor = self.cursor();
+        while let Some((key, values)) = cursor.take_current_key_and_values() {
+            while let Some((value, diff)) = values.take_current_item() {
+                tuple_builder.push_tuple((key, (value, diff.neg_by_ref())));
+            }
+        }
+        tuple_builder.done()
+    }
+}
+
+impl<K, V, R> Neg for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight + Neg<Output = R>,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        let mut tuple_builder = <Self as Trie>::TupleBuilder::new();
+        let mut cursor = self.cursor();
+        while let Some((key, values)) = cursor.take_current_key_and_values() {
+            while let Some((value, diff)) = values.take_current_item() {
+                tuple_builder.push_tuple((key, (value, -diff)));
+            }
+        }
+        tuple_builder.done()
     }
 }

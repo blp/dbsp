@@ -45,4 +45,4 @@ pub type OrdKeySpine<K, T, R, O = usize> = Spine<OrdKeyBatch<K, T, R, O>>;
 /// A trace implementation using a [`Spine`] of [`OrdZSet`].
 pub type OrdZSetSpine<K, R> = Spine<OrdZSet<K, R>>;
 
-pub type OrdIndexedZSetSpine<K, V, R, O = usize> = Spine<OrdIndexedZSet<K, V, R, O>>;
+pub type OrdIndexedZSetSpine<K, V, R> = Spine<OrdIndexedZSet<K, V, R>>;

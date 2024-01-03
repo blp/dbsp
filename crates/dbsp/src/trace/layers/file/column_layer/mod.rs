@@ -52,11 +52,10 @@ impl<K, R> FileColumnLayer<K, R> {
         R: DBWeight,
         RG: Rng,
     {
-        let size = self.len() - self.lower_bound as u64;
-
-        let mut cursor = self.cursor_from(self.lower_bound, self.len() as usize);
-        if sample_size as u64 >= size {
-            output.reserve(size as usize);
+        let size = self.keys();
+        let mut cursor = self.cursor();
+        if sample_size >= size {
+            output.reserve(size);
 
             while let Some((key, _)) = cursor.take_current_item() {
                 output.push(key);
@@ -64,7 +63,7 @@ impl<K, R> FileColumnLayer<K, R> {
         } else {
             output.reserve(sample_size);
 
-            let mut indexes = sample(rng, size as usize, sample_size).into_vec();
+            let mut indexes = sample(rng, size, sample_size).into_vec();
             indexes.sort_unstable();
             for index in indexes.into_iter() {
                 cursor.move_to_row(index);
@@ -204,12 +203,10 @@ where
     R: DBWeight,
 {
     fn eq(&self, other: &Self) -> bool {
-        if self.lower_bound != other.lower_bound {
+        if self.keys() != other.keys() {
             false
-        } else if let Some(equality) = self.file.equal(&other.file) {
-            equality
-        } else if self.keys() != other.keys() {
-            false
+        } else if let Some(true) = self.file.equal(&other.file) {
+            self.lower_bound != other.lower_bound
         } else {
             let mut cursor1 = self.cursor();
             let mut cursor2 = other.cursor();
