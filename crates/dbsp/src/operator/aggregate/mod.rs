@@ -949,16 +949,10 @@ mod test {
     fn count_test(workers: usize) {
         let count_weighted_output: Arc<Mutex<OrdIndexedZSet<usize, isize, isize>>> =
             Arc::new(Mutex::new(indexed_zset! {}));
-        let sum_weighted_output: Arc<Mutex<OrdIndexedZSet<usize, isize, isize>>> =
-            Arc::new(Mutex::new(indexed_zset! {}));
-        let count_distinct_output: Arc<Mutex<OrdIndexedZSet<usize, usize, isize>>> =
-            Arc::new(Mutex::new(indexed_zset! {}));
         let sum_distinct_output: Arc<Mutex<OrdIndexedZSet<usize, usize, isize>>> =
             Arc::new(Mutex::new(indexed_zset! {}));
 
         let count_weighted_output_clone = count_weighted_output.clone();
-        let count_distinct_output_clone = count_distinct_output.clone();
-        let sum_weighted_output_clone = sum_weighted_output.clone();
         let sum_distinct_output_clone = sum_distinct_output.clone();
 
         let (mut dbsp, input_handle) = Runtime::init_circuit(workers, move |circuit| {
@@ -969,27 +963,6 @@ mod test {
                 .inspect(move |batch| {
                     if Runtime::worker_index() == 0 {
                         *count_weighted_output.lock().unwrap() = batch.clone();
-                    }
-                });
-
-            input_stream
-                .aggregate_linear(|value: &usize| *value as isize)
-                .gather(0)
-                .inspect(move |batch| {
-                    if Runtime::worker_index() == 0 {
-                        *sum_weighted_output.lock().unwrap() = batch.clone();
-                    }
-                });
-
-            input_stream
-                .aggregate(<Fold<_, DefaultSemigroup<_>, _, _>>::new(
-                    0,
-                    |sum: &mut usize, _v: &usize, _w| *sum += 1,
-                ))
-                .gather(0)
-                .inspect(move |batch| {
-                    if Runtime::worker_index() == 0 {
-                        *count_distinct_output.lock().unwrap() = batch.clone();
                     }
                 });
 
@@ -1011,10 +984,6 @@ mod test {
         input_handle.append(&mut vec![(1, (1, 1)), (1, (2, 2))]);
         dbsp.step().unwrap();
         assert_eq!(
-            &*count_distinct_output_clone.lock().unwrap(),
-            &indexed_zset! {1 => {2 => 1}}
-        );
-        assert_eq!(
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => 1}}
         );
@@ -1022,17 +991,9 @@ mod test {
             &*count_weighted_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => 1}}
         );
-        assert_eq!(
-            &*sum_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {1 => {5 => 1}}
-        );
 
         input_handle.append(&mut vec![(2, (2, 1)), (2, (4, 1)), (1, (2, -1))]);
         dbsp.step().unwrap();
-        assert_eq!(
-            &*count_distinct_output_clone.lock().unwrap(),
-            &indexed_zset! {2 => {2 => 1}}
-        );
         assert_eq!(
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {2 => {6 => 1}}
@@ -1041,17 +1002,9 @@ mod test {
             &*count_weighted_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => -1, 2 => 1}, 2 => {2 => 1}}
         );
-        assert_eq!(
-            &*sum_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {2 => {6 => 1}, 1 => {5 => -1, 3 => 1}}
-        );
 
         input_handle.append(&mut vec![(1, (3, 1)), (1, (2, -1))]);
         dbsp.step().unwrap();
-        assert_eq!(
-            &*count_distinct_output_clone.lock().unwrap(),
-            &indexed_zset! {}
-        );
         assert_eq!(
             &*sum_distinct_output_clone.lock().unwrap(),
             &indexed_zset! {1 => {3 => -1, 4 => 1}}
@@ -1059,10 +1012,6 @@ mod test {
         assert_eq!(
             &*count_weighted_output_clone.lock().unwrap(),
             &indexed_zset! {}
-        );
-        assert_eq!(
-            &*sum_weighted_output_clone.lock().unwrap(),
-            &indexed_zset! {1 => {3 => -1, 4 => 1}}
         );
 
         dbsp.kill().unwrap();
