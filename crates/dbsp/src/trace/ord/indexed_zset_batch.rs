@@ -374,7 +374,7 @@ where
     R: DBWeight,
 {
     key_cursor: FileOrderedCursor<'s, K, V, R>,
-    val_cursor: FileOrderedValueCursor<'s, K, V, R>,
+    val_cursor: FileOrderedValueCursor<'s, V, R>,
 }
 
 impl<'s, K, V, R> OrdIndexedZSetCursor<'s, K, V, R>
