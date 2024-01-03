@@ -11,7 +11,7 @@ use tempfile::tempfile;
 use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     trace::layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
-    DBData, DBWeight, NumEntries, Rkyv,
+    DBData, DBWeight, NumEntries,
 };
 use std::{
     cmp::{min, Ordering},
@@ -609,11 +609,6 @@ where
     }
 
     fn values(&self) -> FileOrderedValueCursor<'s, V, R> {
-        if self.valid() {
-            todo!()
-        } else {
-            todo!()
-        }
         FileOrderedValueCursor::new(self)
     }
 
