@@ -21,7 +21,7 @@ use num::{Bounded, PrimInt};
 use std::{
     borrow::Cow,
     marker::PhantomData,
-    ops::{Div, Neg},
+    ops::{Div, Neg}, fmt::Debug,
 };
 
 // TODO: `Default` trait bounds in this module are due to an implementation
@@ -504,6 +504,15 @@ where
     }
 }
 
+fn print_cursor<C: Cursor<K, V, T, R> + Clone, K: Debug, V, T, R>(name: &str, cursor: &C) {
+    println!("{name}:");
+    let mut cursor = cursor.clone();
+    while cursor.key_valid() {
+        println!("    {:?}", cursor.key());
+        cursor.step_key();
+    }
+}
+
 impl<TS, V, Agg, B, T, RT, OT, O> QuaternaryOperator<B, T, RT, OT, O>
     for PartitionedRollingAggregate<TS, V, Agg>
 where
@@ -528,6 +537,9 @@ where
         let mut output_trace_cursor = output_trace.cursor();
         let mut input_trace_cursor = input_trace.cursor();
         let mut tree_cursor = radix_tree.cursor();
+        print_cursor("initial input_trace_cursor", &input_trace_cursor);
+        print_cursor("initial tree_cursor", &tree_cursor);
+        print_cursor("initial delta_cursor", &delta_cursor);
 
         let mut retraction_builder = O::Builder::new_builder(());
         let mut insertion_builder = O::Builder::with_capacity((), input_delta.len());
@@ -574,10 +586,14 @@ where
             };
 
             // Compute new outputs.
+            print_cursor("input_trace_cursor", &input_trace_cursor);
+            print_cursor("tree_cursor", &tree_cursor);
+            print_cursor("delta_cursor", &delta_cursor);
             input_trace_cursor.seek_key(delta_cursor.key());
             tree_cursor.seek_key(delta_cursor.key());
 
             if input_trace_cursor.key_valid() && input_trace_cursor.key() == delta_cursor.key() {
+                println!("{:?}", delta_cursor.key());
                 debug_assert!(tree_cursor.key_valid());
                 debug_assert_eq!(tree_cursor.key(), delta_cursor.key());
 

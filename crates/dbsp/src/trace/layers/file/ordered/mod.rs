@@ -282,7 +282,8 @@ where
         while cursor1.valid() && cursor2.valid() {
             let value1 = cursor1.current_value();
             let value2 = cursor2.current_value();
-            match value1.cmp(value2) {
+            let cmp = value1.cmp(value2);
+            match cmp {
                 Ordering::Less => {
                     n += self.copy_value(&mut cursor1, value_filter);
                 }
@@ -506,7 +507,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileOrderedCursor<'s, K, V, R>
 where
     K: DBData,
@@ -665,7 +666,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileOrderedValueCursor<'s, V, R>
 where
     V: DBData,
