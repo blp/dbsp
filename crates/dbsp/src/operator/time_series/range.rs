@@ -4,8 +4,9 @@ use crate::trace::Cursor;
 use num::PrimInt;
 use std::{
     cmp::max,
+    fmt::Debug,
     marker::PhantomData,
-    ops::{Add, Neg, Sub}, fmt::Debug,
+    ops::{Add, Neg, Sub},
 };
 
 /// Relative time offset.
@@ -284,11 +285,24 @@ where
     fn advance(&mut self) {
         while self.current_range < self.ranges.len() {
             let range = self.ranges.range(self.current_range);
-            println!("{}:{} {:?}", file!(), line!(), &range.from);
+            println!(
+                "{}:{} at {:?} seek to {:?}",
+                file!(),
+                line!(),
+                self.cursor.get_key(),
+                &range.from
+            );
             self.cursor.seek_key(&range.from);
             if !self.cursor.key_valid() {
+                println!("{}:{} seek to eof", file!(), line!());
                 break;
             }
+            println!(
+                "{}:{} seeked to {:?}",
+                file!(),
+                line!(),
+                self.cursor.get_key()
+            );
 
             if self.cursor.key() <= &range.to {
                 break;

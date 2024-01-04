@@ -609,7 +609,6 @@ where
                 let mut input_range_cursor =
                     RangeCursor::new(PartitionCursor::new(&mut input_trace_cursor), ranges);
 
-                println!("{}:{}", file!(), line!());
                 // For all affected times, seek them in `input_trace`, compute aggregates using
                 // using radix_tree.
                 println!("{}:{}", file!(), line!());
