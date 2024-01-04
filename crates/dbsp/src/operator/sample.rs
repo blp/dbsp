@@ -148,7 +148,7 @@ where
                 } else {
                     let mut keys = Vec::new();
                     let mut cursor = sample.cursor();
-                    while cursor.val_valid() {
+                    while cursor.key_valid() {
                         keys.push(cursor.key().clone());
                         cursor.step_key();
                     }
@@ -189,7 +189,7 @@ where
                 } else {
                     let mut keys = Vec::new();
                     let mut cursor = sample.cursor();
-                    while cursor.val_valid() {
+                    while cursor.key_valid() {
                         keys.push(cursor.key().clone());
                         cursor.step_key();
                     }
