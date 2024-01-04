@@ -1025,14 +1025,9 @@ where
     {
         // XXX optimization possibilities here
         let position = Position::find_first::<K, A, P>(&self.row_group, predicate)?;
-        if let Position::Row(ref old_path) = self.position {
-            if let Position::Row(ref new_path) = position {
-                if new_path.row < old_path.row {
-                    return Ok(());
-                }
-            }
+        if position > self.position {
+            self.position = position;
         }
-        self.position = position;
         Ok(())
     }
     pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
@@ -1041,40 +1036,25 @@ where
     {
         // XXX optimization possibilities here
         let position = Position::find_last::<K, A, P>(&self.row_group, predicate)?;
-        if let Position::Row(ref old_path) = self.position {
-            if let Position::Row(ref new_path) = position {
-                if new_path.row < old_path.row {
-                    return Ok(());
-                }
-            }
+        if position < self.position {
+            self.position = position;
         }
-        self.position = position;
         Ok(())
     }
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
         let position = Position::for_value_or_larger::<K, A>(&self.row_group, target)?;
-        if let Position::Row(ref old_path) = self.position {
-            if let Position::Row(ref new_path) = position {
-                if new_path.row < old_path.row {
-                    return Ok(());
-                }
-            }
+        if position > self.position {
+            self.position = position;
         }
-        self.position = position;
         Ok(())
     }
     pub unsafe fn rewind_to_value_or_smaller(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
         let position = Position::for_value_or_smaller::<K, A>(&self.row_group, target)?;
-        if let Position::Row(ref old_path) = self.position {
-            if let Position::Row(ref new_path) = position {
-                if new_path.row > old_path.row {
-                    return Ok(());
-                }
-            }
+        if position < self.position {
+            self.position = position;
         }
-        self.position = position;
         Ok(())
     }
 }
@@ -1084,6 +1064,26 @@ struct Path {
     row: u64,
     indexes: Vec<IndexBlock>,
     data: DataBlock,
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.row == other.row
+    }
+}
+
+impl Eq for Path {}
+
+impl PartialOrd for Path {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Path {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.row.cmp(&other.row)
+    }
 }
 
 impl Path {
@@ -1298,7 +1298,7 @@ impl Path {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialOrd, PartialEq)]
 enum Position {
     Before,
     Row(Path),
