@@ -103,11 +103,37 @@ where
     }
 }
 
-impl<K, V, R> Debug for FileOrderedLayer<K, V, R> {
+impl<K, V, R> Debug for FileOrderedLayer<K, V, R>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileOrderedLayer")
-            .field("lower_bound", &self.lower_bound)
-            .finish()
+        write!(
+            f,
+            "FileOrderedLayer {{ lower_bound: {}, data: ",
+            self.lower_bound
+        )?;
+        let mut cursor = self.cursor();
+        let mut n_keys = 0;
+        while let Some((key, mut values)) = cursor.take_current_key_and_values() {
+            if n_keys > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{key:?}(")?;
+            let mut n_values = 0;
+            while let Some((value, diff)) = values.take_current_item() {
+                if n_values > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "({value:?}, {diff:+?})")?;
+                n_values += 1;
+            }
+            write!(f, ")")?;
+            n_keys += 1;
+        }
+        write!(f, " }}")
     }
 }
 
