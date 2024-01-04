@@ -294,9 +294,9 @@ where
                             self.0.write2((value1, &sum)).unwrap();
                             n += 1;
                         }
-                        cursor1.step();
-                        cursor2.step();
                     }
+                    cursor1.step();
+                    cursor2.step();
                 }
 
                 Ordering::Greater => {

@@ -328,6 +328,7 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
+        debug_assert!(*fuel > 0);
         if self.result.is_none() {
             let mut builder =
                 <<FileOrderedLayer<K, V, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
@@ -350,7 +351,6 @@ where
             };
             self.result = Some(builder.done());
         }
-        *fuel = 0;
     }
 }
 
