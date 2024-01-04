@@ -21,6 +21,7 @@ use std::{
     ops::{Add, AddAssign, Neg},
 };
 
+#[derive(Clone)]
 pub struct FileOrderedLayer<K, V, R>
 where
     K: 'static,
@@ -38,14 +39,6 @@ where
     V: DBData,
     R: DBWeight,
 {
-    pub fn empty() -> Self {
-        Self {
-            file: Reader::empty(2).unwrap(),
-            lower_bound: 0,
-            _phantom: PhantomData,
-        }
-    }
-
     pub fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, output: &mut Vec<K>)
     where
         K: DBData,
@@ -84,29 +77,29 @@ where
     }
 }
 
-impl<K, V, R> Default for FileOrderedLayer<K, V, R>
+impl<K, V, R> FileOrderedLayer<K, V, R>
 where
-    K: DBData,
-    V: DBData,
-    R: DBWeight,
+    K: 'static,
+    V: 'static,
+    R: 'static,
 {
-    fn default() -> Self {
-        Self::empty()
+    pub fn empty() -> Self {
+        Self {
+            file: Reader::empty(2).unwrap(),
+            lower_bound: 0,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<K, V, R> Clone for FileOrderedLayer<K, V, R>
+impl<K, V, R> Default for FileOrderedLayer<K, V, R>
 where
-    K: DBData,
-    V: DBData,
-    R: DBWeight,
+    K: 'static,
+    V: 'static,
+    R: 'static,
 {
-    fn clone(&self) -> Self {
-        Self {
-            file: self.file.clone(),
-            lower_bound: self.lower_bound,
-            _phantom: PhantomData,
-        }
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -162,7 +155,9 @@ where
                         return false;
                     }
                 }
+                debug_assert!(!values2.valid());
             }
+            debug_assert!(!cursor2.valid());
             true
         }
     }
@@ -192,7 +187,9 @@ where
     }
 
     fn tuples(&self) -> usize {
-        self.file.n_rows(1) as usize
+        let tuples = self.file.n_rows(1) as usize;
+        println!("keys={} tuples={tuples}", self.keys());
+        tuples
     }
 
     fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor<'_> {
@@ -409,16 +406,7 @@ where
     {
         let mut cursor = other.cursor_from(lower, upper);
         while cursor.valid() {
-            let key = cursor.current_key();
-            if filter(key) {
-                let mut value_cursor = cursor.values();
-                while value_cursor.valid() {
-                    self.0.write2(value_cursor.item()).unwrap();
-                    value_cursor.step();
-                }
-                self.0.write1((&key, &())).unwrap();
-            }
-            cursor.step();
+            self.copy_values_if(&mut cursor, filter, &|_| true);
         }
     }
 
@@ -550,9 +538,7 @@ where
         key
     }
 
-    pub fn take_current_key_and_values(
-        &mut self,
-    ) -> Option<(K, FileOrderedValueCursor<'s, V, R>)> {
+    pub fn take_current_key_and_values(&mut self) -> Option<(K, FileOrderedValueCursor<'s, V, R>)> {
         if let Some(key) = self.key.take() {
             let values = self.values();
             self.step();
@@ -562,7 +548,7 @@ where
         }
     }
 
-    fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, K, ()>)) {
+    fn move_cursor(&mut self, f: impl FnOnce(&mut FileCursor<'s, K, ()>)) {
         f(&mut self.cursor);
         self.key = unsafe { self.cursor.key() };
     }
@@ -571,21 +557,18 @@ where
     where
         P: Fn(&K) -> bool + Clone,
     {
-        unsafe { self.cursor.seek_forward_until(predicate) }.unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| unsafe { cursor.seek_forward_until(predicate) }.unwrap());
     }
 
     pub fn seek_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        unsafe { self.cursor.seek_backward_until(predicate) }.unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| unsafe { cursor.seek_backward_until(predicate) }.unwrap());
     }
 
     pub fn move_to_row(&mut self, row: usize) {
-        self.cursor.move_to_row(row as u64).unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| cursor.move_to_row(row as u64).unwrap());
     }
 }
 
@@ -616,13 +599,11 @@ where
     }
 
     fn step(&mut self) {
-        self.cursor.move_next().unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| cursor.move_next().unwrap());
     }
 
     fn seek(&mut self, key: &Self::Key) {
-        unsafe { self.cursor.advance_to_value_or_larger(key) }.unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| unsafe { cursor.advance_to_value_or_larger(key) }.unwrap());
     }
 
     fn valid(&self) -> bool {
@@ -630,8 +611,7 @@ where
     }
 
     fn rewind(&mut self) {
-        self.cursor.move_first().unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| cursor.move_first().unwrap());
     }
 
     fn position(&self) -> usize {
@@ -651,18 +631,15 @@ where
     }
 
     fn step_reverse(&mut self) {
-        self.cursor.move_prev().unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| cursor.move_prev().unwrap());
     }
 
     fn seek_reverse(&mut self, key: &Self::Key) {
-        unsafe { self.cursor.rewind_to_value_or_smaller(key) }.unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| unsafe { cursor.rewind_to_value_or_smaller(key) }.unwrap());
     }
 
     fn fast_forward(&mut self) {
-        self.cursor.move_last().unwrap();
-        self.key = unsafe { self.cursor.key() };
+        self.move_cursor(|cursor| cursor.move_last().unwrap());
     }
 }
 
@@ -687,10 +664,7 @@ where
     {
         let cursor = cursor.next_column().first().unwrap();
         let item = unsafe { cursor.item() };
-        Self {
-            cursor,
-            item,
-        }
+        Self { cursor, item }
     }
 
     pub fn current_value(&self) -> &V {

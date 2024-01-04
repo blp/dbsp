@@ -391,6 +391,14 @@ where
             val_cursor,
         }
     }
+
+    fn move_key<F>(&mut self, op: F)
+    where
+        F: Fn(&mut FileOrderedCursor<'s, K, V, R>),
+    {
+        op(&mut self.key_cursor);
+        self.val_cursor = self.key_cursor.values();
+    }
 }
 
 impl<'s, K, V, R> Cursor<K, V, (), R> for OrdIndexedZSetCursor<'s, K, V, R>
@@ -439,39 +447,33 @@ where
     }
 
     fn step_key(&mut self) {
-        self.key_cursor.step();
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.step());
     }
 
     fn step_key_reverse(&mut self) {
-        self.key_cursor.step_reverse();
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.step_reverse());
     }
 
     fn seek_key(&mut self, key: &K) {
-        self.key_cursor.seek(key);
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.seek(key));
     }
 
     fn seek_key_with<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.key_cursor.seek_with(|k| !predicate(k));
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.seek_with(&predicate));
     }
 
     fn seek_key_with_reverse<P>(&mut self, predicate: P)
     where
         P: Fn(&K) -> bool + Clone,
     {
-        self.key_cursor.seek_with_reverse(|k| !predicate(k));
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.seek_with_reverse(&predicate));
     }
 
     fn seek_key_reverse(&mut self, key: &K) {
-        self.key_cursor.seek_reverse(key);
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.seek_reverse(key));
     }
 
     fn step_val(&mut self) {
@@ -486,17 +488,15 @@ where
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.val_cursor.seek_val_with(|v| !predicate(v));
+        self.val_cursor.seek_val_with(predicate);
     }
 
     fn rewind_keys(&mut self) {
-        self.key_cursor.rewind();
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.rewind());
     }
 
     fn fast_forward_keys(&mut self) {
-        self.key_cursor.fast_forward();
-        self.val_cursor = self.key_cursor.values();
+        self.move_key(|key_cursor| key_cursor.fast_forward());
     }
 
     fn rewind_vals(&mut self) {
@@ -515,15 +515,13 @@ where
     where
         P: Fn(&V) -> bool + Clone,
     {
-        self.val_cursor.seek_val_with_reverse(|v| !predicate(v));
+        self.val_cursor.seek_val_with_reverse(predicate);
     }
 
     fn fast_forward_vals(&mut self) {
         self.val_cursor.fast_forward();
     }
 }
-
-type IndexBuilder<K, V, R> = FileOrderedTupleBuilder<K, V, R>;
 
 /// A builder for creating layers from unsorted update tuples.
 pub struct OrdIndexedZSetBuilder<K, V, R>
@@ -532,7 +530,7 @@ where
     V: DBData,
     R: DBWeight,
 {
-    builder: IndexBuilder<K, V, R>,
+    builder: FileOrderedTupleBuilder<K, V, R>,
 }
 
 impl<K, V, R> Builder<(K, V), (), R, OrdIndexedZSet<K, V, R>> for OrdIndexedZSetBuilder<K, V, R>
@@ -545,14 +543,14 @@ where
     #[inline]
     fn new_builder(_time: ()) -> Self {
         Self {
-            builder: IndexBuilder::<K, V, R>::new(),
+            builder: FileOrderedTupleBuilder::<K, V, R>::new(),
         }
     }
 
     #[inline]
     fn with_capacity(_time: (), capacity: usize) -> Self {
         Self {
-            builder: <IndexBuilder<K, V, R> as TupleBuilder>::with_capacity(capacity),
+            builder: <FileOrderedTupleBuilder<K, V, R> as TupleBuilder>::with_capacity(capacity),
         }
     }
 
@@ -630,7 +628,7 @@ where
     R: DBWeight,
 {
     consumer: FileOrderedLayerValues<'a, K, V, R>,
-    __type: PhantomData<K>,
+    _phantom: PhantomData<K>,
 }
 
 impl<'a, K, V, R> OrdIndexedZSetValueConsumer<'a, K, V, R>
@@ -643,7 +641,7 @@ where
     const fn new(consumer: FileOrderedLayerValues<'a, K, V, R>) -> Self {
         Self {
             consumer,
-            __type: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
