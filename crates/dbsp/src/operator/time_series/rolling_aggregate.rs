@@ -665,7 +665,7 @@ mod test {
             FilterMap, Fold,
         },
         trace::{Batch, BatchReader, Cursor},
-        CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, RootCircuit, Runtime, Stream,
+        CollectionHandle, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream, CircuitHandle,
     };
     use size_of::SizeOf;
 
@@ -738,8 +738,8 @@ mod test {
     fn partition_rolling_aggregate_circuit(
         lateness: u64,
         size_bound: Option<usize>,
-    ) -> (DBSPHandle, RangeHandle) {
-        Runtime::init_circuit(4, move |circuit| {
+    ) -> (CircuitHandle, RangeHandle) {
+        RootCircuit::build(move |circuit| {
             let (input_stream, input_handle) =
                 circuit.add_input_indexed_zset::<u64, (u64, i64), isize>();
 
@@ -852,7 +852,7 @@ mod test {
 
     #[test]
     fn test_partitioned_over_range_2() {
-        let (mut circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
+        let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
 
         circuit.step().unwrap();
 
@@ -861,13 +861,11 @@ mod test {
 
         input.append(&mut vec![(2, ((0, 100), 1))]);
         circuit.step().unwrap();
-
-        circuit.kill().unwrap();
     }
 
     #[test]
     fn test_partitioned_over_range() {
-        let (mut circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
+        let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
 
         circuit.step().unwrap();
 
@@ -900,8 +898,6 @@ mod test {
             (1, ((3000, 100), 1)),
         ]);
         circuit.step().unwrap();
-
-        circuit.kill().unwrap();
     }
 
     // Test derived from issue #199 (https://github.com/feldera/feldera/issues/199).
@@ -1078,15 +1074,15 @@ mod test {
         #[test]
         #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
         fn proptest_partitioned_rolling_aggregate_quasi_monotone(trace in input_trace_quasi_monotone(5, 10_000, 2_000, 20, 200)) {
+            println!(".");
             // 10_000 is an empirically established bound: without GC this test needs >10KB.
-            let (mut circuit, input) = partition_rolling_aggregate_circuit(10000, Some(10_000));
+            let (circuit, input) = partition_rolling_aggregate_circuit(10000, Some(10_000));
 
             for mut batch in trace {
+                println!("batch");
                 input.append(&mut batch);
                 circuit.step().unwrap();
             }
-
-            circuit.kill().unwrap();
         }
     }
 
@@ -1094,27 +1090,23 @@ mod test {
         #[test]
         #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
         fn proptest_partitioned_over_range_sparse(trace in input_trace(5, 1_000_000, 20, 20)) {
-            let (mut circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
+            let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
 
             for mut batch in trace {
                 input.append(&mut batch);
                 circuit.step().unwrap();
             }
-
-            circuit.kill().unwrap();
         }
 
         #[test]
         #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
         fn proptest_partitioned_over_range_dense(trace in input_trace(5, 1_000, 50, 20)) {
-            let (mut circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
+            let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
 
             for mut batch in trace {
                 input.append(&mut batch);
                 circuit.step().unwrap();
             }
-
-            circuit.kill().unwrap();
         }
     }
 }
