@@ -162,8 +162,10 @@ where
 {
     fn eq(&self, other: &Self) -> bool {
         if self.keys() != other.keys() {
+            println!("{}:{}", file!(), line!());
             false
         } else if let Some(true) = self.file.equal(&other.file) {
+            println!("{}:{}", file!(), line!());
             self.lower_bound != other.lower_bound
         } else {
             let mut cursor1 = self.cursor();
@@ -172,12 +174,18 @@ where
                 let (key1, mut values1) = cursor1.take_current_key_and_values().unwrap();
                 let (key2, mut values2) = cursor2.take_current_key_and_values().unwrap();
                 if key1 != key2 || values1.remaining_rows() != values2.remaining_rows() {
+                    println!("{}:{}", file!(), line!());
                     return false;
                 }
                 while values1.valid() {
                     let (value1, diff1) = values1.take_current_item().unwrap();
                     let (value2, diff2) = values2.take_current_item().unwrap();
                     if value1 != value2 || diff1 != diff2 {
+                        println!(
+                            "{}:{} ({value1:?}, {value2:?}) ({diff1:?}, {diff2:?})",
+                            file!(),
+                            line!()
+                        );
                         return false;
                     }
                 }
