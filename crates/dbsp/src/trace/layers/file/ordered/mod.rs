@@ -221,7 +221,9 @@ where
     }
 
     fn tuples(&self) -> usize {
-        self.file.n_rows(1) as usize
+        let tuples = self.file.n_rows(1) as usize;
+        println!("keys={} tuples={tuples}", self.keys());
+        tuples
     }
 
     fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor<'_> {
