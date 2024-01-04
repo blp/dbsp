@@ -5,7 +5,7 @@ use num::PrimInt;
 use std::{
     cmp::max,
     marker::PhantomData,
-    ops::{Add, Neg, Sub},
+    ops::{Add, Neg, Sub}, fmt::Debug,
 };
 
 /// Relative time offset.
@@ -263,7 +263,7 @@ where
 
 impl<TS, V, R, C> RangeCursor<TS, V, R, C>
 where
-    TS: PrimInt,
+    TS: PrimInt + Debug,
     C: Cursor<TS, V, (), R>,
 {
     /// Create a new `RangeCursor` that restricts keys in `cursor` to `ranges`.
@@ -284,6 +284,7 @@ where
     fn advance(&mut self) {
         while self.current_range < self.ranges.len() {
             let range = self.ranges.range(self.current_range);
+            println!("{}:{} {:?}", file!(), line!(), &range.from);
             self.cursor.seek_key(&range.from);
             if !self.cursor.key_valid() {
                 break;
@@ -300,7 +301,7 @@ where
 
 impl<TS, V, R, C> Cursor<TS, V, (), R> for RangeCursor<TS, V, R, C>
 where
-    TS: PrimInt,
+    TS: PrimInt + Debug,
     C: Cursor<TS, V, (), R>,
 {
     fn key_valid(&self) -> bool {

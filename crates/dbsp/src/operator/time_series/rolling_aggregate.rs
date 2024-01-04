@@ -20,8 +20,9 @@ use crate::{
 use num::{Bounded, PrimInt};
 use std::{
     borrow::Cow,
+    fmt::Debug,
     marker::PhantomData,
-    ops::{Div, Neg}, fmt::Debug,
+    ops::{Div, Neg},
 };
 
 // TODO: `Default` trait bounds in this module are due to an implementation
@@ -505,8 +506,11 @@ where
 }
 
 fn print_cursor<C: Cursor<K, V, T, R> + Clone, K: Debug, V, T, R>(name: &str, cursor: &C) {
+    print_cursor_destructively(name, cursor.clone());
+}
+
+fn print_cursor_destructively<C: Cursor<K, V, T, R>, K: Debug, V, T, R>(name: &str, mut cursor: C) {
     println!("{name}:");
-    let mut cursor = cursor.clone();
     while cursor.key_valid() {
         println!("    {:?}", cursor.key());
         cursor.step_key();
@@ -533,6 +537,7 @@ where
         radix_tree: Cow<'a, RT>,
         output_trace: Cow<'a, OT>,
     ) -> O {
+        println!("{}:{}", file!(), line!());
         let mut delta_cursor = input_delta.cursor();
         let mut output_trace_cursor = output_trace.cursor();
         let mut input_trace_cursor = input_trace.cursor();
@@ -592,20 +597,28 @@ where
             input_trace_cursor.seek_key(delta_cursor.key());
             tree_cursor.seek_key(delta_cursor.key());
 
+            println!("{}:{}", file!(), line!());
             if input_trace_cursor.key_valid() && input_trace_cursor.key() == delta_cursor.key() {
                 println!("{:?}", delta_cursor.key());
+                println!("{}:{}", file!(), line!());
                 debug_assert!(tree_cursor.key_valid());
                 debug_assert_eq!(tree_cursor.key(), delta_cursor.key());
 
+                print_cursor("tree_cursor", &tree_cursor);
                 let mut tree_partition_cursor = PartitionCursor::new(&mut tree_cursor);
                 let mut input_range_cursor =
                     RangeCursor::new(PartitionCursor::new(&mut input_trace_cursor), ranges);
 
+                println!("{}:{}", file!(), line!());
                 // For all affected times, seek them in `input_trace`, compute aggregates using
                 // using radix_tree.
+                println!("{}:{}", file!(), line!());
+                let mut n = 0;
                 while input_range_cursor.key_valid() {
+                    println!("{}:{} {:?}", file!(), line!(), input_range_cursor.key());
                     let range = self.range.range_of(input_range_cursor.key());
                     tree_partition_cursor.rewind_keys();
+                    println!("{}:{}", file!(), line!());
 
                     // println!("aggregate_range({range:x?})");
                     // let mut treestr = String::new();
@@ -613,6 +626,7 @@ where
                     // println!("tree: {treestr}");
                     // tree_partition_cursor.rewind_keys();
 
+                    println!("{}:{}", file!(), line!());
                     while input_range_cursor.val_valid() {
                         // Generate output update.
                         if !input_range_cursor.weight().le0() {
@@ -636,14 +650,23 @@ where
 
                         input_range_cursor.step_val();
                     }
+                    println!("{}:{}", file!(), line!());
 
                     input_range_cursor.step_key();
+                    n += 1;
+                    if n >= 10 {
+                        panic!();
+                    }
                 }
+                println!("{}:{}", file!(), line!());
             }
+            println!("{}:{}", file!(), line!());
 
             delta_cursor.step_key();
+            println!("{}:{}", file!(), line!());
         }
 
+        println!("{}:{}", file!(), line!());
         let retractions = retraction_builder.done();
         let insertions = insertion_builder.done();
         retractions.add(insertions)
