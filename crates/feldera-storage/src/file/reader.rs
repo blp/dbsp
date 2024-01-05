@@ -255,7 +255,6 @@ impl DataBlock {
                 Ordering::Equal => {
                     let key = self.key::<K, A>(mid);
                     if predicate(&key) {
-                        println!("{}:{}", file!(), line!());
                         best = Some(mid);
                         end = mid;
                     } else {
@@ -1170,10 +1169,8 @@ impl Path {
                 TreeBlock::Index(index_block) => {
                     let Some(child_idx) = index_block.find_first(&row_group.rows, &predicate)
                     else {
-                        println!("{}:{}", file!(), line!());
                         return Ok(None);
                     };
-                        println!("{}:{}", file!(), line!());
                     node = index_block.get_child(child_idx);
                     indexes.push(index_block);
                 }
@@ -1181,10 +1178,8 @@ impl Path {
                     let Some(child_idx) =
                         data_block.find_first::<K, A, _>(&row_group.rows, &predicate)
                     else {
-                        println!("{}:{}", file!(), line!());
                         return Ok(None);
                     };
-                        println!("{}:{}", file!(), line!());
                     return Ok(Some(Path {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
