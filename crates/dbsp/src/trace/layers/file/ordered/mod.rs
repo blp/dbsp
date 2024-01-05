@@ -177,17 +177,21 @@ where
                     println!("{}:{}", file!(), line!());
                     return false;
                 }
+                let mut different = false;
                 while values1.valid() {
                     let (value1, diff1) = values1.take_current_item().unwrap();
                     let (value2, diff2) = values2.take_current_item().unwrap();
                     if value1 != value2 || diff1 != diff2 {
                         println!(
-                            "{}:{} ({value1:?}, {value2:?}) ({diff1:?}, {diff2:?})",
+                            "{}:{} key={key1:?} ({value1:?}, {value2:?}) ({diff1:?}, {diff2:?})",
                             file!(),
                             line!()
                         );
-                        return false;
+                        different = true;
                     }
+                }
+                if different {
+                    return false;
                 }
                 debug_assert!(!values2.valid());
             }
@@ -221,9 +225,7 @@ where
     }
 
     fn tuples(&self) -> usize {
-        let tuples = self.file.n_rows(1) as usize;
-        println!("keys={} tuples={tuples}", self.keys());
-        tuples
+        self.file.n_rows(1) as usize
     }
 
     fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor<'_> {

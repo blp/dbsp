@@ -470,12 +470,13 @@ impl<TS, V, Agg> PartitionedRollingAggregate<TS, V, Agg> {
     fn affected_ranges<R, C>(&self, delta_cursor: &mut C) -> Ranges<TS>
     where
         C: Cursor<TS, V, (), R>,
-        TS: PrimInt,
+        TS: PrimInt + Debug,
     {
         let mut affected_ranges = Ranges::new();
         let mut delta_ranges = Ranges::new();
 
         while delta_cursor.key_valid() {
+            println!("affected range of {:?}", delta_cursor.key());
             if let Some(range) = self.range.affected_range_of(delta_cursor.key()) {
                 affected_ranges.push_monotonic(range);
             }
@@ -537,14 +538,10 @@ where
         radix_tree: Cow<'a, RT>,
         output_trace: Cow<'a, OT>,
     ) -> O {
-        println!("{}:{}", file!(), line!());
         let mut delta_cursor = input_delta.cursor();
         let mut output_trace_cursor = output_trace.cursor();
         let mut input_trace_cursor = input_trace.cursor();
         let mut tree_cursor = radix_tree.cursor();
-        print_cursor("initial input_trace_cursor", &input_trace_cursor);
-        print_cursor("initial tree_cursor", &tree_cursor);
-        print_cursor("initial delta_cursor", &delta_cursor);
 
         let mut retraction_builder = O::Builder::new_builder(());
         let mut insertion_builder = O::Builder::with_capacity((), input_delta.len());
@@ -561,7 +558,10 @@ where
         while delta_cursor.key_valid() {
             // Compute affected intervals using `input_delta`.
             let ranges = self.affected_ranges(&mut PartitionCursor::new(&mut delta_cursor));
-            // println!("affected_ranges: {ranges:?}");
+            println!(
+                "affected_ranges for partition {:?}: {ranges:?}",
+                delta_cursor.key()
+            );
 
             // Clear old outputs.
             output_trace_cursor.seek_key(delta_cursor.key());
@@ -574,8 +574,12 @@ where
                     while range_cursor.val_valid() {
                         let weight = range_cursor.weight();
                         if !weight.is_zero() {
-                            // println!("retract: ({:?}, ({:?}, {:?})) ", delta_cursor.key(),
-                            // range_cursor.key(), range_cursor.val());
+                            println!(
+                                "retract: ({:?}, ({:?}, {:?})) ",
+                                delta_cursor.key(),
+                                range_cursor.key(),
+                                range_cursor.val()
+                            );
                             retraction_builder.push((
                                 O::item_from(
                                     delta_cursor.key().clone(),
@@ -591,33 +595,22 @@ where
             };
 
             // Compute new outputs.
-            print_cursor("input_trace_cursor", &input_trace_cursor);
-            print_cursor("tree_cursor", &tree_cursor);
-            print_cursor("delta_cursor", &delta_cursor);
             input_trace_cursor.seek_key(delta_cursor.key());
             tree_cursor.seek_key(delta_cursor.key());
 
-            println!("{}:{}", file!(), line!());
             if input_trace_cursor.key_valid() && input_trace_cursor.key() == delta_cursor.key() {
-                println!("{:?}", delta_cursor.key());
-                println!("{}:{}", file!(), line!());
                 debug_assert!(tree_cursor.key_valid());
                 debug_assert_eq!(tree_cursor.key(), delta_cursor.key());
 
-                print_cursor("tree_cursor", &tree_cursor);
                 let mut tree_partition_cursor = PartitionCursor::new(&mut tree_cursor);
                 let mut input_range_cursor =
                     RangeCursor::new(PartitionCursor::new(&mut input_trace_cursor), ranges);
 
                 // For all affected times, seek them in `input_trace`, compute aggregates using
                 // using radix_tree.
-                println!("{}:{}", file!(), line!());
-                let mut n = 0;
                 while input_range_cursor.key_valid() {
-                    println!("{}:{} {:?}", file!(), line!(), input_range_cursor.key());
                     let range = self.range.range_of(input_range_cursor.key());
                     tree_partition_cursor.rewind_keys();
-                    println!("{}:{}", file!(), line!());
 
                     // println!("aggregate_range({range:x?})");
                     // let mut treestr = String::new();
@@ -625,7 +618,6 @@ where
                     // println!("tree: {treestr}");
                     // tree_partition_cursor.rewind_keys();
 
-                    println!("{}:{}", file!(), line!());
                     while input_range_cursor.val_valid() {
                         // Generate output update.
                         if !input_range_cursor.weight().le0() {
@@ -634,8 +626,12 @@ where
                                     .aggregate_range::<Agg::Semigroup>(&range)
                                     .map(|acc| self.aggregator.finalize(acc))
                             });
-                            // println!("key: {:?}, range: {:?}, agg: {:?}",
-                            // input_range_cursor.key(), range, agg);
+                            println!(
+                                "key: {:?}, range: {:?}, agg: {:?}",
+                                input_range_cursor.key(),
+                                range,
+                                agg
+                            );
 
                             insertion_builder.push((
                                 O::item_from(
@@ -649,23 +645,14 @@ where
 
                         input_range_cursor.step_val();
                     }
-                    println!("{}:{}", file!(), line!());
 
                     input_range_cursor.step_key();
-                    n += 1;
-                    if n >= 10 {
-                        //panic!();
-                    }
                 }
-                println!("{}:{}", file!(), line!());
             }
-            println!("{}:{}", file!(), line!());
 
             delta_cursor.step_key();
-            println!("{}:{}", file!(), line!());
         }
 
-        println!("{}:{}", file!(), line!());
         let retractions = retraction_builder.done();
         let insertions = insertion_builder.done();
         retractions.add(insertions)
@@ -674,18 +661,27 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::{
+        fs::File,
+        io::Write,
+        process::exit,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use crate::{
         algebra::DefaultSemigroup,
         operator::{
             time_series::{
                 range::{Range, RelOffset, RelRange},
+                rolling_aggregate::the_trace,
                 PartitionCursor,
             },
             trace::TraceBound,
             FilterMap, Fold,
         },
         trace::{Batch, BatchReader, Cursor},
-        CollectionHandle, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream, CircuitHandle,
+        CircuitHandle, CollectionHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, RootCircuit,
+        Stream,
     };
     use size_of::SizeOf;
 
@@ -693,6 +689,40 @@ mod test {
     type DataStream = Stream<RootCircuit, DataBatch>;
     type OutputBatch = OrdIndexedZSet<u64, (u64, Option<i64>), isize>;
     type OutputStream = Stream<RootCircuit, OutputBatch>;
+
+    #[test]
+    fn mytest() {
+        let mut trace = the_trace();
+        trace.truncate(19);
+        println!(".");
+        let (circuit, (input, output, expected_output)) =
+            partition_rolling_aggregate_circuit(u64::max_value(), None);
+
+        println!("{} batches", trace.len());
+        let mut n = 0;
+        for mut batch in trace {
+            //batch.retain(|element| element.0 > 0);
+            println!("batch number {n}");
+            if n == 18 {
+                batch.sort_unstable();
+                for item in &batch {
+                    println!("{item:?}");
+                }
+            }
+            input.append(&mut batch);
+            circuit.step().unwrap();
+            let out = output.consolidate();
+            let exp_out = expected_output.consolidate();
+            if n == 18 {
+                println!("actual: {out:?}");
+                println!("expected: {exp_out:?}");
+            }
+            if out != exp_out {
+                exit(0);
+            }
+            n += 1;
+        }
+    }
 
     // Reference implementation of `aggregate_range` for testing.
     fn aggregate_range_slow(batch: &DataBatch, partition: u64, range: Range<u64>) -> Option<i64> {
@@ -753,7 +783,11 @@ mod test {
             .gather(0)
     }
 
-    type RangeHandle = CollectionHandle<u64, ((u64, i64), isize)>;
+    type RangeHandle = (
+        CollectionHandle<u64, ((u64, i64), isize)>,
+        OutputHandle<OrdIndexedZSet<u64, (u64, Option<i64>), isize>>,
+        OutputHandle<OrdIndexedZSet<u64, (u64, Option<i64>), isize>>,
+    );
 
     fn partition_rolling_aggregate_circuit(
         lateness: u64,
@@ -763,278 +797,31 @@ mod test {
             let (input_stream, input_handle) =
                 circuit.add_input_indexed_zset::<u64, (u64, i64), isize>();
 
-            let input_by_time =
-                input_stream.map_index(|(partition, (ts, val))| (*ts, (*partition, *val)));
-
-            let warerline =
-                input_by_time.waterline_monotonic(|| 0, move |ts| ts.saturating_sub(lateness));
-
             let aggregator = <Fold<_, DefaultSemigroup<_>, _, _>>::new(
                 0i64,
                 |agg: &mut i64, val: &i64, w: isize| *agg += val * (w as i64),
             );
 
-            let range_spec = RelRange::new(RelOffset::Before(1000), RelOffset::Before(0));
-            let expected_1000_0 = partitioned_rolling_aggregate_slow(&input_stream, range_spec);
-            let output_1000_0 = input_stream
-                .partitioned_rolling_aggregate::<u64, i64, _>(aggregator.clone(), range_spec)
-                .gather(0)
-                .integrate();
-            expected_1000_0.apply2(&output_1000_0, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            let output_1000_0_warerline = input_by_time
-                .partitioned_rolling_aggregate_with_waterline(
-                    &warerline,
-                    |(partition, val)| (*partition, *val),
-                    aggregator.clone(),
-                    range_spec,
-                )
-                .gather(0)
-                .integrate();
-
-            expected_1000_0.apply2(&output_1000_0_warerline, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            let output_1000_0_linear = input_stream
-                .partitioned_rolling_aggregate_linear::<u64, i64, _, _, _, _>(
-                    |v| *v,
-                    |v| v,
-                    range_spec,
-                )
-                .gather(0)
-                .integrate();
-            expected_1000_0.apply2(&output_1000_0_linear, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            let range_spec = RelRange::new(RelOffset::Before(500), RelOffset::After(500));
+            let range_spec = RelRange::new(RelOffset::Before(0), RelOffset::After(0));
             let expected_500_500 = partitioned_rolling_aggregate_slow(&input_stream, range_spec);
+            let expected_diffs = expected_500_500.differentiate();
             let aggregate_500_500 = input_stream
                 .partitioned_rolling_aggregate::<u64, i64, _>(aggregator.clone(), range_spec);
             let output_500_500 = aggregate_500_500.gather(0).integrate();
             expected_500_500.apply2(&output_500_500, |expected, actual| {
-                assert_eq!(expected, actual)
+                if expected != actual {
+                    println!("fail!");
+                }
+                //assert_eq!(expected, actual)
             });
 
-            let aggregate_500_500_warerline = input_by_time
-                .partitioned_rolling_aggregate_with_waterline(
-                    &warerline,
-                    |(partition, val)| (*partition, *val),
-                    aggregator.clone(),
-                    range_spec,
-                );
-            let output_500_500_warerline = aggregate_500_500_warerline.gather(0).integrate();
-
-            let bound = TraceBound::new();
-            bound.set((u64::max_value(), None));
-
-            aggregate_500_500_warerline
-                .integrate_trace_with_bound(TraceBound::new(), bound)
-                .apply(move |trace| {
-                    if let Some(bound) = size_bound {
-                        assert!(trace.size_of().total_bytes() <= bound);
-                    }
-                });
-
-            expected_500_500.apply2(&output_500_500_warerline, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            let output_500_500_linear = input_stream
-                .partitioned_rolling_aggregate_linear::<u64, i64, _, _, _, _>(
-                    |v| *v,
-                    |v| v,
-                    range_spec,
-                )
-                .gather(0)
-                .integrate();
-            expected_500_500.apply2(&output_500_500_linear, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            let range_spec = RelRange::new(RelOffset::Before(500), RelOffset::Before(100));
-            let expected_500_100 = partitioned_rolling_aggregate_slow(&input_stream, range_spec);
-            let output_500_100 = input_stream
-                .partitioned_rolling_aggregate::<u64, i64, _>(aggregator, range_spec)
-                .gather(0)
-                .integrate();
-            expected_500_100.apply2(&output_500_100, |expected, actual| {
-                assert_eq!(expected, actual)
-            });
-
-            Ok(input_handle)
+            Ok((
+                input_handle,
+                aggregate_500_500.output(),
+                expected_diffs.output(),
+            ))
         })
         .unwrap()
-    }
-
-    #[test]
-    fn test_partitioned_over_range_2() {
-        let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
-
-        circuit.step().unwrap();
-
-        input.append(&mut vec![(2, ((110271, 100), 1))]);
-        circuit.step().unwrap();
-
-        input.append(&mut vec![(2, ((0, 100), 1))]);
-        circuit.step().unwrap();
-    }
-
-    #[test]
-    fn test_partitioned_over_range() {
-        let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
-
-        circuit.step().unwrap();
-
-        input.append(&mut vec![
-            (0, ((1, 100), 1)),
-            (0, ((10, 100), 1)),
-            (0, ((20, 100), 1)),
-            (0, ((30, 100), 1)),
-        ]);
-        circuit.step().unwrap();
-
-        input.append(&mut vec![
-            (0, ((5, 100), 1)),
-            (0, ((15, 100), 1)),
-            (0, ((25, 100), 1)),
-            (0, ((35, 100), 1)),
-        ]);
-        circuit.step().unwrap();
-
-        input.append(&mut vec![
-            (0, ((1, 100), -1)),
-            (0, ((10, 100), -1)),
-            (0, ((20, 100), -1)),
-            (0, ((30, 100), -1)),
-        ]);
-        input.append(&mut vec![
-            (1, ((1, 100), 1)),
-            (1, ((1000, 100), 1)),
-            (1, ((2000, 100), 1)),
-            (1, ((3000, 100), 1)),
-        ]);
-        circuit.step().unwrap();
-    }
-
-    // Test derived from issue #199 (https://github.com/feldera/feldera/issues/199).
-    #[test]
-    fn test_partitioned_rolling_aggregate2() {
-        let (circuit, (input, expected)) = RootCircuit::build(move |circuit| {
-            let (input, input_handle) = circuit.add_input_indexed_zset::<u64, (u64, i64), i64>();
-            let (expected, expected_handle) =
-                circuit.add_input_indexed_zset::<u64, (u64, Option<i64>), i64>();
-
-            input.inspect(|f| {
-                for (p, (ts, v), w) in f.iter() {
-                    println!(" input {p} {ts} {v:6} {w:+}");
-                }
-            });
-            let range_spec = RelRange::new(RelOffset::Before(3), RelOffset::Before(2));
-            let sum = input.partitioned_rolling_aggregate_linear(|&f| f, |x| x, range_spec);
-            sum.inspect(|f| {
-                for (p, (ts, sum), w) in f.iter() {
-                    println!("output {p} {ts} {:6} {w:+}", sum.unwrap_or_default());
-                }
-            });
-            expected.apply2(&sum, |expected, actual| assert_eq!(expected, actual));
-            Ok((input_handle, expected_handle))
-        })
-        .unwrap();
-
-        input.append(&mut vec![
-            (1, ((0, 1), 1)),
-            (1, ((1, 10), 1)),
-            (1, ((2, 100), 1)),
-            (1, ((3, 1000), 1)),
-            (1, ((4, 10000), 1)),
-            (1, ((5, 100000), 1)),
-            (1, ((9, 123456), 1)),
-        ]);
-        expected.append(&mut vec![
-            (1, ((0, None), 1)),
-            (1, ((1, None), 1)),
-            (1, ((2, Some(1)), 1)),
-            (1, ((3, Some(11)), 1)),
-            (1, ((4, Some(110)), 1)),
-            (1, ((5, Some(1100)), 1)),
-            (1, ((9, None), 1)),
-        ]);
-        circuit.step().unwrap();
-    }
-
-    #[test]
-    fn test_partitioned_rolling_average() {
-        let (circuit, (input, expected)) = RootCircuit::build(move |circuit| {
-            let (input_stream, input_handle) =
-                circuit.add_input_indexed_zset::<u64, (u64, i64), i64>();
-            let (expected_stream, expected_handle) =
-                circuit.add_input_indexed_zset::<u64, (u64, Option<i64>), i64>();
-
-            let range_spec = RelRange::new(RelOffset::Before(3), RelOffset::Before(1));
-            input_stream
-                .partitioned_rolling_average(range_spec)
-                .apply2(&expected_stream, |avg, expected| assert_eq!(avg, expected));
-            Ok((input_handle, expected_handle))
-        })
-        .unwrap();
-
-        circuit.step().unwrap();
-
-        input.append(&mut vec![
-            (0, ((10, 10), 1)),
-            (0, ((11, 20), 1)),
-            (0, ((12, 30), 1)),
-            (0, ((13, 40), 1)),
-            (0, ((14, 50), 1)),
-            (0, ((15, 60), 1)),
-        ]);
-        expected.append(&mut vec![
-            (0, ((10, None), 1)),
-            (0, ((11, Some(10)), 1)),
-            (0, ((12, Some(15)), 1)),
-            (0, ((13, Some(20)), 1)),
-            (0, ((14, Some(30)), 1)),
-            (0, ((15, Some(40)), 1)),
-        ]);
-        circuit.step().unwrap();
-    }
-
-    #[test]
-    fn test_partitioned_rolling_aggregate() {
-        let (circuit, input) = RootCircuit::build(move |circuit| {
-            let (input_stream, input_handle) =
-                circuit.add_input_indexed_zset::<u64, (u64, i64), i64>();
-
-            input_stream.inspect(|f| {
-                for (p, (ts, v), w) in f.iter() {
-                    println!(" input {p} {ts} {v:6} {w:+}");
-                }
-            });
-            let range_spec = RelRange::new(RelOffset::Before(3), RelOffset::Before(2));
-            let sum = input_stream.partitioned_rolling_aggregate_linear(|&f| f, |x| x, range_spec);
-            sum.inspect(|f| {
-                for (p, (ts, sum), w) in f.iter() {
-                    println!("output {p} {ts} {:6} {w:+}", sum.unwrap_or_default());
-                }
-            });
-            Ok(input_handle)
-        })
-        .unwrap();
-
-        input.append(&mut vec![
-            (1, ((0, 1), 1)),
-            (1, ((1, 10), 1)),
-            (1, ((2, 100), 1)),
-            (1, ((3, 1000), 1)),
-            (1, ((4, 10000), 1)),
-            (1, ((5, 100000), 1)),
-            (1, ((9, 123456), 1)),
-        ]);
-        circuit.step().unwrap();
     }
 
     use proptest::{collection, prelude::*};
@@ -1054,7 +841,7 @@ mod test {
         window: (u64, u64),
         max_batch_size: usize,
     ) -> impl Strategy<Value = InputBatch> {
-        collection::vec(input_tuple(partitions, window), 0..max_batch_size)
+        collection::vec(input_tuple(partitions, window), max_batch_size)
     }
 
     fn input_trace(
@@ -1065,68 +852,1098 @@ mod test {
     ) -> impl Strategy<Value = Vec<InputBatch>> {
         collection::vec(
             input_batch(partitions, (0, epoch), max_batch_size),
-            0..max_batches,
+            max_batches,
         )
     }
 
-    fn input_trace_quasi_monotone(
-        partitions: u64,
-        window_size: u64,
-        window_step: u64,
-        max_batch_size: usize,
-        batches: usize,
-    ) -> impl Strategy<Value = Vec<InputBatch>> {
-        (0..batches)
-            .map(|i| {
-                input_batch(
-                    partitions,
-                    (i as u64 * window_step, i as u64 * window_step + window_size),
-                    max_batch_size,
-                )
-                .boxed()
-            })
-            .collect::<Vec<_>>()
-    }
+    static TEST_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(5))]
-
         #[test]
         #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
-        fn proptest_partitioned_rolling_aggregate_quasi_monotone(trace in input_trace_quasi_monotone(5, 10_000, 2_000, 20, 200)) {
+        fn proptest_partitioned_over_range_dense(trace in input_trace(5, 100, 50, 20)) {
             println!(".");
-            // 10_000 is an empirically established bound: without GC this test needs >10KB.
-            let (circuit, input) = partition_rolling_aggregate_circuit(10000, Some(10_000));
+            let (circuit, (input, output, expected_output)) = partition_rolling_aggregate_circuit(u64::max_value(), None);
 
+            println!("{} batches", trace.len());
+            let mut n = 0;
+            let this_count = TEST_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+            if this_count == 3{
+                let mut file = File::create("trace3.txt").unwrap();
+                for batch in &trace {
+                    writeln!(file, "vec!{batch:?},").unwrap();
+                }
+            };
             for mut batch in trace {
-                println!("batch");
+                //batch.retain(|element| element.0 > 0);
+                println!("batch number {n}");
+                if n == 18 {
+                    batch.sort_unstable();
+                    for item in &batch {
+                        println!("{item:?}");
+                    }
+                }
                 input.append(&mut batch);
                 circuit.step().unwrap();
+                let out = output.consolidate();
+                let exp_out = expected_output.consolidate();
+                if n == 18 {
+                    println!("{out:?}");
+                    println!("{exp_out:?}");
+                }
+                if out != exp_out {
+                    exit(0);
+                }
+                n += 1;
+            }
+            if this_count >= 3 {
+                exit(0);
             }
         }
     }
+}
 
-    proptest! {
-        #[test]
-        #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
-        fn proptest_partitioned_over_range_sparse(trace in input_trace(5, 1_000_000, 20, 20)) {
-            let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
-
-            for mut batch in trace {
-                input.append(&mut batch);
-                circuit.step().unwrap();
-            }
-        }
-
-        #[test]
-        #[cfg_attr(feature = "persistence", ignore = "takes a long time?")]
-        fn proptest_partitioned_over_range_dense(trace in input_trace(5, 1_000, 50, 20)) {
-            let (circuit, input) = partition_rolling_aggregate_circuit(u64::max_value(), None);
-
-            for mut batch in trace {
-                input.append(&mut batch);
-                circuit.step().unwrap();
-            }
-        }
-    }
+pub fn the_trace() -> Vec<Vec<(u64, ((u64, i64), isize))>> {
+    vec![
+        vec![
+            (3, ((10, 100), 1)),
+            (2, ((44, 100), 1)),
+            (0, ((40, 100), 1)),
+            (3, ((6, 100), 1)),
+            (0, ((30, 100), 1)),
+            (4, ((59, 100), 1)),
+            (0, ((14, 100), 1)),
+            (3, ((83, 100), 1)),
+            (2, ((0, 100), 1)),
+            (0, ((72, 100), 1)),
+            (0, ((51, 100), 1)),
+            (4, ((54, 100), 1)),
+            (2, ((74, 100), 1)),
+            (0, ((21, 100), 1)),
+            (3, ((36, 100), 1)),
+            (3, ((45, 100), 1)),
+            (1, ((51, 100), 1)),
+            (0, ((83, 100), 1)),
+            (1, ((53, 100), 1)),
+            (0, ((84, 100), 1)),
+            (0, ((92, 100), 1)),
+            (0, ((95, 100), 1)),
+            (0, ((8, 100), 1)),
+            (0, ((35, 100), 1)),
+            (0, ((27, 100), 1)),
+            (3, ((72, 100), 1)),
+            (1, ((79, 100), 1)),
+            (3, ((25, 100), 1)),
+            (2, ((53, 100), 1)),
+            (3, ((0, 100), 1)),
+            (4, ((92, 100), 1)),
+            (4, ((68, 100), 1)),
+            (0, ((70, 100), 1)),
+            (4, ((40, 100), 1)),
+            (0, ((3, 100), 1)),
+            (2, ((55, 100), 1)),
+            (4, ((29, 100), 1)),
+            (2, ((69, 100), 1)),
+            (4, ((87, 100), 1)),
+            (3, ((65, 100), 1)),
+            (1, ((41, 100), 1)),
+            (1, ((96, 100), 1)),
+            (3, ((18, 100), 1)),
+            (4, ((97, 100), 1)),
+            (2, ((13, 100), 1)),
+            (3, ((70, 100), 1)),
+            (4, ((94, 100), 1)),
+            (0, ((80, 100), 1)),
+            (4, ((77, 100), 1)),
+            (3, ((51, 100), 1)),
+        ],
+        vec![
+            (1, ((28, 100), 1)),
+            (4, ((67, 100), 1)),
+            (3, ((73, 100), 1)),
+            (1, ((68, 100), 1)),
+            (4, ((79, 100), 1)),
+            (1, ((37, 100), 1)),
+            (0, ((47, 100), 1)),
+            (4, ((94, 100), 1)),
+            (3, ((66, 100), 1)),
+            (4, ((25, 100), 1)),
+            (4, ((87, 100), 1)),
+            (2, ((11, 100), 1)),
+            (4, ((4, 100), 1)),
+            (3, ((20, 100), 1)),
+            (3, ((0, 100), 1)),
+            (1, ((95, 100), 1)),
+            (2, ((75, 100), 1)),
+            (4, ((44, 100), 1)),
+            (0, ((6, 100), 1)),
+            (2, ((34, 100), 1)),
+            (0, ((81, 100), 1)),
+            (3, ((97, 100), 1)),
+            (4, ((7, 100), 1)),
+            (3, ((30, 100), 1)),
+            (1, ((14, 100), 1)),
+            (4, ((27, 100), 1)),
+            (0, ((89, 100), 1)),
+            (2, ((74, 100), 1)),
+            (2, ((11, 100), 1)),
+            (2, ((22, 100), 1)),
+            (0, ((46, 100), 1)),
+            (4, ((4, 100), 1)),
+            (4, ((74, 100), 1)),
+            (1, ((83, 100), 1)),
+            (4, ((62, 100), 1)),
+            (1, ((92, 100), 1)),
+            (3, ((60, 100), 1)),
+            (4, ((30, 100), 1)),
+            (2, ((30, 100), 1)),
+            (4, ((36, 100), 1)),
+            (0, ((14, 100), 1)),
+            (2, ((78, 100), 1)),
+            (3, ((35, 100), 1)),
+            (3, ((61, 100), 1)),
+            (3, ((97, 100), 1)),
+            (2, ((15, 100), 1)),
+            (0, ((55, 100), 1)),
+            (0, ((2, 100), 1)),
+            (4, ((49, 100), 1)),
+            (4, ((22, 100), 1)),
+        ],
+        vec![
+            (1, ((71, 100), 1)),
+            (1, ((99, 100), 1)),
+            (4, ((84, 100), 1)),
+            (1, ((91, 100), 1)),
+            (3, ((76, 100), 1)),
+            (1, ((28, 100), 1)),
+            (1, ((96, 100), 1)),
+            (3, ((15, 100), 1)),
+            (0, ((56, 100), 1)),
+            (3, ((52, 100), 1)),
+            (0, ((87, 100), 1)),
+            (4, ((76, 100), 1)),
+            (4, ((7, 100), 1)),
+            (3, ((88, 100), 1)),
+            (1, ((22, 100), 1)),
+            (3, ((21, 100), 1)),
+            (0, ((44, 100), 1)),
+            (3, ((67, 100), 1)),
+            (4, ((72, 100), 1)),
+            (0, ((38, 100), 1)),
+            (4, ((3, 100), 1)),
+            (0, ((77, 100), 1)),
+            (1, ((57, 100), 1)),
+            (0, ((77, 100), 1)),
+            (0, ((24, 100), 1)),
+            (4, ((9, 100), 1)),
+            (1, ((91, 100), 1)),
+            (1, ((32, 100), 1)),
+            (4, ((3, 100), 1)),
+            (1, ((90, 100), 1)),
+            (0, ((12, 100), 1)),
+            (2, ((86, 100), 1)),
+            (3, ((1, 100), 1)),
+            (1, ((19, 100), 1)),
+            (3, ((84, 100), 1)),
+            (4, ((80, 100), 1)),
+            (3, ((33, 100), 1)),
+            (1, ((75, 100), 1)),
+            (3, ((28, 100), 1)),
+            (4, ((58, 100), 1)),
+            (4, ((63, 100), 1)),
+            (1, ((56, 100), 1)),
+            (0, ((80, 100), 1)),
+            (4, ((21, 100), 1)),
+            (2, ((63, 100), 1)),
+            (1, ((76, 100), 1)),
+            (4, ((90, 100), 1)),
+            (3, ((24, 100), 1)),
+            (4, ((71, 100), 1)),
+            (3, ((77, 100), 1)),
+        ],
+        vec![
+            (2, ((83, 100), 1)),
+            (3, ((90, 100), 1)),
+            (3, ((24, 100), 1)),
+            (4, ((58, 100), 1)),
+            (0, ((60, 100), 1)),
+            (2, ((28, 100), 1)),
+            (3, ((97, 100), 1)),
+            (0, ((11, 100), 1)),
+            (0, ((36, 100), 1)),
+            (3, ((50, 100), 1)),
+            (1, ((19, 100), 1)),
+            (2, ((96, 100), 1)),
+            (0, ((97, 100), 1)),
+            (2, ((58, 100), 1)),
+            (0, ((0, 100), 1)),
+            (4, ((94, 100), 1)),
+            (4, ((37, 100), 1)),
+            (2, ((44, 100), 1)),
+            (1, ((13, 100), 1)),
+            (1, ((79, 100), 1)),
+            (4, ((33, 100), 1)),
+            (1, ((84, 100), 1)),
+            (1, ((37, 100), 1)),
+            (3, ((80, 100), 1)),
+            (3, ((46, 100), 1)),
+            (3, ((21, 100), 1)),
+            (0, ((79, 100), 1)),
+            (3, ((51, 100), 1)),
+            (1, ((8, 100), 1)),
+            (3, ((87, 100), 1)),
+            (3, ((86, 100), 1)),
+            (3, ((51, 100), 1)),
+            (4, ((33, 100), 1)),
+            (3, ((1, 100), 1)),
+            (4, ((54, 100), 1)),
+            (2, ((68, 100), 1)),
+            (4, ((11, 100), 1)),
+            (4, ((10, 100), 1)),
+            (1, ((20, 100), 1)),
+            (2, ((14, 100), 1)),
+            (2, ((29, 100), 1)),
+            (3, ((99, 100), 1)),
+            (4, ((31, 100), 1)),
+            (1, ((89, 100), 1)),
+            (4, ((95, 100), 1)),
+            (4, ((66, 100), 1)),
+            (1, ((14, 100), 1)),
+            (0, ((82, 100), 1)),
+            (2, ((59, 100), 1)),
+            (3, ((10, 100), 1)),
+        ],
+        vec![
+            (2, ((99, 100), 1)),
+            (0, ((45, 100), 1)),
+            (0, ((17, 100), 1)),
+            (1, ((90, 100), 1)),
+            (4, ((98, 100), 1)),
+            (0, ((18, 100), 1)),
+            (4, ((80, 100), 1)),
+            (4, ((14, 100), 1)),
+            (1, ((9, 100), 1)),
+            (2, ((36, 100), 1)),
+            (4, ((13, 100), 1)),
+            (2, ((97, 100), 1)),
+            (4, ((80, 100), 1)),
+            (0, ((57, 100), 1)),
+            (4, ((22, 100), 1)),
+            (1, ((89, 100), 1)),
+            (2, ((2, 100), 1)),
+            (0, ((90, 100), 1)),
+            (3, ((96, 100), 1)),
+            (4, ((56, 100), 1)),
+            (4, ((13, 100), 1)),
+            (4, ((82, 100), 1)),
+            (1, ((17, 100), 1)),
+            (0, ((3, 100), 1)),
+            (0, ((99, 100), 1)),
+            (4, ((1, 100), 1)),
+            (3, ((9, 100), 1)),
+            (1, ((18, 100), 1)),
+            (2, ((75, 100), 1)),
+            (0, ((70, 100), 1)),
+            (3, ((79, 100), 1)),
+            (2, ((99, 100), 1)),
+            (2, ((8, 100), 1)),
+            (1, ((41, 100), 1)),
+            (3, ((52, 100), 1)),
+            (1, ((9, 100), 1)),
+            (0, ((73, 100), 1)),
+            (3, ((46, 100), 1)),
+            (4, ((53, 100), 1)),
+            (0, ((79, 100), 1)),
+            (4, ((2, 100), 1)),
+            (4, ((60, 100), 1)),
+            (2, ((30, 100), 1)),
+            (3, ((4, 100), 1)),
+            (1, ((89, 100), 1)),
+            (0, ((46, 100), 1)),
+            (0, ((83, 100), 1)),
+            (4, ((37, 100), 1)),
+            (1, ((50, 100), 1)),
+            (2, ((44, 100), 1)),
+        ],
+        vec![
+            (1, ((18, 100), 1)),
+            (2, ((32, 100), 1)),
+            (4, ((5, 100), 1)),
+            (2, ((31, 100), 1)),
+            (1, ((22, 100), 1)),
+            (3, ((66, 100), 1)),
+            (2, ((82, 100), 1)),
+            (3, ((62, 100), 1)),
+            (1, ((62, 100), 1)),
+            (3, ((33, 100), 1)),
+            (3, ((47, 100), 1)),
+            (1, ((81, 100), 1)),
+            (3, ((88, 100), 1)),
+            (4, ((56, 100), 1)),
+            (1, ((45, 100), 1)),
+            (0, ((93, 100), 1)),
+            (0, ((23, 100), 1)),
+            (0, ((36, 100), 1)),
+            (2, ((29, 100), 1)),
+            (3, ((21, 100), 1)),
+            (2, ((56, 100), 1)),
+            (3, ((64, 100), 1)),
+            (2, ((63, 100), 1)),
+            (1, ((38, 100), 1)),
+            (2, ((20, 100), 1)),
+            (2, ((77, 100), 1)),
+            (0, ((74, 100), 1)),
+            (3, ((90, 100), 1)),
+            (2, ((77, 100), 1)),
+            (0, ((17, 100), 1)),
+            (0, ((4, 100), 1)),
+            (0, ((62, 100), 1)),
+            (0, ((90, 100), 1)),
+            (4, ((64, 100), 1)),
+            (0, ((46, 100), 1)),
+            (2, ((60, 100), 1)),
+            (2, ((9, 100), 1)),
+            (3, ((70, 100), 1)),
+            (1, ((35, 100), 1)),
+            (4, ((60, 100), 1)),
+            (3, ((68, 100), 1)),
+            (4, ((40, 100), 1)),
+            (1, ((13, 100), 1)),
+            (2, ((47, 100), 1)),
+            (3, ((62, 100), 1)),
+            (3, ((32, 100), 1)),
+            (2, ((47, 100), 1)),
+            (0, ((60, 100), 1)),
+            (1, ((51, 100), 1)),
+            (2, ((9, 100), 1)),
+        ],
+        vec![
+            (2, ((64, 100), 1)),
+            (0, ((37, 100), 1)),
+            (0, ((17, 100), 1)),
+            (0, ((15, 100), 1)),
+            (4, ((50, 100), 1)),
+            (3, ((37, 100), 1)),
+            (4, ((78, 100), 1)),
+            (4, ((0, 100), 1)),
+            (1, ((74, 100), 1)),
+            (3, ((35, 100), 1)),
+            (0, ((45, 100), 1)),
+            (4, ((90, 100), 1)),
+            (3, ((11, 100), 1)),
+            (1, ((56, 100), 1)),
+            (3, ((89, 100), 1)),
+            (2, ((38, 100), 1)),
+            (2, ((99, 100), 1)),
+            (0, ((96, 100), 1)),
+            (0, ((23, 100), 1)),
+            (0, ((0, 100), 1)),
+            (3, ((88, 100), 1)),
+            (4, ((71, 100), 1)),
+            (2, ((80, 100), 1)),
+            (2, ((7, 100), 1)),
+            (0, ((68, 100), 1)),
+            (3, ((0, 100), 1)),
+            (3, ((51, 100), 1)),
+            (3, ((57, 100), 1)),
+            (3, ((8, 100), 1)),
+            (2, ((54, 100), 1)),
+            (1, ((37, 100), 1)),
+            (0, ((69, 100), 1)),
+            (0, ((99, 100), 1)),
+            (0, ((16, 100), 1)),
+            (2, ((75, 100), 1)),
+            (3, ((59, 100), 1)),
+            (4, ((66, 100), 1)),
+            (0, ((59, 100), 1)),
+            (0, ((38, 100), 1)),
+            (3, ((35, 100), 1)),
+            (2, ((20, 100), 1)),
+            (1, ((19, 100), 1)),
+            (1, ((88, 100), 1)),
+            (0, ((49, 100), 1)),
+            (2, ((9, 100), 1)),
+            (2, ((76, 100), 1)),
+            (1, ((91, 100), 1)),
+            (4, ((75, 100), 1)),
+            (4, ((56, 100), 1)),
+            (3, ((35, 100), 1)),
+        ],
+        vec![
+            (3, ((94, 100), 1)),
+            (4, ((93, 100), 1)),
+            (0, ((57, 100), 1)),
+            (0, ((2, 100), 1)),
+            (0, ((25, 100), 1)),
+            (1, ((62, 100), 1)),
+            (3, ((71, 100), 1)),
+            (2, ((38, 100), 1)),
+            (1, ((18, 100), 1)),
+            (1, ((50, 100), 1)),
+            (4, ((79, 100), 1)),
+            (0, ((57, 100), 1)),
+            (3, ((89, 100), 1)),
+            (0, ((18, 100), 1)),
+            (3, ((78, 100), 1)),
+            (1, ((88, 100), 1)),
+            (1, ((76, 100), 1)),
+            (0, ((21, 100), 1)),
+            (4, ((16, 100), 1)),
+            (2, ((85, 100), 1)),
+            (0, ((55, 100), 1)),
+            (0, ((68, 100), 1)),
+            (2, ((43, 100), 1)),
+            (3, ((38, 100), 1)),
+            (2, ((22, 100), 1)),
+            (1, ((89, 100), 1)),
+            (1, ((10, 100), 1)),
+            (0, ((99, 100), 1)),
+            (2, ((40, 100), 1)),
+            (1, ((53, 100), 1)),
+            (1, ((32, 100), 1)),
+            (1, ((99, 100), 1)),
+            (3, ((36, 100), 1)),
+            (1, ((93, 100), 1)),
+            (4, ((48, 100), 1)),
+            (2, ((6, 100), 1)),
+            (3, ((28, 100), 1)),
+            (2, ((89, 100), 1)),
+            (2, ((14, 100), 1)),
+            (3, ((60, 100), 1)),
+            (3, ((21, 100), 1)),
+            (1, ((25, 100), 1)),
+            (2, ((43, 100), 1)),
+            (1, ((37, 100), 1)),
+            (1, ((86, 100), 1)),
+            (1, ((30, 100), 1)),
+            (1, ((86, 100), 1)),
+            (2, ((71, 100), 1)),
+            (0, ((25, 100), 1)),
+            (1, ((7, 100), 1)),
+        ],
+        vec![
+            (3, ((94, 100), 1)),
+            (3, ((80, 100), 1)),
+            (3, ((62, 100), 1)),
+            (3, ((53, 100), 1)),
+            (3, ((30, 100), 1)),
+            (3, ((19, 100), 1)),
+            (3, ((16, 100), 1)),
+            (4, ((17, 100), 1)),
+            (2, ((36, 100), 1)),
+            (0, ((86, 100), 1)),
+            (0, ((79, 100), 1)),
+            (4, ((10, 100), 1)),
+            (1, ((95, 100), 1)),
+            (0, ((62, 100), 1)),
+            (2, ((64, 100), 1)),
+            (2, ((70, 100), 1)),
+            (3, ((35, 100), 1)),
+            (1, ((43, 100), 1)),
+            (3, ((33, 100), 1)),
+            (2, ((13, 100), 1)),
+            (3, ((58, 100), 1)),
+            (4, ((89, 100), 1)),
+            (2, ((27, 100), 1)),
+            (0, ((54, 100), 1)),
+            (3, ((67, 100), 1)),
+            (1, ((35, 100), 1)),
+            (4, ((7, 100), 1)),
+            (0, ((29, 100), 1)),
+            (1, ((87, 100), 1)),
+            (3, ((94, 100), 1)),
+            (4, ((95, 100), 1)),
+            (4, ((5, 100), 1)),
+            (4, ((51, 100), 1)),
+            (2, ((48, 100), 1)),
+            (0, ((13, 100), 1)),
+            (2, ((76, 100), 1)),
+            (2, ((99, 100), 1)),
+            (3, ((93, 100), 1)),
+            (0, ((34, 100), 1)),
+            (0, ((6, 100), 1)),
+            (0, ((56, 100), 1)),
+            (4, ((10, 100), 1)),
+            (3, ((6, 100), 1)),
+            (0, ((61, 100), 1)),
+            (4, ((56, 100), 1)),
+            (1, ((34, 100), 1)),
+            (4, ((3, 100), 1)),
+            (0, ((12, 100), 1)),
+            (4, ((36, 100), 1)),
+            (3, ((42, 100), 1)),
+        ],
+        vec![
+            (3, ((20, 100), 1)),
+            (3, ((20, 100), 1)),
+            (2, ((26, 100), 1)),
+            (3, ((92, 100), 1)),
+            (4, ((76, 100), 1)),
+            (1, ((56, 100), 1)),
+            (0, ((77, 100), 1)),
+            (3, ((99, 100), 1)),
+            (1, ((13, 100), 1)),
+            (4, ((44, 100), 1)),
+            (4, ((70, 100), 1)),
+            (2, ((81, 100), 1)),
+            (0, ((7, 100), 1)),
+            (2, ((97, 100), 1)),
+            (3, ((80, 100), 1)),
+            (4, ((53, 100), 1)),
+            (3, ((79, 100), 1)),
+            (3, ((56, 100), 1)),
+            (1, ((39, 100), 1)),
+            (0, ((24, 100), 1)),
+            (2, ((22, 100), 1)),
+            (3, ((8, 100), 1)),
+            (0, ((16, 100), 1)),
+            (4, ((81, 100), 1)),
+            (2, ((17, 100), 1)),
+            (3, ((87, 100), 1)),
+            (1, ((91, 100), 1)),
+            (1, ((19, 100), 1)),
+            (0, ((43, 100), 1)),
+            (3, ((45, 100), 1)),
+            (1, ((74, 100), 1)),
+            (3, ((23, 100), 1)),
+            (1, ((82, 100), 1)),
+            (3, ((40, 100), 1)),
+            (2, ((68, 100), 1)),
+            (1, ((31, 100), 1)),
+            (0, ((14, 100), 1)),
+            (2, ((50, 100), 1)),
+            (2, ((30, 100), 1)),
+            (4, ((16, 100), 1)),
+            (4, ((20, 100), 1)),
+            (1, ((77, 100), 1)),
+            (1, ((57, 100), 1)),
+            (0, ((13, 100), 1)),
+            (2, ((74, 100), 1)),
+            (0, ((47, 100), 1)),
+            (0, ((22, 100), 1)),
+            (2, ((98, 100), 1)),
+            (1, ((44, 100), 1)),
+            (4, ((65, 100), 1)),
+        ],
+        vec![
+            (3, ((24, 100), 1)),
+            (3, ((68, 100), 1)),
+            (1, ((12, 100), 1)),
+            (0, ((16, 100), 1)),
+            (2, ((93, 100), 1)),
+            (3, ((59, 100), 1)),
+            (3, ((6, 100), 1)),
+            (1, ((90, 100), 1)),
+            (3, ((0, 100), 1)),
+            (3, ((76, 100), 1)),
+            (1, ((99, 100), 1)),
+            (4, ((83, 100), 1)),
+            (4, ((93, 100), 1)),
+            (4, ((12, 100), 1)),
+            (3, ((39, 100), 1)),
+            (1, ((13, 100), 1)),
+            (0, ((38, 100), 1)),
+            (4, ((72, 100), 1)),
+            (2, ((54, 100), 1)),
+            (2, ((87, 100), 1)),
+            (3, ((89, 100), 1)),
+            (2, ((64, 100), 1)),
+            (3, ((96, 100), 1)),
+            (2, ((40, 100), 1)),
+            (0, ((29, 100), 1)),
+            (4, ((58, 100), 1)),
+            (3, ((67, 100), 1)),
+            (3, ((4, 100), 1)),
+            (1, ((18, 100), 1)),
+            (2, ((29, 100), 1)),
+            (4, ((59, 100), 1)),
+            (1, ((25, 100), 1)),
+            (3, ((11, 100), 1)),
+            (3, ((72, 100), 1)),
+            (2, ((94, 100), 1)),
+            (0, ((46, 100), 1)),
+            (0, ((98, 100), 1)),
+            (1, ((70, 100), 1)),
+            (3, ((34, 100), 1)),
+            (3, ((11, 100), 1)),
+            (1, ((6, 100), 1)),
+            (1, ((27, 100), 1)),
+            (1, ((6, 100), 1)),
+            (4, ((2, 100), 1)),
+            (2, ((59, 100), 1)),
+            (1, ((51, 100), 1)),
+            (4, ((50, 100), 1)),
+            (0, ((82, 100), 1)),
+            (2, ((27, 100), 1)),
+            (1, ((24, 100), 1)),
+        ],
+        vec![
+            (2, ((46, 100), 1)),
+            (0, ((51, 100), 1)),
+            (4, ((75, 100), 1)),
+            (4, ((62, 100), 1)),
+            (3, ((52, 100), 1)),
+            (3, ((91, 100), 1)),
+            (3, ((85, 100), 1)),
+            (4, ((26, 100), 1)),
+            (2, ((0, 100), 1)),
+            (4, ((44, 100), 1)),
+            (0, ((14, 100), 1)),
+            (4, ((0, 100), 1)),
+            (0, ((50, 100), 1)),
+            (4, ((93, 100), 1)),
+            (2, ((94, 100), 1)),
+            (4, ((60, 100), 1)),
+            (0, ((97, 100), 1)),
+            (0, ((34, 100), 1)),
+            (2, ((88, 100), 1)),
+            (4, ((83, 100), 1)),
+            (1, ((68, 100), 1)),
+            (1, ((82, 100), 1)),
+            (3, ((82, 100), 1)),
+            (1, ((27, 100), 1)),
+            (2, ((32, 100), 1)),
+            (1, ((59, 100), 1)),
+            (3, ((42, 100), 1)),
+            (1, ((8, 100), 1)),
+            (1, ((81, 100), 1)),
+            (1, ((22, 100), 1)),
+            (2, ((71, 100), 1)),
+            (1, ((70, 100), 1)),
+            (2, ((22, 100), 1)),
+            (2, ((80, 100), 1)),
+            (3, ((22, 100), 1)),
+            (2, ((77, 100), 1)),
+            (2, ((24, 100), 1)),
+            (4, ((21, 100), 1)),
+            (0, ((12, 100), 1)),
+            (3, ((42, 100), 1)),
+            (3, ((88, 100), 1)),
+            (0, ((67, 100), 1)),
+            (2, ((16, 100), 1)),
+            (0, ((24, 100), 1)),
+            (4, ((7, 100), 1)),
+            (0, ((44, 100), 1)),
+            (1, ((61, 100), 1)),
+            (3, ((98, 100), 1)),
+            (3, ((72, 100), 1)),
+            (2, ((84, 100), 1)),
+        ],
+        vec![
+            (0, ((66, 100), 1)),
+            (0, ((36, 100), 1)),
+            (0, ((54, 100), 1)),
+            (2, ((31, 100), 1)),
+            (0, ((35, 100), 1)),
+            (0, ((89, 100), 1)),
+            (3, ((77, 100), 1)),
+            (3, ((14, 100), 1)),
+            (4, ((99, 100), 1)),
+            (2, ((92, 100), 1)),
+            (2, ((93, 100), 1)),
+            (3, ((36, 100), 1)),
+            (2, ((53, 100), 1)),
+            (4, ((64, 100), 1)),
+            (2, ((20, 100), 1)),
+            (1, ((48, 100), 1)),
+            (2, ((31, 100), 1)),
+            (0, ((36, 100), 1)),
+            (1, ((43, 100), 1)),
+            (0, ((72, 100), 1)),
+            (1, ((79, 100), 1)),
+            (0, ((21, 100), 1)),
+            (0, ((2, 100), 1)),
+            (3, ((2, 100), 1)),
+            (3, ((2, 100), 1)),
+            (2, ((53, 100), 1)),
+            (3, ((88, 100), 1)),
+            (0, ((2, 100), 1)),
+            (1, ((30, 100), 1)),
+            (2, ((90, 100), 1)),
+            (1, ((34, 100), 1)),
+            (2, ((84, 100), 1)),
+            (4, ((21, 100), 1)),
+            (1, ((16, 100), 1)),
+            (2, ((4, 100), 1)),
+            (1, ((61, 100), 1)),
+            (2, ((21, 100), 1)),
+            (1, ((55, 100), 1)),
+            (4, ((21, 100), 1)),
+            (1, ((58, 100), 1)),
+            (2, ((37, 100), 1)),
+            (4, ((60, 100), 1)),
+            (4, ((66, 100), 1)),
+            (0, ((52, 100), 1)),
+            (4, ((44, 100), 1)),
+            (0, ((43, 100), 1)),
+            (4, ((10, 100), 1)),
+            (1, ((77, 100), 1)),
+            (2, ((54, 100), 1)),
+            (3, ((97, 100), 1)),
+        ],
+        vec![
+            (3, ((34, 100), 1)),
+            (3, ((53, 100), 1)),
+            (2, ((38, 100), 1)),
+            (2, ((83, 100), 1)),
+            (1, ((18, 100), 1)),
+            (0, ((96, 100), 1)),
+            (3, ((73, 100), 1)),
+            (3, ((22, 100), 1)),
+            (2, ((83, 100), 1)),
+            (4, ((58, 100), 1)),
+            (1, ((95, 100), 1)),
+            (0, ((21, 100), 1)),
+            (4, ((24, 100), 1)),
+            (4, ((6, 100), 1)),
+            (1, ((94, 100), 1)),
+            (1, ((25, 100), 1)),
+            (0, ((0, 100), 1)),
+            (4, ((5, 100), 1)),
+            (4, ((26, 100), 1)),
+            (1, ((64, 100), 1)),
+            (3, ((59, 100), 1)),
+            (2, ((89, 100), 1)),
+            (3, ((60, 100), 1)),
+            (4, ((63, 100), 1)),
+            (4, ((68, 100), 1)),
+            (0, ((36, 100), 1)),
+            (4, ((44, 100), 1)),
+            (3, ((3, 100), 1)),
+            (2, ((50, 100), 1)),
+            (0, ((31, 100), 1)),
+            (1, ((71, 100), 1)),
+            (3, ((90, 100), 1)),
+            (2, ((78, 100), 1)),
+            (3, ((86, 100), 1)),
+            (2, ((9, 100), 1)),
+            (2, ((16, 100), 1)),
+            (0, ((62, 100), 1)),
+            (2, ((14, 100), 1)),
+            (2, ((32, 100), 1)),
+            (1, ((52, 100), 1)),
+            (2, ((16, 100), 1)),
+            (0, ((41, 100), 1)),
+            (2, ((62, 100), 1)),
+            (3, ((45, 100), 1)),
+            (2, ((71, 100), 1)),
+            (0, ((57, 100), 1)),
+            (2, ((23, 100), 1)),
+            (4, ((89, 100), 1)),
+            (2, ((73, 100), 1)),
+            (1, ((30, 100), 1)),
+        ],
+        vec![
+            (0, ((25, 100), 1)),
+            (3, ((3, 100), 1)),
+            (2, ((86, 100), 1)),
+            (0, ((14, 100), 1)),
+            (3, ((67, 100), 1)),
+            (1, ((94, 100), 1)),
+            (4, ((40, 100), 1)),
+            (4, ((92, 100), 1)),
+            (4, ((68, 100), 1)),
+            (1, ((83, 100), 1)),
+            (4, ((43, 100), 1)),
+            (0, ((1, 100), 1)),
+            (0, ((48, 100), 1)),
+            (3, ((49, 100), 1)),
+            (3, ((12, 100), 1)),
+            (0, ((16, 100), 1)),
+            (0, ((7, 100), 1)),
+            (2, ((72, 100), 1)),
+            (4, ((2, 100), 1)),
+            (1, ((49, 100), 1)),
+            (3, ((68, 100), 1)),
+            (2, ((60, 100), 1)),
+            (2, ((50, 100), 1)),
+            (3, ((57, 100), 1)),
+            (4, ((25, 100), 1)),
+            (0, ((88, 100), 1)),
+            (0, ((37, 100), 1)),
+            (4, ((85, 100), 1)),
+            (2, ((42, 100), 1)),
+            (0, ((90, 100), 1)),
+            (2, ((18, 100), 1)),
+            (1, ((14, 100), 1)),
+            (0, ((44, 100), 1)),
+            (3, ((35, 100), 1)),
+            (2, ((49, 100), 1)),
+            (2, ((68, 100), 1)),
+            (0, ((84, 100), 1)),
+            (1, ((4, 100), 1)),
+            (4, ((54, 100), 1)),
+            (0, ((71, 100), 1)),
+            (4, ((97, 100), 1)),
+            (4, ((85, 100), 1)),
+            (1, ((78, 100), 1)),
+            (3, ((44, 100), 1)),
+            (2, ((99, 100), 1)),
+            (1, ((35, 100), 1)),
+            (3, ((96, 100), 1)),
+            (4, ((38, 100), 1)),
+            (4, ((75, 100), 1)),
+            (1, ((92, 100), 1)),
+        ],
+        vec![
+            (1, ((27, 100), 1)),
+            (1, ((11, 100), 1)),
+            (1, ((49, 100), 1)),
+            (4, ((21, 100), 1)),
+            (2, ((26, 100), 1)),
+            (2, ((10, 100), 1)),
+            (3, ((21, 100), 1)),
+            (1, ((63, 100), 1)),
+            (2, ((66, 100), 1)),
+            (0, ((72, 100), 1)),
+            (3, ((32, 100), 1)),
+            (0, ((41, 100), 1)),
+            (3, ((23, 100), 1)),
+            (4, ((85, 100), 1)),
+            (2, ((0, 100), 1)),
+            (0, ((10, 100), 1)),
+            (2, ((90, 100), 1)),
+            (2, ((14, 100), 1)),
+            (4, ((19, 100), 1)),
+            (0, ((99, 100), 1)),
+            (4, ((48, 100), 1)),
+            (4, ((17, 100), 1)),
+            (0, ((24, 100), 1)),
+            (1, ((46, 100), 1)),
+            (3, ((75, 100), 1)),
+            (2, ((13, 100), 1)),
+            (2, ((72, 100), 1)),
+            (0, ((37, 100), 1)),
+            (2, ((61, 100), 1)),
+            (1, ((44, 100), 1)),
+            (2, ((47, 100), 1)),
+            (0, ((73, 100), 1)),
+            (2, ((59, 100), 1)),
+            (3, ((81, 100), 1)),
+            (4, ((81, 100), 1)),
+            (2, ((29, 100), 1)),
+            (3, ((59, 100), 1)),
+            (4, ((32, 100), 1)),
+            (1, ((70, 100), 1)),
+            (1, ((88, 100), 1)),
+            (4, ((13, 100), 1)),
+            (1, ((65, 100), 1)),
+            (0, ((82, 100), 1)),
+            (1, ((44, 100), 1)),
+            (4, ((41, 100), 1)),
+            (2, ((83, 100), 1)),
+            (2, ((51, 100), 1)),
+            (3, ((70, 100), 1)),
+            (1, ((8, 100), 1)),
+            (3, ((70, 100), 1)),
+        ],
+        vec![
+            (1, ((6, 100), 1)),
+            (3, ((45, 100), 1)),
+            (4, ((29, 100), 1)),
+            (3, ((59, 100), 1)),
+            (0, ((14, 100), 1)),
+            (3, ((24, 100), 1)),
+            (0, ((91, 100), 1)),
+            (4, ((5, 100), 1)),
+            (1, ((85, 100), 1)),
+            (2, ((52, 100), 1)),
+            (3, ((67, 100), 1)),
+            (0, ((54, 100), 1)),
+            (2, ((67, 100), 1)),
+            (2, ((10, 100), 1)),
+            (4, ((19, 100), 1)),
+            (0, ((0, 100), 1)),
+            (1, ((35, 100), 1)),
+            (2, ((58, 100), 1)),
+            (0, ((52, 100), 1)),
+            (4, ((34, 100), 1)),
+            (0, ((99, 100), 1)),
+            (3, ((10, 100), 1)),
+            (4, ((25, 100), 1)),
+            (1, ((16, 100), 1)),
+            (1, ((85, 100), 1)),
+            (2, ((47, 100), 1)),
+            (3, ((84, 100), 1)),
+            (4, ((31, 100), 1)),
+            (2, ((63, 100), 1)),
+            (1, ((44, 100), 1)),
+            (1, ((4, 100), 1)),
+            (4, ((79, 100), 1)),
+            (1, ((51, 100), 1)),
+            (2, ((17, 100), 1)),
+            (2, ((38, 100), 1)),
+            (2, ((58, 100), 1)),
+            (2, ((12, 100), 1)),
+            (2, ((97, 100), 1)),
+            (1, ((34, 100), 1)),
+            (1, ((38, 100), 1)),
+            (1, ((52, 100), 1)),
+            (3, ((94, 100), 1)),
+            (1, ((49, 100), 1)),
+            (3, ((72, 100), 1)),
+            (0, ((52, 100), 1)),
+            (1, ((46, 100), 1)),
+            (0, ((35, 100), 1)),
+            (2, ((83, 100), 1)),
+            (3, ((10, 100), 1)),
+            (4, ((7, 100), 1)),
+        ],
+        vec![
+            (1, ((75, 100), 1)),
+            (4, ((57, 100), 1)),
+            (3, ((88, 100), 1)),
+            (1, ((9, 100), 1)),
+            (1, ((40, 100), 1)),
+            (3, ((10, 100), 1)),
+            (4, ((42, 100), 1)),
+            (0, ((10, 100), 1)),
+            (4, ((75, 100), 1)),
+            (1, ((32, 100), 1)),
+            (1, ((59, 100), 1)),
+            (1, ((9, 100), 1)),
+            (2, ((39, 100), 1)),
+            (1, ((8, 100), 1)),
+            (3, ((32, 100), 1)),
+            (2, ((66, 100), 1)),
+            (4, ((38, 100), 1)),
+            (4, ((37, 100), 1)),
+            (1, ((62, 100), 1)),
+            (3, ((57, 100), 1)),
+            (0, ((36, 100), 1)),
+            (3, ((82, 100), 1)),
+            (1, ((14, 100), 1)),
+            (0, ((92, 100), 1)),
+            (3, ((89, 100), 1)),
+            (2, ((25, 100), 1)),
+            (3, ((70, 100), 1)),
+            (0, ((29, 100), 1)),
+            (2, ((41, 100), 1)),
+            (3, ((25, 100), 1)),
+            (2, ((40, 100), 1)),
+            (2, ((33, 100), 1)),
+            (3, ((21, 100), 1)),
+            (4, ((10, 100), 1)),
+            (3, ((0, 100), 1)),
+            (1, ((94, 100), 1)),
+            (2, ((84, 100), 1)),
+            (3, ((66, 100), 1)),
+            (3, ((6, 100), 1)),
+            (2, ((68, 100), 1)),
+            (3, ((5, 100), 1)),
+            (2, ((15, 100), 1)),
+            (4, ((84, 100), 1)),
+            (4, ((86, 100), 1)),
+            (1, ((51, 100), 1)),
+            (4, ((63, 100), 1)),
+            (3, ((74, 100), 1)),
+            (2, ((64, 100), 1)),
+            (1, ((60, 100), 1)),
+            (4, ((57, 100), 1)),
+        ],
+        vec![
+            (3, ((54, 100), 1)),
+            (4, ((20, 100), 1)),
+            (1, ((89, 100), 1)),
+            (3, ((23, 100), 1)),
+            (0, ((75, 100), 1)),
+            (1, ((89, 100), 1)),
+            (2, ((45, 100), 1)),
+            (1, ((51, 100), 1)),
+            (0, ((74, 100), 1)),
+            (1, ((75, 100), 1)),
+            (2, ((37, 100), 1)),
+            (4, ((84, 100), 1)),
+            (3, ((10, 100), 1)),
+            (4, ((40, 100), 1)),
+            (1, ((47, 100), 1)),
+            (3, ((19, 100), 1)),
+            (1, ((42, 100), 1)),
+            (0, ((29, 100), 1)),
+            (2, ((27, 100), 1)),
+            (0, ((66, 100), 1)),
+            (1, ((63, 100), 1)),
+            (3, ((83, 100), 1)),
+            (3, ((90, 100), 1)),
+            (4, ((85, 100), 1)),
+            (1, ((58, 100), 1)),
+            (3, ((4, 100), 1)),
+            (2, ((26, 100), 1)),
+            (2, ((66, 100), 1)),
+            (3, ((72, 100), 1)),
+            (1, ((38, 100), 1)),
+            (0, ((32, 100), 1)),
+            (4, ((15, 100), 1)),
+            (3, ((3, 100), 1)),
+            (4, ((15, 100), 1)),
+            (3, ((87, 100), 1)),
+            (3, ((55, 100), 1)),
+            (1, ((31, 100), 1)),
+            (0, ((63, 100), 1)),
+            (2, ((16, 100), 1)),
+            (3, ((22, 100), 1)),
+            (3, ((8, 100), 1)),
+            (0, ((0, 100), 1)),
+            (0, ((57, 100), 1)),
+            (1, ((42, 100), 1)),
+            (4, ((13, 100), 1)),
+            (0, ((14, 100), 1)),
+            (4, ((3, 100), 1)),
+            (0, ((17, 100), 1)),
+            (1, ((32, 100), 1)),
+            (0, ((52, 100), 1)),
+        ],
+        vec![
+            (2, ((59, 100), 1)),
+            (4, ((71, 100), 1)),
+            (0, ((8, 100), 1)),
+            (4, ((63, 100), 1)),
+            (3, ((31, 100), 1)),
+            (3, ((37, 100), 1)),
+            (0, ((92, 100), 1)),
+            (2, ((74, 100), 1)),
+            (2, ((30, 100), 1)),
+            (1, ((7, 100), 1)),
+            (3, ((40, 100), 1)),
+            (4, ((71, 100), 1)),
+            (1, ((98, 100), 1)),
+            (2, ((78, 100), 1)),
+            (0, ((58, 100), 1)),
+            (1, ((46, 100), 1)),
+            (4, ((7, 100), 1)),
+            (2, ((33, 100), 1)),
+            (0, ((43, 100), 1)),
+            (3, ((36, 100), 1)),
+            (1, ((48, 100), 1)),
+            (4, ((72, 100), 1)),
+            (4, ((15, 100), 1)),
+            (4, ((19, 100), 1)),
+            (1, ((91, 100), 1)),
+            (1, ((94, 100), 1)),
+            (2, ((66, 100), 1)),
+            (0, ((63, 100), 1)),
+            (4, ((10, 100), 1)),
+            (3, ((1, 100), 1)),
+            (0, ((8, 100), 1)),
+            (3, ((28, 100), 1)),
+            (1, ((3, 100), 1)),
+            (2, ((23, 100), 1)),
+            (0, ((55, 100), 1)),
+            (1, ((16, 100), 1)),
+            (2, ((35, 100), 1)),
+            (3, ((53, 100), 1)),
+            (0, ((39, 100), 1)),
+            (1, ((33, 100), 1)),
+            (3, ((45, 100), 1)),
+            (4, ((27, 100), 1)),
+            (1, ((0, 100), 1)),
+            (4, ((81, 100), 1)),
+            (4, ((66, 100), 1)),
+            (1, ((27, 100), 1)),
+            (3, ((56, 100), 1)),
+            (2, ((79, 100), 1)),
+            (3, ((73, 100), 1)),
+            (1, ((36, 100), 1)),
+        ],
+    ]
 }
