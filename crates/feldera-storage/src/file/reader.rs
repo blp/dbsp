@@ -249,11 +249,11 @@ impl DataBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let key = self.key::<K, A>(mid);
             let row = self.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let key = self.key::<K, A>(mid);
                     if predicate(&key) {
                         println!("{}:{}", file!(), line!());
                         best = Some(mid);
@@ -565,11 +565,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let bound = self.get_bound::<K>(mid);
             let row = self.get_row2(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let bound = self.get_bound::<K>(mid);
                     if predicate(&bound) {
                         best = Some(mid / 2);
                         start = mid + 1;
@@ -596,11 +596,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let bound = self.get_bound::<K>(mid);
             let row = self.get_row2(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let bound = self.get_bound::<K>(mid);
                     let cmp2 = target.cmp(&bound);
                     match cmp2 {
                         Ordering::Less => {
@@ -630,11 +630,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let bound = self.get_bound::<K>(mid);
             let row = self.get_row2(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let bound = self.get_bound::<K>(mid);
                     let cmp2 = target.cmp(&bound);
                     match cmp2 {
                         Ordering::Less => end = mid,
