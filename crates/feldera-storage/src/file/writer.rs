@@ -905,7 +905,7 @@ where
     }
     pub fn close(mut self) -> IoResult<W> {
         self.inner.finish_column::<K1, A1>(0)?;
-        self.inner.finish_column::<K2, A2>(1)?;
+        self.inner.finish_column::<K1, A2>(1)?;
         self.inner.close()
     }
 }

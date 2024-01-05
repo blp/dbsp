@@ -120,7 +120,6 @@ where
         self.cursor.seek_val_with(|(k, _)| k >= key);
         if self.cursor.val_valid() {
             self.key = self.cursor.val().0.clone();
-            assert!(&self.key >= key);
         }
     }
 
@@ -131,7 +130,6 @@ where
         self.cursor.seek_val_with(|(k, _)| predicate(k));
         if self.cursor.val_valid() {
             self.key = self.cursor.val().0.clone();
-            assert!(predicate(&self.key));
         }
     }
 

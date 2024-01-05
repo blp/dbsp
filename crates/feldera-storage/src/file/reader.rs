@@ -2,7 +2,6 @@ use std::{
     cmp::Ordering,
     fmt::{Debug, Formatter, Result as FmtResult},
     fs::File,
-    io::{stdout, Result as IoResult, Write},
     marker::PhantomData,
     ops::Range,
     os::unix::fs::FileExt,
@@ -15,7 +14,6 @@ use binrw::{
     BinRead,
 };
 use crc32c::crc32c;
-use hexdump::hexdump;
 use rkyv::{archived_value, AlignedVec, Deserialize, Infallible};
 use tempfile::tempfile;
 
@@ -257,6 +255,7 @@ impl DataBlock {
                 Ordering::Equal => {
                     let key = self.key::<K, A>(mid);
                     if predicate(&key) {
+                        println!("{}:{}", file!(), line!());
                         best = Some(mid);
                         end = mid;
                     } else {
@@ -425,32 +424,6 @@ struct IndexBlock {
 }
 
 impl IndexBlock {
-    fn format<K, W>(&self, mut f: W) -> IoResult<()>
-    where
-        K: Rkyv + Debug,
-        W: Write,
-    {
-        write!(
-            f,
-            "IndexBlock {{ depth: {}, first_row: {}, child_type: {:?}, children = {{",
-            self.depth, self.first_row, self.child_type
-        )?;
-        for i in 0..self.n_children() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(
-                f,
-                " [{i}] = {{ rows: {:?}, bounds: {:?} at {}..={:?} at {} }}",
-                self.get_rows(i),
-                unsafe { self.get_bound::<K>(i * 2) },
-                self.bounds.get(&self.raw, i * 2),
-                unsafe { self.get_bound::<K>(i * 2 + 1) },
-                self.bounds.get(&self.raw, i * 2 + 1),
-            )?;
-        }
-        write!(f, " }}")
-    }
     fn new(file: &File, node: &TreeNode) -> Result<Self, Error> {
         if node.depth > 64 {
             // A depth of 64 (very deep) with a branching factor of 2 (very
@@ -560,54 +533,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
+            let bound = self.get_bound::<K>(mid);
             let row = self.get_row2(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
-                    if predicate(&bound) {
-                        best = Some(mid / 2);
-                        end = mid;
-                    } else {
-                        start = mid + 1;
-                    }
-                }
-                Ordering::Less => {
-                    best = Some(mid / 2);
-                    end = mid;
-                }
-                Ordering::Greater => start = mid + 1,
-            };
-        }
-        best
-    }
-
-    unsafe fn find_first_verbose<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
-    where
-        K: Rkyv + Ord,
-        P: Fn(&K) -> bool + Clone,
-    {
-        let mut start = 0;
-        let mut end = self.n_children() * 2;
-        let mut best = None;
-        print!("row_totals:");
-        for i in 0..self.n_children() {
-            print!(" {}", self.row_totals.get(&self.raw, i));
-        }
-        println!();
-        print!("child rows:");
-        for i in 0..self.n_children() * 2 {
-            print!(" {}", self.get_row2(i));
-        }
-        println!();
-        while start < end {
-            let mid = (start + end) / 2;
-            let row = self.get_row2(mid);
-            let cmp = range_compare(target_rows, row);
-            println!("mid={mid} row={row} target_rows={target_rows:?} cmp={cmp:?}");
-            match cmp {
-                Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
                     if predicate(&bound) {
                         best = Some(mid / 2);
                         end = mid;
@@ -1086,49 +1016,18 @@ where
 
 impl<'a, K, A> Cursor<'a, K, A>
 where
-    K: Rkyv + ?Sized + Ord + Debug,
+    K: Rkyv + ?Sized + Ord,
     A: Rkyv,
 {
     pub unsafe fn seek_forward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
     {
-        let mut position1 = self.position.clone();
-        loop {
-            match position1 {
-                Position::Before => (),
-                Position::After => break,
-                _ => {
-                    if predicate(&position1.key::<K, A>().unwrap()) {
-                        break;
-                    }
-                }
-            }
-            position1.next(&self.row_group)?;
+        // XXX optimization possibilities here
+        let position = Position::find_first::<K, A, P>(&self.row_group, predicate)?;
+        if position > self.position {
+            self.position = position;
         }
-
-        let position2 = Position::find_first::<K, A, _>(&self.row_group, &predicate)?;
-        let position3 = if position2 > self.position {
-            position2.clone()
-        } else {
-            self.position.clone()
-        };
-
-        if position1 != position3 {
-            Position::find_first_verbose::<K, A, _>(&self.row_group, &predicate)?;
-            println!("{:?}", self.row_group);
-            println!("{position2:?}");
-            if let Some(path) = position1.path() {
-                println!("path: {path:?}");
-                for index in &path.indexes {
-                    //hexdump(&index.raw);
-                    index.format::<K, _>(stdout()).unwrap();
-                    stdout().flush();
-                }
-            }
-            assert_eq!(position1, position3);
-        }
-        self.position = position1;
         Ok(())
     }
     pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
@@ -1165,26 +1064,6 @@ struct Path {
     row: u64,
     indexes: Vec<IndexBlock>,
     data: DataBlock,
-}
-
-impl Debug for Path {
-    fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        write!(f, "Path {{ row: {}, indexes:", self.row)?;
-        for index in &self.indexes {
-            write!(
-                f,
-                " [child {:?} of {}]",
-                index.find_row(self.row),
-                index.n_children()
-            )?;
-        }
-        write!(
-            f,
-            ", data: [row {} of {}] }}",
-            self.row - self.data.first_row,
-            self.data.first_row
-        )
-    }
 }
 
 impl PartialEq for Path {
@@ -1291,47 +1170,11 @@ impl Path {
                 TreeBlock::Index(index_block) => {
                     let Some(child_idx) = index_block.find_first(&row_group.rows, &predicate)
                     else {
-                        return Ok(None);
-                    };
-                    node = index_block.get_child(child_idx);
-                    indexes.push(index_block);
-                }
-                TreeBlock::Data(data_block) => {
-                    let Some(child_idx) =
-                        data_block.find_first::<K, A, _>(&row_group.rows, &predicate)
-                    else {
-                        return Ok(None);
-                    };
-                    return Ok(Some(Path {
-                        row: data_block.first_row + child_idx as u64,
-                        indexes,
-                        data: data_block,
-                    }));
-                }
-            }
-        }
-    }
-    unsafe fn find_first_verbose<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Option<Path>, Error>
-    where
-        K: Rkyv + Ord,
-        A: Rkyv,
-        P: Fn(&K) -> bool + Clone,
-    {
-        println!("looking for {row_group:?}");
-        let mut indexes = Vec::new();
-        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
-            return Ok(None);
-        };
-        loop {
-            match node.read(&row_group.reader.0.file)? {
-                TreeBlock::Index(index_block) => {
-                    let Some(child_idx) = index_block.find_first_verbose(&row_group.rows, &predicate)
-                    else {
                         println!("{}:{}", file!(), line!());
                         return Ok(None);
                     };
+                        println!("{}:{}", file!(), line!());
                     node = index_block.get_child(child_idx);
-                    println!("index child_idx={child_idx} covering rows {:?}", index_block.get_rows(child_idx));
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
@@ -1341,7 +1184,7 @@ impl Path {
                         println!("{}:{}", file!(), line!());
                         return Ok(None);
                     };
-                    println!("data child_idx={child_idx}");
+                        println!("{}:{}", file!(), line!());
                     return Ok(Some(Path {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
@@ -1561,17 +1404,6 @@ impl Position {
             None => Ok(Position::After),
         }
     }
-    unsafe fn find_first_verbose<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
-    where
-        K: Rkyv + Ord,
-        A: Rkyv,
-        P: Fn(&K) -> bool + Clone,
-    {
-        match Path::find_first_verbose::<K, A, P>(row_group, predicate)? {
-            Some(path) => Ok(Position::Row(path)),
-            None => Ok(Position::After),
-        }
-    }
     unsafe fn find_last<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
     where
         K: Rkyv + Ord,
@@ -1677,7 +1509,7 @@ mod test {
         while let Some(key) = unsafe { keys.key() } {
             println!("{key}");
             count += 1;
-            let mut values = keys.next_column().last::<u32, ()>().unwrap();
+            let mut values = keys.next_column().unwrap().last::<u32, ()>().unwrap();
             unsafe { values.rewind_to_value_or_smaller(&3).unwrap() };
             while let Some(value) = unsafe { values.key() } {
                 count2 += 1;
