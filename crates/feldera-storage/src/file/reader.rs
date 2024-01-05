@@ -492,9 +492,9 @@ impl IndexBlock {
         if index == 0 {
             0
         } else if index % 2 == 1 {
-            self.row_totals.get(&self.raw, index / 2)
+            self.row_totals.get(&self.raw, index / 2) - 1
         } else {
-            self.row_totals.get(&self.raw, index / 2 - 1) + 1
+            self.row_totals.get(&self.raw, index / 2 - 1)
         }
     }
 
