@@ -360,14 +360,18 @@ mod test {
 
             for j in c2range.clone() {
                 let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
-                unsafe { c2cursor.advance_to_value_or_larger(&j) }.unwrap();
+                unsafe { c2cursor.seek_forward_until(|key| key >= &j) }.unwrap();
                 if unsafe { c2cursor.item() } != Some((j, a2)) {
                     let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
                     while c2cursor.has_value() {
+                        println!();
                         println!("{:?}", unsafe { c2cursor.item() });
                         println!("{c2cursor:?}");
                         c2cursor.move_next().unwrap();
                     }
+
+                    let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                    unsafe { c2cursor.seek_forward_until_verbose(|key| key >= &j) }.unwrap();
                 }
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
