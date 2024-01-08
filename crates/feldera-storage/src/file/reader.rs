@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     fmt::{Debug, Formatter, Result as FmtResult},
     fs::File,
+    io::{Result as IoResult, Write},
     marker::PhantomData,
     ops::Range,
     os::unix::fs::FileExt,
@@ -657,6 +658,35 @@ impl IndexBlock {
     fn n_children(&self) -> usize {
         self.child_pointers.count
     }
+
+    /// This is like an implementation of `Debug` but we need type `K`.
+    #[allow(unused)]
+    fn dbg<K, W>(&self, mut f: W) -> IoResult<()>
+    where
+        K: Rkyv + Debug,
+        W: Write,
+    {
+        write!(
+            f,
+            "IndexBlock {{ depth: {}, first_row: {}, child_type: {:?}, children = {{",
+            self.depth, self.first_row, self.child_type
+        )?;
+        for i in 0..self.n_children() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(
+                f,
+                " [{i}] = {{ rows: {:?}, bounds: {:?} at {}..={:?} at {} }}",
+                self.get_rows(i),
+                unsafe { self.get_bound::<K>(i * 2) },
+                self.bounds.get(&self.raw, i * 2),
+                unsafe { self.get_bound::<K>(i * 2 + 1) },
+                self.bounds.get(&self.raw, i * 2 + 1),
+            )?;
+        }
+        write!(f, " }}")
+    }
 }
 
 struct Column {
@@ -1293,21 +1323,31 @@ impl Path {
     }
 }
 
-#[derive(Clone, PartialOrd, PartialEq)]
+impl Debug for Path {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        write!(f, "Path {{ row: {}, indexes:", self.row)?;
+        for index in &self.indexes {
+            write!(
+                f,
+                " [child {:?} of {}]",
+                index.find_row(self.row),
+                index.n_children()
+            )?;
+        }
+        write!(
+            f,
+            ", data: [row {} of {}] }}",
+            self.row - self.data.first_row,
+            self.data.n_values()
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
 enum Position {
     Before,
     Row(Path),
     After,
-}
-
-impl Debug for Position {
-    fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        match self {
-            Position::Before => write!(f, "before"),
-            Position::Row(path) => write!(f, "row {}", path.row),
-            Position::After => write!(f, "after"),
-        }
-    }
 }
 
 impl Position {
@@ -1504,7 +1544,7 @@ mod test {
         while let Some(key) = unsafe { keys.key() } {
             println!("{key}");
             count += 1;
-            let mut values = keys.next_column().unwrap().last::<u32, ()>().unwrap();
+            let mut values = keys.next_column().last::<u32, ()>().unwrap();
             unsafe { values.rewind_to_value_or_smaller(&3).unwrap() };
             while let Some(value) = unsafe { values.key() } {
                 count2 += 1;

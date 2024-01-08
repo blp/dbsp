@@ -20,7 +20,6 @@ use crate::{
 use num::{Bounded, PrimInt};
 use std::{
     borrow::Cow,
-    fmt::Debug,
     marker::PhantomData,
     ops::{Div, Neg},
 };

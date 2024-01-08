@@ -2,8 +2,8 @@ use binrw::{binrw, io::Error as IoError, BinRead, BinResult, BinWrite, Error as 
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use rkyv::{
-    ser::serializers::{AllocSerializer}, AlignedVec, Archive, Archived, Deserialize, Infallible,
-    Serialize, with::Inline,
+    ser::serializers::AllocSerializer, with::Inline, AlignedVec, Archive, Archived, Deserialize,
+    Infallible, Serialize,
 };
 use thiserror::Error as ThisError;
 
@@ -316,3 +316,95 @@ struct Item<'a, K, A>(#[with(Inline)] &'a K, #[with(Inline)] &'a A)
 where
     K: Rkyv,
     A: Rkyv;
+
+#[cfg(test)]
+mod test {
+    use std::fs::File;
+
+    use super::{
+        reader::Reader,
+        writer::{Parameters, Writer2},
+    };
+
+    #[test]
+    fn test() {
+        let mut layer_file =
+            Writer2::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
+        let end = 1000_i32;
+        let range = (0..end).step_by(2);
+        println!("start");
+        let c2range = (0..14_i32).step_by(2);
+        let a1 = 0x1111_u64;
+        let a2 = 0x2222_u64;
+        for i in range.clone() {
+            for j in c2range.clone() {
+                layer_file.write2((&j, &a2)).unwrap();
+            }
+            layer_file.write1((&i, &a1)).unwrap();
+        }
+        println!("written");
+        layer_file.close().unwrap();
+
+        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
+        for i in range.clone() {
+            if i % (end / 16) == 0 {
+                println!("{i}");
+            }
+            let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+            unsafe { cursor.advance_to_value_or_larger(&i) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+            unsafe { cursor.advance_to_value_or_larger(&(i - 1)) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            for j in c2range.clone() {
+                let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                unsafe { c2cursor.advance_to_value_or_larger(&j) }.unwrap();
+                if unsafe { c2cursor.item() } != Some((j, a2)) {
+                    let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                    while c2cursor.has_value() {
+                        println!("{:?}", unsafe { c2cursor.item() });
+                        println!("{c2cursor:?}");
+                        c2cursor.move_next().unwrap();
+                    }
+                }
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                unsafe { c2cursor.advance_to_value_or_larger(&(j - 1)) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+            }
+        }
+
+        let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+        unsafe { cursor.advance_to_value_or_larger(&end) }.unwrap();
+        assert_eq!(unsafe { cursor.item() }, None);
+
+        for i in range.clone() {
+            if i % (end / 16) == 0 {
+                println!("{i}");
+            }
+            let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+            unsafe { cursor.seek_forward_until(|key| key >= &i) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+            unsafe { cursor.seek_forward_until(|key| key >= &(i - 1)) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            for j in c2range.clone() {
+                let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                unsafe { c2cursor.seek_forward_until(|key| key >= &j) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().first::<i32, u64>().unwrap();
+                unsafe { c2cursor.seek_forward_until(|key| key >= &(j - 1)) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+            }
+        }
+        let mut cursor = reader.rows().first::<i32, u64>().unwrap();
+        unsafe { cursor.seek_forward_until(|key| key >= &end) }.unwrap();
+        assert_eq!(unsafe { cursor.item() }, None);
+    }
+}
