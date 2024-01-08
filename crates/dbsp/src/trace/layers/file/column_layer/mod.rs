@@ -11,7 +11,6 @@ use std::ops::AddAssign;
 use std::{
     cmp::min,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
-    marker::PhantomData,
     ops::{Add, Neg},
 };
 
@@ -23,26 +22,25 @@ pub use self::builders::FileColumnLayerBuilder;
 pub use self::cursor::FileColumnLayerCursor;
 pub use consumer::{FileColumnLayerConsumer, FileColumnLayerValues};
 
+#[derive(Clone)]
 pub struct FileColumnLayer<K, R> {
-    file: Reader,
+    file: Reader<(K, R, ())>,
     lower_bound: usize,
-    _phantom: PhantomData<(K, R)>,
 }
 
 impl<K, R> FileColumnLayer<K, R> {
     pub fn len(&self) -> u64 {
-        self.file.rows().len()
+        self.file.n_rows(0)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.file.rows().is_empty()
+        self.file.n_rows(0) == 0
     }
 
     pub fn empty() -> Self {
         Self {
             file: Reader::empty(1).unwrap(),
             lower_bound: 0,
-            _phantom: PhantomData,
         }
     }
 
@@ -78,19 +76,9 @@ impl<K, R> FileColumnLayer<K, R> {
         K: DBData,
         R: DBWeight,
     {
-        let mut cursor = self.file.rows().before::<K, R>();
+        let mut cursor = self.file.rows().before();
         unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
         self.truncate_below(cursor.position() as usize);
-    }
-}
-
-impl<K, R> Clone for FileColumnLayer<K, R> {
-    fn clone(&self) -> Self {
-        Self {
-            file: self.file.clone(),
-            lower_bound: self.lower_bound,
-            _phantom: PhantomData,
-        }
     }
 }
 

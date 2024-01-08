@@ -15,7 +15,7 @@ where
 {
     storage: &'s FileColumnLayer<K, R>,
     item: Option<(K, R)>,
-    cursor: FileCursor<'s, K, R>,
+    cursor: FileCursor<'s, K, R, (), (K, R, ())>,
 }
 
 impl<'s, K, R> FileColumnLayerCursor<'s, K, R>

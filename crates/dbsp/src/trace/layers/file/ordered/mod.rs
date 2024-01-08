@@ -17,7 +17,6 @@ use std::{
     cmp::{min, Ordering},
     fmt::Debug,
     fs::File,
-    marker::PhantomData,
     ops::{Add, AddAssign, Neg},
 };
 
@@ -28,9 +27,8 @@ where
     V: 'static,
     R: 'static,
 {
-    file: Reader,
+    file: Reader<(K, (), (V, R, ()))>,
     lower_bound: usize,
-    _phantom: std::marker::PhantomData<(K, V, R)>,
 }
 
 impl<K, V, R> FileOrderedLayer<K, V, R>
@@ -71,7 +69,7 @@ where
         K: DBData,
         R: DBWeight,
     {
-        let mut cursor = self.file.rows().before::<K, R>();
+        let mut cursor = self.file.rows().before();
         unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
         self.truncate_below(cursor.position() as usize);
     }
@@ -87,7 +85,6 @@ where
         Self {
             file: Reader::empty(2).unwrap(),
             lower_bound: 0,
-            _phantom: PhantomData,
         }
     }
 }
@@ -281,7 +278,7 @@ where
 
     fn copy_value<'a, VF>(
         &mut self,
-        cursor: &mut FileOrderedValueCursor<'a, V, R>,
+        cursor: &mut FileOrderedValueCursor<'a, K, V, R>,
         value_filter: &VF,
     ) -> u64
     where
@@ -300,8 +297,8 @@ where
 
     fn merge_values<'a, VF>(
         &mut self,
-        mut cursor1: FileOrderedValueCursor<'a, V, R>,
-        mut cursor2: FileOrderedValueCursor<'a, V, R>,
+        mut cursor1: FileOrderedValueCursor<'a, K, V, R>,
+        mut cursor2: FileOrderedValueCursor<'a, K, V, R>,
         value_filter: &VF,
     ) -> bool
     where
@@ -402,7 +399,6 @@ where
         FileOrderedLayer {
             file: Reader::new(self.0.close().unwrap()).unwrap(),
             lower_bound: 0,
-            _phantom: PhantomData,
         }
     }
 }
@@ -484,7 +480,6 @@ where
         FileOrderedLayer {
             file: Reader::new(self.writer.close().unwrap()).unwrap(),
             lower_bound: 0,
-            _phantom: PhantomData,
         }
     }
 }
@@ -536,7 +531,7 @@ where
 {
     storage: &'s FileOrderedLayer<K, V, R>,
     key: Option<K>,
-    cursor: FileCursor<'s, K, ()>,
+    cursor: FileCursor<'s, K, (), (V, R, ()), (K, (), (V, R, ()))>,
 }
 
 impl<'s, K, V, R> FileOrderedCursor<'s, K, V, R>
@@ -570,7 +565,9 @@ where
         key
     }
 
-    pub fn take_current_key_and_values(&mut self) -> Option<(K, FileOrderedValueCursor<'s, V, R>)> {
+    pub fn take_current_key_and_values(
+        &mut self,
+    ) -> Option<(K, FileOrderedValueCursor<'s, K, V, R>)> {
         if let Some(key) = self.key.take() {
             let values = self.values();
             self.step();
@@ -580,7 +577,10 @@ where
         }
     }
 
-    fn move_cursor(&mut self, f: impl FnOnce(&mut FileCursor<'s, K, ()>)) {
+    fn move_cursor(
+        &mut self,
+        f: impl FnOnce(&mut FileCursor<'s, K, (), (V, R, ()), (K, (), (V, R, ()))>),
+    ) {
         f(&mut self.cursor);
         self.key = unsafe { self.cursor.key() };
     }
@@ -616,7 +616,7 @@ where
     where
         Self: 'k;
 
-    type ValueCursor = FileOrderedValueCursor<'s, V, R>;
+    type ValueCursor = FileOrderedValueCursor<'s, K, V, R>;
 
     fn keys(&self) -> usize {
         self.cursor.n_rows() as usize
@@ -626,7 +626,7 @@ where
         self.current_key()
     }
 
-    fn values<'a>(&'a self) -> FileOrderedValueCursor<'s, V, R> {
+    fn values<'a>(&'a self) -> FileOrderedValueCursor<'s, K, V, R> {
         FileOrderedValueCursor::new(&self.cursor)
     }
 
@@ -676,24 +676,23 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct FileOrderedValueCursor<'s, V, R>
+pub struct FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {
     item: Option<(V, R)>,
-    cursor: FileCursor<'s, V, R>,
+    cursor: FileCursor<'s, V, R, (), (K, (), (V, R, ()))>,
 }
 
-impl<'s, V, R> FileOrderedValueCursor<'s, V, R>
+impl<'s, K, V, R> FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    pub fn new<K>(cursor: &FileCursor<'s, K, ()>) -> Self
-    where
-        K: DBData,
-    {
+    pub fn new(cursor: &FileCursor<'s, K, (), (V, R, ()), (K, (), (V, R, ()))>) -> Self {
         let cursor = cursor.next_column().first().unwrap();
         let item = unsafe { cursor.item() };
         Self { cursor, item }
@@ -718,7 +717,7 @@ where
         item
     }
 
-    fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, V, R>)) {
+    fn move_cursor(&mut self, f: impl Fn(&mut FileCursor<'s, V, R, (), (K, (), (V, R, ()))>)) {
         f(&mut self.cursor);
         self.item = unsafe { self.cursor.item() };
     }
@@ -742,8 +741,9 @@ where
     }
 }
 
-impl<'s, V, R> Cursor<'s> for FileOrderedValueCursor<'s, V, R>
+impl<'s, K, V, R> Cursor<'s> for FileOrderedValueCursor<'s, K, V, R>
 where
+    K: DBData,
     V: DBData,
     R: DBWeight,
 {

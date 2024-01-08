@@ -9,7 +9,7 @@ use feldera_storage::file::{
     writer::{Parameters, Writer1},
 };
 use size_of::SizeOf;
-use std::{cmp::Ordering, fs::File, marker::PhantomData};
+use std::{cmp::Ordering, fs::File};
 use tempfile::tempfile;
 
 /// A builder for ordered values
@@ -33,7 +33,6 @@ where
         FileColumnLayer {
             file: Reader::new(self.0.close().unwrap()).unwrap(),
             lower_bound: 0,
-            _phantom: PhantomData,
         }
     }
 }

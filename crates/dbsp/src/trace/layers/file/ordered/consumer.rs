@@ -93,7 +93,7 @@ where
     storage: &'a FileOrderedLayer<K, V, R>,
     #[borrows(storage)]
     #[covariant]
-    cursor: FileOrderedValueCursor<'this, V, R>,
+    cursor: FileOrderedValueCursor<'this, K, V, R>,
 }
 
 impl<'a, K, V, R> ValueConsumer<'a, V, R, ()> for FileOrderedLayerValues<'a, K, V, R>

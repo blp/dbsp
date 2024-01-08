@@ -719,12 +719,10 @@ impl Column {
     }
 }
 
-#[derive(Clone)]
-pub struct Reader(Arc<ReaderInner>);
-
-struct ReaderInner {
+struct ReaderInner<T> {
     file: File,
     columns: Vec<Column>,
+    _phantom: PhantomData<fn() -> T>,
 }
 
 fn read_block(file: &File, location: BlockLocation) -> Result<AlignedVec, Error> {
@@ -756,7 +754,10 @@ fn check_version_number(version: u32) -> Result<(), Error> {
     Ok(())
 }
 
-impl Reader {
+#[derive(Clone)]
+pub struct Reader<T>(Arc<ReaderInner<T>>);
+
+impl<T> Reader<T> {
     pub fn new(mut file: File) -> Result<Self, Error> {
         let file_size = file.seek(SeekFrom::End(0))?;
         if file_size == 0 || file_size % 4096 != 0 {
@@ -790,17 +791,22 @@ impl Reader {
             }
         }
 
-        Ok(Self(Arc::new(ReaderInner { file, columns })))
+        Ok(Self(Arc::new(ReaderInner {
+            file,
+            columns,
+            _phantom: PhantomData,
+        })))
     }
 
     pub fn empty(n_columns: usize) -> Result<Self, Error> {
         Ok(Self(Arc::new(ReaderInner {
             file: tempfile()?,
             columns: (0..n_columns).map(|_| Column::empty()).collect(),
+            _phantom: PhantomData,
         })))
     }
 
-    pub fn equal(&self, other: &Reader) -> Option<bool> {
+    pub fn equal(&self, other: &Self) -> Option<bool> {
         if Arc::ptr_eq(&self.0, &other.0) {
             // Definitely the same.
             Some(true)
@@ -823,8 +829,14 @@ impl Reader {
     pub fn n_rows(&self, column: usize) -> u64 {
         self.0.columns[column].n_rows
     }
+}
 
-    pub fn rows(&self) -> RowGroup {
+impl<K, A, N> Reader<(K, A, N)>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    pub fn rows(&self) -> RowGroup<K, A, N, (K, A, N)> {
         RowGroup::new(self, 0, 0..self.0.columns[0].n_rows)
     }
 }
@@ -840,24 +852,38 @@ fn is_same_file(file1: &File, file2: &File) -> Option<bool> {
 }
 
 #[derive(Clone)]
-pub struct RowGroup<'a> {
-    reader: &'a Reader,
+pub struct RowGroup<'a, K, A, N, T>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    reader: &'a Reader<T>,
     column: usize,
     rows: Range<u64>,
+    _phantom: PhantomData<(K, A, N)>,
 }
 
-impl<'a> Debug for RowGroup<'a> {
+impl<'a, K, A, N, T> Debug for RowGroup<'a, K, A, N, T>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(f, "RowGroup(column={}, rows={:?})", self.column, self.rows)
     }
 }
 
-impl<'a> RowGroup<'a> {
-    fn new(reader: &'a Reader, column: usize, rows: Range<u64>) -> Self {
+impl<'a, K, A, N, T> RowGroup<'a, K, A, N, T>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn new(reader: &'a Reader<T>, column: usize, rows: Range<u64>) -> Self {
         Self {
             reader,
             column,
             rows,
+            _phantom: PhantomData,
         }
     }
 
@@ -869,59 +895,39 @@ impl<'a> RowGroup<'a> {
         self.rows.end - self.rows.start
     }
 
-    pub fn before<K, A>(self) -> Cursor<'a, K, A>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        Cursor::<K, A>::new(self, Position::Before)
+    pub fn before(self) -> Cursor<'a, K, A, N, T> {
+        Cursor::<K, A, N, T>::new(self, Position::Before)
     }
 
-    pub fn after<K, A>(self) -> Cursor<'a, K, A>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        Cursor::<K, A>::new(self, Position::After)
+    pub fn after(self) -> Cursor<'a, K, A, N, T> {
+        Cursor::<K, A, N, T>::new(self, Position::After)
     }
 
-    pub fn first<K, A>(self) -> Result<Cursor<'a, K, A>, Error>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    pub fn first(self) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if self.is_empty() {
             Position::After
         } else {
             Position::for_row(&self, self.rows.start)?
         };
-        Ok(Cursor::<K, A>::new(self, position))
+        Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
-    pub fn last<K, A>(self) -> Result<Cursor<'a, K, A>, Error>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    pub fn last(self) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if self.is_empty() {
             Position::After
         } else {
             Position::for_row(&self, self.rows.end - 1)?
         };
-        Ok(Cursor::<K, A>::new(self, position))
+        Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
-    pub fn nth<K, A>(self, row: u64) -> Result<Cursor<'a, K, A>, Error>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    pub fn nth(self, row: u64) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if row < self.len() {
             Position::for_row(&self, self.rows.start + row)?
         } else {
             Position::After
         };
-        Ok(Cursor::<K, A>::new(self, position))
+        Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
     pub fn subset(mut self, subset: Range<u64>) -> Self {
@@ -937,17 +943,17 @@ impl<'a> RowGroup<'a> {
 /// A cursor can be positioned on a particular value or before or after all the
 /// values.
 #[derive(Clone)]
-pub struct Cursor<'a, K, A>
+pub struct Cursor<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
 {
-    row_group: RowGroup<'a>,
+    row_group: RowGroup<'a, K, A, N, T>,
     position: Position,
     _phantom: PhantomData<(K, A)>,
 }
 
-impl<'a, K, A> Debug for Cursor<'a, K, A>
+impl<'a, K, A, N, T> Debug for Cursor<'a, K, A, N, T>
 where
     K: Rkyv + Debug,
     A: Rkyv + Debug,
@@ -957,12 +963,12 @@ where
     }
 }
 
-impl<'a, K, A> Cursor<'a, K, A>
+impl<'a, K, A, N, T> Cursor<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
 {
-    fn new(row_group: RowGroup<'a>, position: Position) -> Self {
+    fn new(row_group: RowGroup<'a, K, A, N, T>, position: Position) -> Self {
         Self {
             row_group,
             position,
@@ -1013,14 +1019,6 @@ where
         self.position.item::<K, A>()
     }
 
-    pub fn next_column<'b>(&'b self) -> RowGroup<'a> {
-        RowGroup::new(
-            self.row_group.reader,
-            self.row_group.column + 1,
-            self.position.row_group(),
-        )
-    }
-
     pub fn has_value(&self) -> bool {
         self.position.has_value()
     }
@@ -1043,7 +1041,23 @@ where
     }
 }
 
-impl<'a, K, A> Cursor<'a, K, A>
+impl<'a, K, A, NK, NA, NN, T> Cursor<'a, K, A, (NK, NA, NN), T>
+where
+    K: Rkyv,
+    A: Rkyv,
+    NK: Rkyv,
+    NA: Rkyv,
+{
+    pub fn next_column<'b>(&'b self) -> RowGroup<'a, NK, NA, NN, T> {
+        RowGroup::new(
+            self.row_group.reader,
+            self.row_group.column + 1,
+            self.position.row_group(),
+        )
+    }
+}
+
+impl<'a, K, A, N, T> Cursor<'a, K, A, N, T>
 where
     K: Rkyv + ?Sized + Ord,
     A: Rkyv,
@@ -1053,7 +1067,7 @@ where
         P: Fn(&K) -> bool + Clone,
     {
         // XXX optimization possibilities here
-        let position = Position::find_first::<K, A, P>(&self.row_group, predicate)?;
+        let position = Position::find_first::<K, A, N, T, P>(&self.row_group, predicate)?;
         if position > self.position {
             self.position = position;
         }
@@ -1064,7 +1078,7 @@ where
         P: Fn(&K) -> bool + Clone,
     {
         // XXX optimization possibilities here
-        let position = Position::find_last::<K, A, P>(&self.row_group, predicate)?;
+        let position = Position::find_last::<K, A, N, T, P>(&self.row_group, predicate)?;
         if position < self.position {
             self.position = position;
         }
@@ -1072,7 +1086,7 @@ where
     }
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
-        let position = Position::for_value_or_larger::<K, A>(&self.row_group, target)?;
+        let position = Position::for_value_or_larger::<K, A, N, T>(&self.row_group, target)?;
         if position > self.position {
             self.position = position;
         }
@@ -1080,7 +1094,7 @@ where
     }
     pub unsafe fn rewind_to_value_or_smaller(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
-        let position = Position::for_value_or_smaller::<K, A>(&self.row_group, target)?;
+        let position = Position::for_value_or_smaller::<K, A, N, T>(&self.row_group, target)?;
         if position < self.position {
             self.position = position;
         }
@@ -1116,7 +1130,11 @@ impl Ord for Path {
 }
 
 impl Path {
-    fn for_row(row_group: &RowGroup, row: u64) -> Result<Path, Error> {
+    fn for_row<K, A, N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Path, Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         Self::for_row_from_ancestor(
             row_group.reader,
             Vec::new(),
@@ -1124,8 +1142,8 @@ impl Path {
             row,
         )
     }
-    fn for_row_from_ancestor(
-        reader: &Reader,
+    fn for_row_from_ancestor<T>(
+        reader: &Reader<T>,
         mut indexes: Vec<IndexBlock>,
         mut node: TreeNode,
         row: u64,
@@ -1140,7 +1158,7 @@ impl Path {
             node = next.unwrap();
         }
     }
-    fn for_row_from_hint(reader: &Reader, hint: &Path, row: u64) -> Result<Path, Error> {
+    fn for_row_from_hint<T>(reader: &Reader<T>, hint: &Path, row: u64) -> Result<Path, Error> {
         if hint.data.rows().contains(&row) {
             return Ok(Self {
                 row,
@@ -1176,7 +1194,7 @@ impl Path {
     fn get_row_group(&self) -> Range<u64> {
         self.data.get_row_group(self.row).unwrap()
     }
-    fn move_to_row(&mut self, reader: &Reader, row: u64) -> Result<(), Error> {
+    fn move_to_row<T>(&mut self, reader: &Reader<T>, row: u64) -> Result<(), Error> {
         if self.data.rows().contains(&row) {
             self.row = row;
         } else {
@@ -1184,7 +1202,10 @@ impl Path {
         }
         Ok(())
     }
-    unsafe fn find_first<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Option<Path>, Error>
+    unsafe fn find_first<K, A, N, T, P>(
+        row_group: &RowGroup<K, A, N, T>,
+        predicate: P,
+    ) -> Result<Option<Path>, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
@@ -1219,7 +1240,10 @@ impl Path {
             }
         }
     }
-    unsafe fn find_last<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Option<Path>, Error>
+    unsafe fn find_last<K, A, N, T, P>(
+        row_group: &RowGroup<K, A, N, T>,
+        predicate: P,
+    ) -> Result<Option<Path>, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
@@ -1253,8 +1277,8 @@ impl Path {
             }
         }
     }
-    unsafe fn for_value_or_larger<K, A>(
-        row_group: &RowGroup,
+    unsafe fn for_value_or_larger<K, A, N, T>(
+        row_group: &RowGroup<K, A, N, T>,
         value: &K,
     ) -> Result<Option<Path>, Error>
     where
@@ -1287,8 +1311,8 @@ impl Path {
             }
         }
     }
-    unsafe fn for_value_or_smaller<K, A>(
-        row_group: &RowGroup,
+    unsafe fn for_value_or_smaller<K, A, N, T>(
+        row_group: &RowGroup<K, A, N, T>,
         value: &K,
     ) -> Result<Option<Path>, Error>
     where
@@ -1351,10 +1375,18 @@ enum Position {
 }
 
 impl Position {
-    fn for_row(row_group: &RowGroup, row: u64) -> Result<Self, Error> {
+    fn for_row<K, A, N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Self, Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         Ok(Self::Row(Path::for_row(row_group, row)?))
     }
-    fn next(&mut self, row_group: &RowGroup) -> Result<(), Error> {
+    fn next<K, A, N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         match self {
             Self::Before => {
                 *self = Self::Row(Path::for_row(row_group, row_group.rows.start)?);
@@ -1371,7 +1403,11 @@ impl Position {
         }
         Ok(())
     }
-    fn prev(&mut self, row_group: &RowGroup) -> Result<(), Error> {
+    fn prev<K, A, N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         match self {
             Self::Before => (),
             Self::Row(path) => {
@@ -1387,7 +1423,15 @@ impl Position {
         }
         Ok(())
     }
-    fn move_to_row(&mut self, row_group: &RowGroup, row: u64) -> Result<(), Error> {
+    fn move_to_row<K, A, N, T>(
+        &mut self,
+        row_group: &RowGroup<K, A, N, T>,
+        row: u64,
+    ) -> Result<(), Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         if !row_group.rows.is_empty() {
             match self {
                 Position::Before | Position::After => {
@@ -1428,56 +1472,76 @@ impl Position {
     fn has_value(&self) -> bool {
         self.path().is_some()
     }
-    unsafe fn find_first<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
+    unsafe fn find_first<K, A, N, T, P>(
+        row_group: &RowGroup<K, A, N, T>,
+        predicate: P,
+    ) -> Result<Self, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
         P: Fn(&K) -> bool + Clone,
     {
-        match Path::find_first::<K, A, P>(row_group, predicate)? {
+        match Path::find_first::<K, A, N, T, P>(row_group, predicate)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
     }
-    unsafe fn find_last<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
+    unsafe fn find_last<K, A, N, T, P>(
+        row_group: &RowGroup<K, A, N, T>,
+        predicate: P,
+    ) -> Result<Self, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
         P: Fn(&K) -> bool + Clone,
     {
-        match Path::find_last::<K, A, P>(row_group, predicate)? {
+        match Path::find_last::<K, A, N, T, P>(row_group, predicate)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::Before),
         }
     }
-    unsafe fn for_value_or_larger<K, A>(row_group: &RowGroup, target: &K) -> Result<Self, Error>
+    unsafe fn for_value_or_larger<K, A, N, T>(
+        row_group: &RowGroup<K, A, N, T>,
+        target: &K,
+    ) -> Result<Self, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
     {
-        match Path::for_value_or_larger::<K, A>(row_group, target)? {
+        match Path::for_value_or_larger::<K, A, N, T>(row_group, target)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
     }
-    unsafe fn for_value_or_smaller<K, A>(row_group: &RowGroup, target: &K) -> Result<Self, Error>
+    unsafe fn for_value_or_smaller<K, A, N, T>(
+        row_group: &RowGroup<K, A, N, T>,
+        target: &K,
+    ) -> Result<Self, Error>
     where
         K: Rkyv + Ord,
         A: Rkyv,
     {
-        match Path::for_value_or_smaller::<K, A>(row_group, target)? {
+        match Path::for_value_or_smaller::<K, A, N, T>(row_group, target)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::Before),
         }
     }
-    fn position(&self, row_group: &RowGroup) -> u64 {
+    fn position<K, A, N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         match self {
             Position::Before => 0,
             Position::Row(path) => path.row,
             Position::After => row_group.rows.end,
         }
     }
-    fn remaining_rows(&self, row_group: &RowGroup) -> u64 {
+    fn remaining_rows<K, A, N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         match self {
             Position::Before => row_group.len(),
             Position::Row(path) => path.row - row_group.rows.start,
@@ -1494,8 +1558,8 @@ mod test {
 
     #[test]
     fn read_file() {
-        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
-        let mut cursor = reader.rows().first::<i64, ()>().unwrap();
+        let reader = Reader::<(i64, (), ())>::new(File::open("file.layer").unwrap()).unwrap();
+        let mut cursor = reader.rows().first().unwrap();
         let mut count = 0;
         unsafe { cursor.advance_to_value_or_larger(&997).unwrap() };
         while let Some(value) = unsafe { cursor.key() } {
@@ -1508,8 +1572,8 @@ mod test {
 
     #[test]
     fn read_tuple() {
-        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
-        let mut cursor = reader.rows().first::<(i32, char), i32>().unwrap();
+        let reader = Reader::<((i32, char), i32, ())>::new(File::open("file.layer").unwrap()).unwrap();
+        let mut cursor = reader.rows().first().unwrap();
         let mut count = 0;
         while let Some(value) = unsafe { cursor.key() } {
             let number = value.0;
@@ -1523,8 +1587,8 @@ mod test {
 
     #[test]
     fn read_string() {
-        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
-        let mut cursor = reader.rows().first::<String, ()>().unwrap();
+        let reader = Reader::<(String, (), ())>::new(File::open("file.layer").unwrap()).unwrap();
+        let mut cursor = reader.rows().first().unwrap();
         let mut count = 0;
         unsafe { cursor.advance_to_value_or_larger(&format!("01 1")).unwrap() };
         while let Some(value) = unsafe { cursor.key() } {
@@ -1537,14 +1601,14 @@ mod test {
 
     #[test]
     fn read_2_layers() {
-        let reader = Reader::new(File::open("file.layer").unwrap()).unwrap();
-        let mut keys = reader.rows().first::<u32, ()>().unwrap();
+        let reader = Reader::<(u32, (), (u32, (), ()))>::new(File::open("file.layer").unwrap()).unwrap();
+        let mut keys = reader.rows().first().unwrap();
         let mut count = 0;
         let mut count2 = 0;
         while let Some(key) = unsafe { keys.key() } {
             println!("{key}");
             count += 1;
-            let mut values = keys.next_column().last::<u32, ()>().unwrap();
+            let mut values = keys.next_column().last().unwrap();
             unsafe { values.rewind_to_value_or_smaller(&3).unwrap() };
             while let Some(value) = unsafe { values.key() } {
                 count2 += 1;
