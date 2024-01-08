@@ -15,6 +15,7 @@ use binrw::{
     BinRead,
 };
 use crc32c::crc32c;
+use hexdump::hexdump;
 use rkyv::{archived_value, AlignedVec, Deserialize, Infallible};
 use tempfile::tempfile;
 
@@ -523,6 +524,19 @@ impl IndexBlock {
         archived.deserialize(&mut Infallible).unwrap()
     }
 
+    unsafe fn get_bound_verbose<K>(&self, index: usize) -> K
+    where
+        K: Rkyv,
+    {
+        let offset = self.bounds.get(&self.raw, index) as usize;
+        if index + 1 < self.bounds.count {
+            let offset2 = self.bounds.get(&self.raw, index + 1) as usize;
+            hexdump(&self.raw[offset..offset2]);
+        }
+        let archived = archived_value::<K>(&self.raw, offset);
+        archived.deserialize(&mut Infallible).unwrap()
+    }
+
     unsafe fn find_first<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
     where
         K: Rkyv + Ord,
@@ -542,6 +556,56 @@ impl IndexBlock {
                         best = Some(mid / 2);
                         end = mid;
                     } else {
+                        start = mid + 1;
+                    }
+                }
+                Ordering::Less => {
+                    best = Some(mid / 2);
+                    end = mid;
+                }
+                Ordering::Greater => start = mid + 1,
+            };
+        }
+        best
+    }
+
+    unsafe fn find_first_verbose<K, P>(
+        &self,
+        target_rows: &Range<u64>,
+        predicate: P,
+    ) -> Option<usize>
+    where
+        K: Rkyv + Ord,
+        P: Fn(&K) -> bool + Clone,
+    {
+        //hexdump(&self.raw);
+        let mut start = 0;
+        let mut end = self.n_children() * 2;
+        let mut best = None;
+        print!("row_totals:");
+        for i in 0..self.n_children() {
+            print!(" {}", self.row_totals.get(&self.raw, i));
+        }
+        println!();
+        print!("child rows:");
+        for i in 0..self.n_children() {
+            print!(" {}..={}", self.get_row2(i * 2), self.get_row2(i * 2 + 1));
+        }
+        println!();
+        while start < end {
+            let mid = (start + end) / 2;
+            let row = self.get_row2(mid);
+            let cmp = range_compare(target_rows, row);
+            println!("mid={mid} row={row} target_rows={target_rows:?} best={best:?} cmp={cmp:?}");
+            match cmp {
+                Ordering::Equal => {
+                    let bound = self.get_bound_verbose::<K>(mid);
+                    if predicate(&bound) {
+                        println!("true");
+                        best = Some(mid / 2);
+                        end = mid;
+                    } else {
+                        println!("false");
                         start = mid + 1;
                     }
                 }
@@ -1059,6 +1123,17 @@ where
         }
         Ok(())
     }
+    pub unsafe fn seek_forward_until_verbose<P>(&mut self, predicate: P) -> Result<(), Error>
+    where
+        P: Fn(&K) -> bool + Clone,
+    {
+        // XXX optimization possibilities here
+        let position = Position::find_first_verbose::<K, A, P>(&self.row_group, predicate)?;
+        if position > self.position {
+            self.position = position;
+        }
+        Ok(())
+    }
     pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
@@ -1071,6 +1146,14 @@ where
         Ok(())
     }
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error> {
+        // XXX optimization possibilities here
+        let position = Position::for_value_or_larger::<K, A>(&self.row_group, target)?;
+        if position > self.position {
+            self.position = position;
+        }
+        Ok(())
+    }
+    pub unsafe fn advance_to_value_or_larger_verbose(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
         let position = Position::for_value_or_larger::<K, A>(&self.row_group, target)?;
         if position > self.position {
@@ -1210,6 +1293,53 @@ impl Path {
                     else {
                         return Ok(None);
                     };
+                    return Ok(Some(Path {
+                        row: data_block.first_row + child_idx as u64,
+                        indexes,
+                        data: data_block,
+                    }));
+                }
+            }
+        }
+    }
+    unsafe fn find_first_verbose<K, A, P>(
+        row_group: &RowGroup,
+        predicate: P,
+    ) -> Result<Option<Path>, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        println!("looking for {row_group:?}");
+        let mut indexes = Vec::new();
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
+            return Ok(None);
+        };
+        loop {
+            match node.read(&row_group.reader.0.file)? {
+                TreeBlock::Index(index_block) => {
+                    let Some(child_idx) =
+                        index_block.find_first_verbose(&row_group.rows, &predicate)
+                    else {
+                        println!("{}:{}", file!(), line!());
+                        return Ok(None);
+                    };
+                    node = index_block.get_child(child_idx);
+                    println!(
+                        "index child_idx={child_idx} covering rows {:?}",
+                        index_block.get_rows(child_idx)
+                    );
+                    indexes.push(index_block);
+                }
+                TreeBlock::Data(data_block) => {
+                    let Some(child_idx) =
+                        data_block.find_first::<K, A, _>(&row_group.rows, &predicate)
+                    else {
+                        println!("{}:{}", file!(), line!());
+                        return Ok(None);
+                    };
+                    println!("data child_idx={child_idx}");
                     return Ok(Some(Path {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
@@ -1435,6 +1565,17 @@ impl Position {
         P: Fn(&K) -> bool + Clone,
     {
         match Path::find_first::<K, A, P>(row_group, predicate)? {
+            Some(path) => Ok(Position::Row(path)),
+            None => Ok(Position::After),
+        }
+    }
+    unsafe fn find_first_verbose<K, A, P>(row_group: &RowGroup, predicate: P) -> Result<Self, Error>
+    where
+        K: Rkyv + Ord,
+        A: Rkyv,
+        P: Fn(&K) -> bool + Clone,
+    {
+        match Path::find_first_verbose::<K, A, P>(row_group, predicate)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
