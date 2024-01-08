@@ -1342,7 +1342,11 @@ where
     {
         match Path::best_match(row_group, compare, bias)? {
             Some(path) => Ok(Position::Row(path)),
-            None => Ok(Position::After),
+            None => Ok(if bias == Ordering::Less {
+                Position::After
+            } else {
+                Position::Before
+            }),
         }
     }
     fn position<N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64

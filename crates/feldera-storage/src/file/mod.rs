@@ -427,5 +427,13 @@ mod test {
         let mut cursor = reader.rows().first().unwrap();
         unsafe { cursor.seek_forward_until(|key| key >= &end) }.unwrap();
         assert_eq!(unsafe { cursor.item() }, None);
+
+        let mut cursor = reader.rows().last().unwrap();
+        unsafe { cursor.rewind_to_value_or_smaller(&-1) }.unwrap();
+        assert_eq!(unsafe { cursor.item() }, None);
+
+        let mut cursor = reader.rows().last().unwrap();
+        unsafe { cursor.seek_backward_until(|key| key <= &-1) }.unwrap();
+        assert_eq!(unsafe { cursor.item() }, None);
     }
 }
