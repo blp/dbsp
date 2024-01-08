@@ -540,7 +540,8 @@ where
     K: Rkyv,
     A: Rkyv,
 {
-    let archived: &Archived<(K, A)> = unsafe { archived_value::<(K, A)>(src.as_slice(), offset) };
+    let archived: &Archived<Item<K, A>> =
+        unsafe { archived_value::<Item<K, A>>(src.as_slice(), offset) };
     let value: K = archived.0.deserialize(&mut Infallible).unwrap();
     rkyv_serialize(dst, &value)
 }
