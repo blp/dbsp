@@ -2,7 +2,6 @@ use std::{
     cmp::Ordering,
     fmt::{Debug, Formatter, Result as FmtResult},
     fs::File,
-    io::{Result as IoResult, Write},
     marker::PhantomData,
     ops::Range,
     os::unix::fs::FileExt,
@@ -236,7 +235,12 @@ where
         self.key(index)
     }
 
-    unsafe fn first_ge<C>(&self, target_rows: &Range<u64>, compare: &C) -> Option<usize>
+    unsafe fn find_best_match<C>(
+        &self,
+        target_rows: &Range<u64>,
+        compare: &C,
+        bias: Ordering,
+    ) -> Option<usize>
     where
         C: Fn(&K) -> Ordering,
     {
@@ -250,43 +254,14 @@ where
             match cmp {
                 Ordering::Equal => {
                     let key = self.key(mid);
-                    match compare(&key) {
-                        Ordering::Less => {
-                            best = Some(mid);
-                            end = mid;
-                        }
-                        Ordering::Equal => return Some(mid),
-                        Ordering::Greater => start = mid + 1,
-                    }
-                }
-                Ordering::Less => end = mid,
-                Ordering::Greater => start = mid + 1,
-            };
-        }
-        best
-    }
-
-    unsafe fn last_le<C>(&self, target_rows: &Range<u64>, compare: &C) -> Option<usize>
-    where
-        C: Fn(&K) -> Ordering,
-    {
-        let mut start = 0;
-        let mut end = self.n_values();
-        let mut best = None;
-        while start < end {
-            let mid = (start + end) / 2;
-            let row = self.first_row + mid as u64;
-            let cmp = range_compare(target_rows, row);
-            match cmp {
-                Ordering::Equal => {
-                    let key = self.key(mid);
-                    match compare(&key) {
+                    let cmp = compare(&key);
+                    match cmp {
                         Ordering::Less => end = mid,
                         Ordering::Equal => return Some(mid),
-                        Ordering::Greater => {
-                            best = Some(mid);
-                            start = mid + 1;
-                        }
+                        Ordering::Greater => start = mid + 1,
+                    };
+                    if cmp == bias {
+                        best = Some(mid);
                     }
                 }
                 Ordering::Less => end = mid,
@@ -485,7 +460,12 @@ where
         archived.deserialize(&mut Infallible).unwrap()
     }
 
-    unsafe fn first_ge<C>(&self, target_rows: &Range<u64>, compare: &C) -> Option<usize>
+    unsafe fn find_best_match<C>(
+        &self,
+        target_rows: &Range<u64>,
+        compare: &C,
+        bias: Ordering,
+    ) -> Option<usize>
     where
         C: Fn(&K) -> Ordering,
     {
@@ -495,58 +475,25 @@ where
         while start < end {
             let mid = (start + end) / 2;
             let row = self.get_row_bound(mid);
-            let cmp = range_compare(target_rows, row);
-            match cmp {
+            let cmp = match range_compare(target_rows, row) {
                 Ordering::Equal => {
                     let bound = self.get_bound(mid);
-                    match compare(&bound) {
-                        Ordering::Less => {
-                            best = Some(mid / 2);
-                            end = mid;
-                        }
-                        Ordering::Equal => return Some(mid / 2),
-                        Ordering::Greater => start = mid + 1,
-                    };
+                    let cmp = compare(&bound);
+                    if cmp == Ordering::Equal {
+                        return Some(mid / 2);
+                    }
+                    cmp
                 }
-                Ordering::Less => {
-                    best = Some(mid / 2);
-                    end = mid;
-                }
-                Ordering::Greater => start = mid + 1,
+                cmp => cmp,
             };
-        }
-        best
-    }
-
-    unsafe fn last_le<C>(&self, target_rows: &Range<u64>, compare: &C) -> Option<usize>
-    where
-        C: Fn(&K) -> Ordering,
-    {
-        let mut start = 0;
-        let mut end = self.n_children() * 2;
-        let mut best = None;
-        while start < end {
-            let mid = (start + end) / 2;
-            let row = self.get_row_bound(mid);
-            let cmp = range_compare(target_rows, row);
-            match cmp {
-                Ordering::Equal => {
-                    let bound = self.get_bound(mid);
-                    match compare(&bound) {
-                        Ordering::Less => end = mid,
-                        Ordering::Equal => return Some(mid / 2),
-                        Ordering::Greater => {
-                            best = Some(mid / 2);
-                            start = mid + 1
-                        }
-                    };
-                }
-                Ordering::Less => {
-                    end = mid;
-                }
-                Ordering::Greater => {                    best = Some(mid / 2);
-start = mid + 1},
+            if cmp == Ordering::Less {
+                end = mid
+            } else {
+                start = mid + 1
             };
+            if bias == cmp {
+                best = Some(mid / 2);
+            }
         }
         best
     }
@@ -554,13 +501,13 @@ start = mid + 1},
     fn n_children(&self) -> usize {
         self.child_pointers.count
     }
+}
 
-    #[allow(unused)]
-    fn dbg<W>(&self, mut f: W) -> IoResult<()>
-    where
-        K: Debug,
-        W: Write,
-    {
+impl<K> Debug for IndexBlock<K>
+where
+    K: Rkyv + Debug,
+{
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(
             f,
             "IndexBlock {{ depth: {}, first_row: {}, child_type: {:?}, children = {{",
@@ -1008,7 +955,7 @@ where
         C: Fn(&K) -> Ordering,
     {
         // XXX optimization possibilities here
-        let position = Position::first_ge::<N, T, _>(&self.row_group, compare)?;
+        let position = Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Less)?;
         if position > self.position {
             self.position = position;
         }
@@ -1038,7 +985,8 @@ where
         C: Fn(&K) -> Ordering,
     {
         // XXX optimization possibilities here
-        let position = Position::last_le::<N, T, _>(&self.row_group, compare)?;
+        let position =
+            Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Greater)?;
         if position < self.position {
             self.position = position;
         }
@@ -1167,9 +1115,10 @@ where
         }
         Ok(())
     }
-    unsafe fn last_le<N, T, C>(
+    unsafe fn best_match<N, T, C>(
         row_group: &RowGroup<K, A, N, T>,
         compare: &C,
+        bias: Ordering,
     ) -> Result<Option<Self>, Error>
     where
         T: ColumnSpec,
@@ -1182,48 +1131,18 @@ where
         loop {
             match node.read(&row_group.reader.0.file)? {
                 TreeBlock::Index(index_block) => {
-                    let Some(child_idx) = index_block.last_le(&row_group.rows, compare) else {
+                    let Some(child_idx) =
+                        index_block.find_best_match(&row_group.rows, compare, bias)
+                    else {
                         return Ok(None);
                     };
                     node = index_block.get_child(child_idx);
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) = data_block.last_le(&row_group.rows, compare) else {
-                        return Ok(None);
-                    };
-                    return Ok(Some(Self {
-                        row: data_block.first_row + child_idx as u64,
-                        indexes,
-                        data: data_block,
-                    }));
-                }
-            }
-        }
-    }
-    unsafe fn first_ge<N, T, C>(
-        row_group: &RowGroup<K, A, N, T>,
-        compare: &C,
-    ) -> Result<Option<Self>, Error>
-    where
-        T: ColumnSpec,
-        C: Fn(&K) -> Ordering,
-    {
-        let mut indexes = Vec::new();
-        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
-            return Ok(None);
-        };
-        loop {
-            match node.read(&row_group.reader.0.file)? {
-                TreeBlock::Index(index_block) => {
-                    let Some(child_idx) = index_block.first_ge(&row_group.rows, compare) else {
-                        return Ok(None);
-                    };
-                    node = index_block.get_child(child_idx);
-                    indexes.push(index_block);
-                }
-                TreeBlock::Data(data_block) => {
-                    let Some(child_idx) = data_block.first_ge(&row_group.rows, compare) else {
+                    let Some(child_idx) =
+                        data_block.find_best_match(&row_group.rows, compare, bias)
+                    else {
                         return Ok(None);
                     };
                     return Ok(Some(Self {
@@ -1412,25 +1331,16 @@ where
     fn has_value(&self) -> bool {
         self.path().is_some()
     }
-    unsafe fn first_ge<N, T, C>(
+    unsafe fn best_match<N, T, C>(
         row_group: &RowGroup<K, A, N, T>,
         compare: &C,
+        bias: Ordering,
     ) -> Result<Self, Error>
     where
         T: ColumnSpec,
         C: Fn(&K) -> Ordering,
     {
-        match Path::first_ge(row_group, compare)? {
-            Some(path) => Ok(Position::Row(path)),
-            None => Ok(Position::After),
-        }
-    }
-    unsafe fn last_le<N, T, C>(row_group: &RowGroup<K, A, N, T>, compare: &C) -> Result<Self, Error>
-    where
-        T: ColumnSpec,
-        C: Fn(&K) -> Ordering,
-    {
-        match Path::last_le(row_group, compare)? {
+        match Path::best_match(row_group, compare, bias)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
