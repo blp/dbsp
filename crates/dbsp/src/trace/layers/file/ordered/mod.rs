@@ -77,9 +77,9 @@ where
 
 impl<K, V, R> FileOrderedLayer<K, V, R>
 where
-    K: 'static,
-    V: 'static,
-    R: 'static,
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
 {
     pub fn empty() -> Self {
         Self {
@@ -91,9 +91,9 @@ where
 
 impl<K, V, R> Default for FileOrderedLayer<K, V, R>
 where
-    K: 'static,
-    V: 'static,
-    R: 'static,
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
 {
     fn default() -> Self {
         Self::empty()

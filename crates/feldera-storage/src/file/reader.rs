@@ -151,15 +151,31 @@ impl ValueMapReader {
     }
 }
 
-#[derive(Clone)]
-struct DataBlock {
+struct DataBlock<K, A> {
     raw: Rc<AlignedVec>,
     value_map: ValueMapReader,
     row_groups: Option<VarintReader>,
     first_row: u64,
+    _phantom: PhantomData<(K, A)>,
 }
 
-impl DataBlock {
+impl<K, A> Clone for DataBlock<K, A> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+            value_map: self.value_map.clone(),
+            row_groups: self.row_groups.clone(),
+            first_row: self.first_row,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<K, A> DataBlock<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
     fn new(file: &File, node: &TreeNode) -> Result<Self, Error> {
         // XXX return error if there's no row_groups and this isn't the last column
         let raw = read_block(file, node.location)?;
@@ -182,6 +198,7 @@ impl DataBlock {
             )?,
             raw: Rc::new(raw),
             first_row: node.first_row,
+            _phantom: PhantomData,
         })
     }
     fn n_values(&self) -> usize {
@@ -196,53 +213,31 @@ impl DataBlock {
             row_groups.get(&self.raw, index)..row_groups.get(&self.raw, index + 1)
         })
     }
-    unsafe fn archived_item<K, A>(&self, index: usize) -> &ArchivedItem<K, A>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    unsafe fn archived_item(&self, index: usize) -> &ArchivedItem<K, A> {
         archived_value::<Item<K, A>>(&self.raw, self.value_map.get(&self.raw, index))
     }
-    unsafe fn item<K, A>(&self, index: usize) -> (K, A)
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        let item = self.archived_item::<K, A>(index);
+    unsafe fn item(&self, index: usize) -> (K, A) {
+        let item = self.archived_item(index);
         let key = item.0.deserialize(&mut Infallible).unwrap();
         let aux = item.1.deserialize(&mut Infallible).unwrap();
         (key, aux)
     }
-    unsafe fn item_for_row<K, A>(&self, row: u64) -> (K, A)
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    unsafe fn item_for_row(&self, row: u64) -> (K, A) {
         let index = (row - self.first_row) as usize;
         self.item(index)
     }
-    unsafe fn key<K, A>(&self, index: usize) -> K
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        let item = self.archived_item::<K, A>(index);
+    unsafe fn key(&self, index: usize) -> K {
+        let item = self.archived_item(index);
         let key = item.0.deserialize(&mut Infallible).unwrap();
         key
     }
-    unsafe fn key_for_row<K, A>(&self, row: u64) -> K
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
+    unsafe fn key_for_row(&self, row: u64) -> K {
         let index = (row - self.first_row) as usize;
-        self.key::<K, A>(index)
+        self.key(index)
     }
 
-    unsafe fn find_first<K, A, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    unsafe fn find_first<P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
         P: Fn(&K) -> bool + Clone,
     {
         let mut start = 0;
@@ -254,7 +249,7 @@ impl DataBlock {
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let key = self.key::<K, A>(mid);
+                    let key = self.key(mid);
                     if predicate(&key) {
                         best = Some(mid);
                         end = mid;
@@ -269,10 +264,8 @@ impl DataBlock {
         best
     }
 
-    unsafe fn find_last<K, A, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    unsafe fn find_last<P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
         P: Fn(&K) -> bool + Clone,
     {
         let mut start = 0;
@@ -284,7 +277,7 @@ impl DataBlock {
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let key = self.key::<K, A>(mid);
+                    let key = self.key(mid);
                     if predicate(&key) {
                         best = Some(mid);
                         start = mid + 1;
@@ -299,17 +292,16 @@ impl DataBlock {
         best
     }
 
-    unsafe fn min_ge<K, A>(&self, target_rows: &Range<u64>, target_key: &K) -> Option<usize>
+    unsafe fn min_ge(&self, target_rows: &Range<u64>, target_key: &K) -> Option<usize>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
     {
         let mut start = 0;
         let mut end = self.n_values();
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let key = self.key::<K, A>(mid);
+            let key = self.key(mid);
             let row = self.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
@@ -328,10 +320,9 @@ impl DataBlock {
         best
     }
 
-    unsafe fn max_le<K, A>(&self, target_rows: &Range<u64>, target_key: &K) -> Option<usize>
+    unsafe fn max_le(&self, target_rows: &Range<u64>, target_key: &K) -> Option<usize>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
     {
         let mut start = 0;
         let mut end = self.n_values();
@@ -342,7 +333,7 @@ impl DataBlock {
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let key = self.key::<K, A>(mid);
+                    let key = self.key(mid);
                     match target_key.cmp(&key) {
                         Ordering::Equal => return Some(mid),
                         Ordering::Less => end = mid,
@@ -382,7 +373,11 @@ struct TreeNode {
 }
 
 impl TreeNode {
-    fn read(self, file: &File) -> Result<TreeBlock, Error> {
+    fn read<K, A>(self, file: &File) -> Result<TreeBlock<K, A>, Error>
+    where
+        K: Rkyv,
+        A: Rkyv,
+    {
         match self.node_type {
             NodeType::Data => Ok(TreeBlock::Data(DataBlock::new(file, &self)?)),
             NodeType::Index => Ok(TreeBlock::Index(IndexBlock::new(file, &self)?)),
@@ -390,12 +385,16 @@ impl TreeNode {
     }
 }
 
-enum TreeBlock {
-    Data(DataBlock),
-    Index(IndexBlock),
+enum TreeBlock<K, A> {
+    Data(DataBlock<K, A>),
+    Index(IndexBlock<K>),
 }
 
-impl TreeBlock {
+impl<K, A> TreeBlock<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
     fn lookup_row(&self, row: u64) -> Result<Option<TreeNode>, Error> {
         match self {
             Self::Data(data_block) => {
@@ -413,8 +412,7 @@ impl TreeBlock {
     }
 }
 
-#[derive(Clone)]
-struct IndexBlock {
+struct IndexBlock<K> {
     raw: Rc<AlignedVec>,
     child_type: NodeType,
     bounds: VarintReader,
@@ -422,9 +420,28 @@ struct IndexBlock {
     child_pointers: VarintReader,
     depth: usize,
     first_row: u64,
+    _phantom: PhantomData<fn() -> K>,
 }
 
-impl IndexBlock {
+impl<K> Clone for IndexBlock<K> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+            child_type: self.child_type,
+            bounds: self.bounds.clone(),
+            row_totals: self.row_totals.clone(),
+            child_pointers: self.child_pointers.clone(),
+            depth: self.depth,
+            first_row: self.first_row,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<K> IndexBlock<K>
+where
+    K: Rkyv,
+{
     fn new(file: &File, node: &TreeNode) -> Result<Self, Error> {
         if node.depth > 64 {
             // A depth of 64 (very deep) with a branching factor of 2 (very
@@ -462,6 +479,7 @@ impl IndexBlock {
             raw: Rc::new(raw),
             depth: node.depth,
             first_row: node.first_row,
+            _phantom: PhantomData,
         })
     }
 
@@ -489,7 +507,7 @@ impl IndexBlock {
         (self.first_row + low)..(self.first_row + high)
     }
 
-    fn get_row2(&self, index: usize) -> u64 {
+    fn get_row_bound(&self, index: usize) -> u64 {
         if index == 0 {
             0
         } else if index % 2 == 1 {
@@ -515,18 +533,14 @@ impl IndexBlock {
         None
     }
 
-    unsafe fn get_bound<K>(&self, index: usize) -> K
-    where
-        K: Rkyv,
-    {
+    unsafe fn get_bound(&self, index: usize) -> K {
         let offset = self.bounds.get(&self.raw, index) as usize;
         let archived = archived_value::<K>(&self.raw, offset);
         archived.deserialize(&mut Infallible).unwrap()
     }
 
-    unsafe fn find_first<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    unsafe fn find_first<P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
     where
-        K: Rkyv + Ord,
         P: Fn(&K) -> bool + Clone,
     {
         let mut start = 0;
@@ -534,11 +548,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.get_row2(mid);
+            let row = self.get_row_bound(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
+                    let bound = self.get_bound(mid);
                     if predicate(&bound) {
                         best = Some(mid / 2);
                         end = mid;
@@ -556,9 +570,8 @@ impl IndexBlock {
         best
     }
 
-    unsafe fn find_last<K, P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
+    unsafe fn find_last<P>(&self, target_rows: &Range<u64>, predicate: P) -> Option<usize>
     where
-        K: Rkyv + Ord,
         P: Fn(&K) -> bool + Clone,
     {
         let mut start = 0;
@@ -566,11 +579,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.get_row2(mid);
+            let row = self.get_row_bound(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
+                    let bound = self.get_bound(mid);
                     if predicate(&bound) {
                         best = Some(mid / 2);
                         start = mid + 1;
@@ -588,20 +601,20 @@ impl IndexBlock {
         best
     }
 
-    unsafe fn min_ge<K>(&self, target_rows: &Range<u64>, target: &K) -> Option<usize>
+    unsafe fn min_ge(&self, target_rows: &Range<u64>, target: &K) -> Option<usize>
     where
-        K: Rkyv + Ord,
+        K: Ord,
     {
         let mut start = 0;
         let mut end = self.n_children() * 2;
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.get_row2(mid);
+            let row = self.get_row_bound(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
+                    let bound = self.get_bound(mid);
                     let cmp2 = target.cmp(&bound);
                     match cmp2 {
                         Ordering::Less => {
@@ -622,20 +635,20 @@ impl IndexBlock {
         best
     }
 
-    unsafe fn max_le<K>(&self, target_rows: &Range<u64>, target: &K) -> Option<usize>
+    unsafe fn max_le(&self, target_rows: &Range<u64>, target: &K) -> Option<usize>
     where
-        K: Rkyv + Ord,
+        K: Ord,
     {
         let mut start = 0;
         let mut end = self.n_children() * 2;
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.get_row2(mid);
+            let row = self.get_row_bound(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
-                    let bound = self.get_bound::<K>(mid);
+                    let bound = self.get_bound(mid);
                     let cmp2 = target.cmp(&bound);
                     match cmp2 {
                         Ordering::Less => end = mid,
@@ -660,11 +673,10 @@ impl IndexBlock {
         self.child_pointers.count
     }
 
-    /// This is like an implementation of `Debug` but we need type `K`.
     #[allow(unused)]
-    fn dbg<K, W>(&self, mut f: W) -> IoResult<()>
+    fn dbg<W>(&self, mut f: W) -> IoResult<()>
     where
-        K: Rkyv + Debug,
+        K: Debug,
         W: Write,
     {
         write!(
@@ -680,9 +692,9 @@ impl IndexBlock {
                 f,
                 " [{i}] = {{ rows: {:?}, bounds: {:?} at {}..={:?} at {} }}",
                 self.get_rows(i),
-                unsafe { self.get_bound::<K>(i * 2) },
+                unsafe { self.get_bound(i * 2) },
                 self.bounds.get(&self.raw, i * 2),
-                unsafe { self.get_bound::<K>(i * 2 + 1) },
+                unsafe { self.get_bound(i * 2 + 1) },
                 self.bounds.get(&self.raw, i * 2 + 1),
             )?;
         }
@@ -758,9 +770,9 @@ fn check_version_number(version: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Layer file reader.
+/// Layer file column specification.
 ///
-/// Generic parameter `T` must take the form `K1, A1, N1`, where `(K1, A1)` is
+/// A column specification must take the form `K1, A1, N1`, where `(K1, A1)` is
 /// the first column's key and auxiliary data types.  If there is only one
 /// column, `N1` is `()`; otherwise, it is `(K2, A2, N2)`, where `(K2, A2)` is
 /// the second column's key and auxiliary data types.  If there are only two
@@ -771,10 +783,33 @@ fn check_version_number(version: u32) -> Result<(), Error> {
 /// * For two columns, `T` is `(K1, A1, (K2, A2, ()))`.
 ///
 /// * For three columns, `T` is `(K1, A1, (K2, A2, (K3, A3, ())))`.
+pub trait ColumnSpec {
+    fn count() -> usize;
+}
+impl ColumnSpec for () {
+    fn count() -> usize {
+        0
+    }
+}
+impl<K, A, N> ColumnSpec for (K, A, N)
+where
+    K: Rkyv,
+    A: Rkyv,
+    N: ColumnSpec,
+{
+    fn count() -> usize {
+        1 + N::count()
+    }
+}
+
+/// Layer file reader.
 #[derive(Clone)]
 pub struct Reader<T>(Arc<ReaderInner<T>>);
 
-impl<T> Reader<T> {
+impl<T> Reader<T>
+where
+    T: ColumnSpec,
+{
     pub fn new(mut file: File) -> Result<Self, Error> {
         let file_size = file.seek(SeekFrom::End(0))?;
         if file_size == 0 || file_size % 4096 != 0 {
@@ -799,6 +834,12 @@ impl<T> Reader<T> {
             .collect::<Result<_, _>>()?;
         if columns.is_empty() {
             return Err(CorruptionError::NoColumns.into());
+        }
+        if columns.len() != T::count() {
+            return Err(Error::WrongNumberOfColumns {
+                actual: columns.len(),
+                expected: T::count(),
+            });
         }
         if columns[0].n_rows > 0 {
             for (column_index, column) in columns.iter().enumerate().skip(1) {
@@ -852,6 +893,7 @@ impl<K, A, N> Reader<(K, A, N)>
 where
     K: Rkyv,
     A: Rkyv,
+    (K, A, N): ColumnSpec,
 {
     pub fn rows(&self) -> RowGroup<K, A, N, (K, A, N)> {
         RowGroup::new(self, 0, 0..self.0.columns[0].n_rows)
@@ -873,6 +915,7 @@ pub struct RowGroup<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
+    T: ColumnSpec,
 {
     reader: &'a Reader<T>,
     column: usize,
@@ -884,6 +927,7 @@ impl<'a, K, A, N, T> Debug for RowGroup<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
+    T: ColumnSpec,
 {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(f, "RowGroup(column={}, rows={:?})", self.column, self.rows)
@@ -894,6 +938,7 @@ impl<'a, K, A, N, T> RowGroup<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
+    T: ColumnSpec,
 {
     fn new(reader: &'a Reader<T>, column: usize, rows: Range<u64>) -> Self {
         Self {
@@ -964,16 +1009,17 @@ pub struct Cursor<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
+    T: ColumnSpec,
 {
     row_group: RowGroup<'a, K, A, N, T>,
-    position: Position,
-    _phantom: PhantomData<(K, A)>,
+    position: Position<K, A>,
 }
 
 impl<'a, K, A, N, T> Debug for Cursor<'a, K, A, N, T>
 where
     K: Rkyv + Debug,
     A: Rkyv + Debug,
+    T: ColumnSpec,
 {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(f, "Cursor({:?}, {:?})", self.row_group, self.position)
@@ -984,12 +1030,12 @@ impl<'a, K, A, N, T> Cursor<'a, K, A, N, T>
 where
     K: Rkyv,
     A: Rkyv,
+    T: ColumnSpec,
 {
-    fn new(row_group: RowGroup<'a, K, A, N, T>, position: Position) -> Self {
+    fn new(row_group: RowGroup<'a, K, A, N, T>, position: Position<K, A>) -> Self {
         Self {
             row_group,
             position,
-            _phantom: PhantomData,
         }
     }
 
@@ -1029,11 +1075,11 @@ where
     }
 
     pub unsafe fn key(&self) -> Option<K> {
-        self.position.key::<K, A>()
+        self.position.key()
     }
 
     pub unsafe fn item(&self) -> Option<(K, A)> {
-        self.position.item::<K, A>()
+        self.position.item()
     }
 
     pub fn has_value(&self) -> bool {
@@ -1064,6 +1110,7 @@ where
     A: Rkyv,
     NK: Rkyv,
     NA: Rkyv,
+    T: ColumnSpec,
 {
     pub fn next_column<'b>(&'b self) -> RowGroup<'a, NK, NA, NN, T> {
         RowGroup::new(
@@ -1078,13 +1125,14 @@ impl<'a, K, A, N, T> Cursor<'a, K, A, N, T>
 where
     K: Rkyv + ?Sized + Ord,
     A: Rkyv,
+    T: ColumnSpec,
 {
     pub unsafe fn seek_forward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
     {
         // XXX optimization possibilities here
-        let position = Position::find_first::<K, A, N, T, P>(&self.row_group, predicate)?;
+        let position = Position::find_first::<N, T, P>(&self.row_group, predicate)?;
         if position > self.position {
             self.position = position;
         }
@@ -1095,7 +1143,7 @@ where
         P: Fn(&K) -> bool + Clone,
     {
         // XXX optimization possibilities here
-        let position = Position::find_last::<K, A, N, T, P>(&self.row_group, predicate)?;
+        let position = Position::find_last::<N, T, P>(&self.row_group, predicate)?;
         if position < self.position {
             self.position = position;
         }
@@ -1103,7 +1151,7 @@ where
     }
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
-        let position = Position::for_value_or_larger::<K, A, N, T>(&self.row_group, target)?;
+        let position = Position::for_value_or_larger::<N, T>(&self.row_group, target)?;
         if position > self.position {
             self.position = position;
         }
@@ -1111,7 +1159,7 @@ where
     }
     pub unsafe fn rewind_to_value_or_smaller(&mut self, target: &K) -> Result<(), Error> {
         // XXX optimization possibilities here
-        let position = Position::for_value_or_smaller::<K, A, N, T>(&self.row_group, target)?;
+        let position = Position::for_value_or_smaller::<N, T>(&self.row_group, target)?;
         if position < self.position {
             self.position = position;
         }
@@ -1119,38 +1167,50 @@ where
     }
 }
 
-#[derive(Clone)]
-struct Path {
+struct Path<K, A> {
     row: u64,
-    indexes: Vec<IndexBlock>,
-    data: DataBlock,
+    indexes: Vec<IndexBlock<K>>,
+    data: DataBlock<K, A>,
 }
 
-impl PartialEq for Path {
+impl<K, A> PartialEq for Path<K, A> {
     fn eq(&self, other: &Self) -> bool {
         self.row == other.row
     }
 }
 
-impl Eq for Path {}
+impl<K, A> Eq for Path<K, A> {}
 
-impl PartialOrd for Path {
+impl<K, A> PartialOrd for Path<K, A> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Path {
+impl<K, A> Ord for Path<K, A> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.row.cmp(&other.row)
     }
 }
 
-impl Path {
-    fn for_row<K, A, N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Path, Error>
+impl<K, A> Clone for Path<K, A> {
+    fn clone(&self) -> Self {
+        Self {
+            row: self.row,
+            indexes: self.indexes.clone(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+impl<K, A> Path<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn for_row<N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Self, Error>
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         Self::for_row_from_ancestor(
             row_group.reader,
@@ -1161,21 +1221,21 @@ impl Path {
     }
     fn for_row_from_ancestor<T>(
         reader: &Reader<T>,
-        mut indexes: Vec<IndexBlock>,
+        mut indexes: Vec<IndexBlock<K>>,
         mut node: TreeNode,
         row: u64,
-    ) -> Result<Path, Error> {
+    ) -> Result<Self, Error> {
         loop {
             let block = node.read(&reader.0.file)?;
             let next = block.lookup_row(row)?;
             match block {
-                TreeBlock::Data(data) => return Ok(Path { row, indexes, data }),
+                TreeBlock::Data(data) => return Ok(Self { row, indexes, data }),
                 TreeBlock::Index(index) => indexes.push(index),
             };
             node = next.unwrap();
         }
     }
-    fn for_row_from_hint<T>(reader: &Reader<T>, hint: &Path, row: u64) -> Result<Path, Error> {
+    fn for_row_from_hint<T>(reader: &Reader<T>, hint: &Self, row: u64) -> Result<Self, Error> {
         if hint.data.rows().contains(&row) {
             return Ok(Self {
                 row,
@@ -1194,19 +1254,11 @@ impl Path {
         }
         Err(CorruptionError::MissingRow(row).into())
     }
-    unsafe fn key<'a, K, A>(&'a self) -> K
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        self.data.key_for_row::<K, A>(self.row)
+    unsafe fn key<'a>(&'a self) -> K {
+        self.data.key_for_row(self.row)
     }
-    unsafe fn item<'a, K, A>(&'a self) -> (K, A)
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        self.data.item_for_row::<K, A>(self.row)
+    unsafe fn item<'a>(&'a self) -> (K, A) {
+        self.data.item_for_row(self.row)
     }
     fn get_row_group(&self) -> Range<u64> {
         self.data.get_row_group(self.row).unwrap()
@@ -1219,13 +1271,12 @@ impl Path {
         }
         Ok(())
     }
-    unsafe fn find_first<K, A, N, T, P>(
+    unsafe fn find_first<N, T, P>(
         row_group: &RowGroup<K, A, N, T>,
         predicate: P,
-    ) -> Result<Option<Path>, Error>
+    ) -> Result<Option<Self>, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        T: ColumnSpec,
         P: Fn(&K) -> bool + Clone,
     {
         let mut indexes = Vec::new();
@@ -1243,12 +1294,10 @@ impl Path {
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) =
-                        data_block.find_first::<K, A, _>(&row_group.rows, &predicate)
-                    else {
+                    let Some(child_idx) = data_block.find_first(&row_group.rows, &predicate) else {
                         return Ok(None);
                     };
-                    return Ok(Some(Path {
+                    return Ok(Some(Self {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
                         data: data_block,
@@ -1257,13 +1306,12 @@ impl Path {
             }
         }
     }
-    unsafe fn find_last<K, A, N, T, P>(
+    unsafe fn find_last<N, T, P>(
         row_group: &RowGroup<K, A, N, T>,
         predicate: P,
-    ) -> Result<Option<Path>, Error>
+    ) -> Result<Option<Self>, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        T: ColumnSpec,
         P: Fn(&K) -> bool + Clone,
     {
         let mut indexes = Vec::new();
@@ -1280,12 +1328,10 @@ impl Path {
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) =
-                        data_block.find_last::<K, A, _>(&row_group.rows, &predicate)
-                    else {
+                    let Some(child_idx) = data_block.find_last(&row_group.rows, &predicate) else {
                         return Ok(None);
                     };
-                    return Ok(Some(Path {
+                    return Ok(Some(Self {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
                         data: data_block,
@@ -1294,13 +1340,13 @@ impl Path {
             }
         }
     }
-    unsafe fn for_value_or_larger<K, A, N, T>(
+    unsafe fn for_value_or_larger<N, T>(
         row_group: &RowGroup<K, A, N, T>,
         value: &K,
-    ) -> Result<Option<Path>, Error>
+    ) -> Result<Option<Self>, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
+        T: ColumnSpec,
     {
         let mut indexes = Vec::new();
         let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
@@ -1316,10 +1362,10 @@ impl Path {
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) = data_block.min_ge::<K, A>(&row_group.rows, value) else {
+                    let Some(child_idx) = data_block.min_ge(&row_group.rows, value) else {
                         return Ok(None);
                     };
-                    return Ok(Some(Path {
+                    return Ok(Some(Self {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
                         data: data_block,
@@ -1328,13 +1374,13 @@ impl Path {
             }
         }
     }
-    unsafe fn for_value_or_smaller<K, A, N, T>(
+    unsafe fn for_value_or_smaller<N, T>(
         row_group: &RowGroup<K, A, N, T>,
         value: &K,
-    ) -> Result<Option<Path>, Error>
+    ) -> Result<Option<Self>, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
+        T: ColumnSpec,
     {
         let mut indexes = Vec::new();
         let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
@@ -1350,10 +1396,10 @@ impl Path {
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) = data_block.max_le::<K, A>(&row_group.rows, value) else {
+                    let Some(child_idx) = data_block.max_le(&row_group.rows, value) else {
                         return Ok(None);
                     };
-                    return Ok(Some(Path {
+                    return Ok(Some(Self {
                         row: data_block.first_row + child_idx as u64,
                         indexes,
                         data: data_block,
@@ -1364,7 +1410,11 @@ impl Path {
     }
 }
 
-impl Debug for Path {
+impl<K, A> Debug for Path<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(f, "Path {{ row: {}, indexes:", self.row)?;
         for index in &self.indexes {
@@ -1384,25 +1434,85 @@ impl Debug for Path {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, PartialEq)]
-enum Position {
+#[derive(Clone, Debug)]
+enum Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
     Before,
-    Row(Path),
+    Row(Path<K, A>),
     After,
 }
 
-impl Position {
-    fn for_row<K, A, N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Self, Error>
+impl<K, A> PartialEq for Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Before, Self::Before) => true,
+            (Self::Row(a), Self::Row(b)) => a.eq(b),
+            (Self::After, Self::After) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<K, A> Eq for Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+}
+
+impl<K, A> PartialOrd for Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K, A> Ord for Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Before, Self::Before) => Ordering::Equal,
+            (Self::Before, Self::Row(_)) => Ordering::Less,
+            (Self::Before, Self::After) => Ordering::Less,
+
+            (Self::Row(_), Self::Before) => Ordering::Greater,
+            (Self::Row(a), Self::Row(b)) => a.cmp(b),
+            (Self::Row(_), Self::After) => Ordering::Less,
+
+            (Self::After, Self::Before) => Ordering::Greater,
+            (Self::After, Self::Row(_)) => Ordering::Greater,
+            (Self::After, Self::After) => Ordering::Equal,
+        }
+    }
+}
+
+impl<K, A> Position<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn for_row<N, T>(row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<Self, Error>
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         Ok(Self::Row(Path::for_row(row_group, row)?))
     }
-    fn next<K, A, N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
+    fn next<N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         match self {
             Self::Before => {
@@ -1420,10 +1530,9 @@ impl Position {
         }
         Ok(())
     }
-    fn prev<K, A, N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
+    fn prev<N, T>(&mut self, row_group: &RowGroup<K, A, N, T>) -> Result<(), Error>
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         match self {
             Self::Before => (),
@@ -1440,14 +1549,9 @@ impl Position {
         }
         Ok(())
     }
-    fn move_to_row<K, A, N, T>(
-        &mut self,
-        row_group: &RowGroup<K, A, N, T>,
-        row: u64,
-    ) -> Result<(), Error>
+    fn move_to_row<N, T>(&mut self, row_group: &RowGroup<K, A, N, T>, row: u64) -> Result<(), Error>
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         if !row_group.rows.is_empty() {
             match self {
@@ -1459,26 +1563,18 @@ impl Position {
         }
         Ok(())
     }
-    fn path(&self) -> Option<&Path> {
+    fn path(&self) -> Option<&Path<K, A>> {
         match self {
             Position::Before => None,
             Position::Row(path) => Some(path),
             Position::After => None,
         }
     }
-    pub unsafe fn key<K, A>(&self) -> Option<K>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        self.path().map(|path| path.key::<K, A>())
+    pub unsafe fn key(&self) -> Option<K> {
+        self.path().map(|path| path.key())
     }
-    pub unsafe fn item<K, A>(&self) -> Option<(K, A)>
-    where
-        K: Rkyv,
-        A: Rkyv,
-    {
-        self.path().map(|path| path.item::<K, A>())
+    pub unsafe fn item(&self) -> Option<(K, A)> {
+        self.path().map(|path| path.item())
     }
     pub fn row_group(&self) -> Range<u64> {
         match self.path() {
@@ -1489,64 +1585,61 @@ impl Position {
     fn has_value(&self) -> bool {
         self.path().is_some()
     }
-    unsafe fn find_first<K, A, N, T, P>(
+    unsafe fn find_first<N, T, P>(
         row_group: &RowGroup<K, A, N, T>,
         predicate: P,
     ) -> Result<Self, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        T: ColumnSpec,
         P: Fn(&K) -> bool + Clone,
     {
-        match Path::find_first::<K, A, N, T, P>(row_group, predicate)? {
+        match Path::find_first::<N, T, P>(row_group, predicate)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
     }
-    unsafe fn find_last<K, A, N, T, P>(
+    unsafe fn find_last<N, T, P>(
         row_group: &RowGroup<K, A, N, T>,
         predicate: P,
     ) -> Result<Self, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        T: ColumnSpec,
         P: Fn(&K) -> bool + Clone,
     {
-        match Path::find_last::<K, A, N, T, P>(row_group, predicate)? {
+        match Path::find_last::<N, T, P>(row_group, predicate)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::Before),
         }
     }
-    unsafe fn for_value_or_larger<K, A, N, T>(
+    unsafe fn for_value_or_larger<N, T>(
         row_group: &RowGroup<K, A, N, T>,
         target: &K,
     ) -> Result<Self, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
+        T: ColumnSpec,
     {
-        match Path::for_value_or_larger::<K, A, N, T>(row_group, target)? {
+        match Path::for_value_or_larger(row_group, target)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::After),
         }
     }
-    unsafe fn for_value_or_smaller<K, A, N, T>(
+    unsafe fn for_value_or_smaller<N, T>(
         row_group: &RowGroup<K, A, N, T>,
         target: &K,
     ) -> Result<Self, Error>
     where
-        K: Rkyv + Ord,
-        A: Rkyv,
+        K: Ord,
+        T: ColumnSpec,
     {
-        match Path::for_value_or_smaller::<K, A, N, T>(row_group, target)? {
+        match Path::for_value_or_smaller::<N, T>(row_group, target)? {
             Some(path) => Ok(Position::Row(path)),
             None => Ok(Position::Before),
         }
     }
-    fn position<K, A, N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
+    fn position<N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         match self {
             Position::Before => 0,
@@ -1554,10 +1647,9 @@ impl Position {
             Position::After => row_group.rows.end,
         }
     }
-    fn remaining_rows<K, A, N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
+    fn remaining_rows<N, T>(&self, row_group: &RowGroup<K, A, N, T>) -> u64
     where
-        K: Rkyv,
-        A: Rkyv,
+        T: ColumnSpec,
     {
         match self {
             Position::Before => row_group.len(),

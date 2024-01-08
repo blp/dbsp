@@ -16,7 +16,7 @@ use std::{
 
 use crate::algebra::{AddAssignByRef, AddByRef, NegByRef};
 use crate::trace::layers::{Builder, Cursor, Trie, TupleBuilder};
-use crate::{DBData, DBWeight, NumEntries};
+use crate::{DBData, DBWeight, NumEntries, Rkyv};
 
 pub use self::builders::FileColumnLayerBuilder;
 pub use self::cursor::FileColumnLayerCursor;
@@ -28,7 +28,11 @@ pub struct FileColumnLayer<K, R> {
     lower_bound: usize,
 }
 
-impl<K, R> FileColumnLayer<K, R> {
+impl<K, R> FileColumnLayer<K, R>
+where
+    K: Rkyv,
+    R: Rkyv,
+{
     pub fn len(&self) -> u64 {
         self.file.n_rows(0)
     }
@@ -215,7 +219,11 @@ where
 {
 }
 
-impl<K, R> NumEntries for FileColumnLayer<K, R> {
+impl<K, R> NumEntries for FileColumnLayer<K, R>
+where
+    K: Rkyv,
+    R: Rkyv,
+{
     const CONST_NUM_ENTRIES: Option<usize> = None;
 
     #[inline]

@@ -21,6 +21,9 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] IoError),
 
+    #[error("File has {actual} column(s) but should have {expected}.")]
+    WrongNumberOfColumns { actual: usize, expected: usize },
+
     #[error("Last column does not have values.")]
     NoValuesInLastColumn,
 }
