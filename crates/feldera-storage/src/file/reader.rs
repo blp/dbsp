@@ -281,12 +281,12 @@ where
                 Ordering::Equal => {
                     let key = self.key(mid);
                     match compare(&key) {
+                        Ordering::Less => end = mid,
+                        Ordering::Equal => return Some(mid),
                         Ordering::Greater => {
                             best = Some(mid);
                             start = mid + 1;
                         }
-                        Ordering::Equal => return Some(mid),
-                        Ordering::Less => end = mid,
                     }
                 }
                 Ordering::Less => end = mid,
