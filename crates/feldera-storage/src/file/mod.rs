@@ -358,25 +358,6 @@ mod test {
             unsafe { cursor.advance_to_value_or_larger(&(i - 1)) }.unwrap();
             assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
 
-            for j in c2range.clone() {
-                let mut c2cursor = cursor.next_column().first().unwrap();
-                unsafe { c2cursor.seek_forward_until(|key| key >= &j) }.unwrap();
-                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
-
-                let mut c2cursor = cursor.next_column().first().unwrap();
-                unsafe { c2cursor.advance_to_value_or_larger(&(j - 1)) }.unwrap();
-                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
-            }
-        }
-
-        let mut cursor = reader.rows().first().unwrap();
-        unsafe { cursor.advance_to_value_or_larger(&end) }.unwrap();
-        assert_eq!(unsafe { cursor.item() }, None);
-
-        for i in range.clone() {
-            if i % (end / 16) == 0 {
-                println!("{i}");
-            }
             let mut cursor = reader.rows().first().unwrap();
             unsafe { cursor.seek_forward_until(|key| key >= &i) }.unwrap();
             assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
@@ -385,7 +366,31 @@ mod test {
             unsafe { cursor.seek_forward_until(|key| key >= &(i - 1)) }.unwrap();
             assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
 
+            let mut cursor = reader.rows().last().unwrap();
+            unsafe { cursor.rewind_to_value_or_smaller(&i) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            let mut cursor = reader.rows().last().unwrap();
+            unsafe { cursor.rewind_to_value_or_smaller(&(i + 1)) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            let mut cursor = reader.rows().last().unwrap();
+            unsafe { cursor.seek_backward_until(|key| key <= &i) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
+            let mut cursor = reader.rows().last().unwrap();
+            unsafe { cursor.seek_backward_until(|key| key <= &(i + 1)) }.unwrap();
+            assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
+
             for j in c2range.clone() {
+                let mut c2cursor = cursor.next_column().first().unwrap();
+                unsafe { c2cursor.advance_to_value_or_larger(&j) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().first().unwrap();
+                unsafe { c2cursor.advance_to_value_or_larger(&(j - 1)) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
                 let mut c2cursor = cursor.next_column().first().unwrap();
                 unsafe { c2cursor.seek_forward_until(|key| key >= &j) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
@@ -393,8 +398,29 @@ mod test {
                 let mut c2cursor = cursor.next_column().first().unwrap();
                 unsafe { c2cursor.seek_forward_until(|key| key >= &(j - 1)) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().last().unwrap();
+                unsafe { c2cursor.rewind_to_value_or_smaller(&j) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().last().unwrap();
+                unsafe { c2cursor.rewind_to_value_or_smaller(&(j + 1)) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().last().unwrap();
+                unsafe { c2cursor.seek_backward_until(|key| key <= &j) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
+
+                let mut c2cursor = cursor.next_column().last().unwrap();
+                unsafe { c2cursor.seek_backward_until(|key| key <= &(j + 1)) }.unwrap();
+                assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
             }
         }
+
+        let mut cursor = reader.rows().first().unwrap();
+        unsafe { cursor.advance_to_value_or_larger(&end) }.unwrap();
+        assert_eq!(unsafe { cursor.item() }, None);
+
         let mut cursor = reader.rows().first().unwrap();
         unsafe { cursor.seek_forward_until(|key| key >= &end) }.unwrap();
         assert_eq!(unsafe { cursor.item() }, None);

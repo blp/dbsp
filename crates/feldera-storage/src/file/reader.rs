@@ -280,11 +280,11 @@ impl DataBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let key = self.key::<K, A>(mid);
             let row = self.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let key = self.key::<K, A>(mid);
                     if predicate(&key) {
                         best = Some(mid);
                         start = mid + 1;
@@ -338,19 +338,20 @@ impl DataBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let key = self.key::<K, A>(mid);
             let row = self.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
-                Ordering::Equal => match target_key.cmp(&key) {
-                    Ordering::Less => end = mid,
-
-                    Ordering::Equal => return Some(mid),
-                    Ordering::Greater => {
-                        best = Some(mid);
-                        start = mid + 1
+                Ordering::Equal => {
+                    let key = self.key::<K, A>(mid);
+                    match target_key.cmp(&key) {
+                        Ordering::Equal => return Some(mid),
+                        Ordering::Less => end = mid,
+                        Ordering::Greater => {
+                            best = Some(mid);
+                            start = mid + 1
+                        }
                     }
-                },
+                }
                 Ordering::Less => end = mid,
                 Ordering::Greater => start = mid + 1,
             };
@@ -533,11 +534,11 @@ impl IndexBlock {
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let bound = self.get_bound::<K>(mid);
             let row = self.get_row2(mid);
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Ordering::Equal => {
+                    let bound = self.get_bound::<K>(mid);
                     if predicate(&bound) {
                         best = Some(mid / 2);
                         end = mid;
@@ -577,11 +578,11 @@ impl IndexBlock {
                         end = mid;
                     }
                 }
-                Ordering::Less => {
+                Ordering::Less => end = mid,
+                Ordering::Greater => {
                     best = Some(mid / 2);
-                    end = mid;
+                    start = mid + 1
                 }
-                Ordering::Greater => start = mid + 1,
             };
         }
         best
@@ -722,6 +723,9 @@ impl Column {
 struct ReaderInner<T> {
     file: File,
     columns: Vec<Column>,
+
+    /// `fn() -> T` is `Send` and `Sync` regardless of `T`.  See
+    /// <https://doc.rust-lang.org/nomicon/phantom-data.html>.
     _phantom: PhantomData<fn() -> T>,
 }
 
@@ -754,6 +758,19 @@ fn check_version_number(version: u32) -> Result<(), Error> {
     Ok(())
 }
 
+/// Layer file reader.
+///
+/// Generic parameter `T` must take the form `K1, A1, N1`, where `(K1, A1)` is
+/// the first column's key and auxiliary data types.  If there is only one
+/// column, `N1` is `()`; otherwise, it is `(K2, A2, N2)`, where `(K2, A2)` is
+/// the second column's key and auxiliary data types.  If there are only two
+/// columns, `N2` is `()`, otherwise it is `(K3, A3, N3)`; and so on.  Thus:
+///
+/// * For one column, `T` is `(K1, A1, ())`.
+///
+/// * For two columns, `T` is `(K1, A1, (K2, A2, ()))`.
+///
+/// * For three columns, `T` is `(K1, A1, (K2, A2, (K3, A3, ())))`.
 #[derive(Clone)]
 pub struct Reader<T>(Arc<ReaderInner<T>>);
 
@@ -1572,7 +1589,8 @@ mod test {
 
     #[test]
     fn read_tuple() {
-        let reader = Reader::<((i32, char), i32, ())>::new(File::open("file.layer").unwrap()).unwrap();
+        let reader =
+            Reader::<((i32, char), i32, ())>::new(File::open("file.layer").unwrap()).unwrap();
         let mut cursor = reader.rows().first().unwrap();
         let mut count = 0;
         while let Some(value) = unsafe { cursor.key() } {
@@ -1601,7 +1619,8 @@ mod test {
 
     #[test]
     fn read_2_layers() {
-        let reader = Reader::<(u32, (), (u32, (), ()))>::new(File::open("file.layer").unwrap()).unwrap();
+        let reader =
+            Reader::<(u32, (), (u32, (), ()))>::new(File::open("file.layer").unwrap()).unwrap();
         let mut keys = reader.rows().first().unwrap();
         let mut count = 0;
         let mut count2 = 0;
