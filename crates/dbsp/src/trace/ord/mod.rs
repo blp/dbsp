@@ -23,14 +23,12 @@
 //! `OrdKey` respectively, but are more light-weight.
 
 pub mod indexed_zset_batch;
-pub mod key_batch;
 pub mod val_batch;
 pub mod zset_batch;
 
-mod merge_batcher;
+pub(crate) mod merge_batcher;
 
 pub use indexed_zset_batch::OrdIndexedZSet;
-pub use key_batch::OrdKeyBatch;
 pub use val_batch::OrdValBatch;
 pub use zset_batch::OrdZSet;
 
@@ -39,10 +37,10 @@ use crate::trace::Spine;
 /// A trace implementation using a spine of ordered lists.
 pub type OrdValSpine<K, V, T, R, O = usize> = Spine<OrdValBatch<K, V, T, R, O>>;
 
-/// A trace implementation for empty values using a spine of ordered lists.
-pub type OrdKeySpine<K, T, R> = Spine<OrdKeyBatch<K, T, R>>;
-
 /// A trace implementation using a [`Spine`] of [`OrdZSet`].
 pub type OrdZSetSpine<K, R> = Spine<OrdZSet<K, R>>;
 
 pub type OrdIndexedZSetSpine<K, V, R> = Spine<OrdIndexedZSet<K, V, R>>;
+
+pub use crate::trace::file::FileKeySpine as OrdKeySpine;
+pub use crate::trace::file::FileKeyBatch as OrdKeyBatch;

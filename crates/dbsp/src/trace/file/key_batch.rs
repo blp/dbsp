@@ -1,4 +1,4 @@
-use super::merge_batcher::MergeBatcher;
+use crate::trace::ord::merge_batcher::MergeBatcher;
 use crate::{
     time::{Antichain, AntichainRef},
     trace::{
@@ -21,7 +21,7 @@ use std::fmt::{self, Debug, Display};
 /// An immutable collection of update tuples, from a contiguous interval of
 /// logical times.
 #[derive(Debug, Clone)]
-pub struct OrdKeyBatch<K, T, R>
+pub struct FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -33,7 +33,7 @@ where
     pub upper: Antichain<T>,
 }
 
-impl<K, T, R> Display for OrdKeyBatch<K, T, R>
+impl<K, T, R> Display for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -49,7 +49,7 @@ where
     }
 }
 
-impl<K, T, R> NumEntries for OrdKeyBatch<K, T, R>
+impl<K, T, R> NumEntries for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -68,7 +68,7 @@ where
     }
 }
 
-impl<K, T, R> BatchReader for OrdKeyBatch<K, T, R>
+impl<K, T, R> BatchReader for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -78,11 +78,11 @@ where
     type Val = ();
     type Time = T;
     type R = R;
-    type Cursor<'s> = OrdKeyCursor<'s, K, T, R>;
-    type Consumer = OrdKeyConsumer<K, T, R>;
+    type Cursor<'s> = FileKeyCursor<'s, K, T, R>;
+    type Consumer = FileKeyConsumer<K, T, R>;
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        OrdKeyCursor::new(self)
+        FileKeyCursor::new(self)
     }
 
     fn consumer(self) -> Self::Consumer {
@@ -117,7 +117,7 @@ where
     }
 }
 
-impl<K, T, R> Batch for OrdKeyBatch<K, T, R>
+impl<K, T, R> Batch for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -125,8 +125,8 @@ where
 {
     type Item = K;
     type Batcher = MergeBatcher<K, T, R, Self>;
-    type Builder = OrdKeyBuilder<K, T, R>;
-    type Merger = OrdKeyMerger<K, T, R>;
+    type Builder = FileKeyBuilder<K, T, R>;
+    type Merger = FileKeyMerger<K, T, R>;
 
     fn item_from(key: K, _val: ()) -> Self::Item {
         key
@@ -149,7 +149,7 @@ where
     }
 }
 
-impl<K, T, R> OrdKeyBatch<K, T, R>
+impl<K, T, R> FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -161,7 +161,7 @@ where
 }
 
 /// State for an in-progress merge.
-pub struct OrdKeyMerger<K, T, R>
+pub struct FileKeyMerger<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -172,23 +172,23 @@ where
     upper: Antichain<T>,
 }
 
-impl<K, T, R> Merger<K, (), T, R, OrdKeyBatch<K, T, R>> for OrdKeyMerger<K, T, R>
+impl<K, T, R> Merger<K, (), T, R, FileKeyBatch<K, T, R>> for FileKeyMerger<K, T, R>
 where
     Self: SizeOf,
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
 {
-    fn new_merger(batch1: &OrdKeyBatch<K, T, R>, batch2: &OrdKeyBatch<K, T, R>) -> Self {
-        OrdKeyMerger {
+    fn new_merger(batch1: &FileKeyBatch<K, T, R>, batch2: &FileKeyBatch<K, T, R>) -> Self {
+        FileKeyMerger {
             result: None,
             lower: batch1.lower().meet(batch2.lower()),
             upper: batch1.upper().join(batch2.upper()),
         }
     }
 
-    fn done(mut self) -> OrdKeyBatch<K, T, R> {
-        OrdKeyBatch {
+    fn done(mut self) -> FileKeyBatch<K, T, R> {
+        FileKeyBatch {
             layer: self.result.take().unwrap_or_default(),
             lower: self.lower,
             upper: self.upper,
@@ -197,8 +197,8 @@ where
 
     fn work(
         &mut self,
-        source1: &OrdKeyBatch<K, T, R>,
-        source2: &OrdKeyBatch<K, T, R>,
+        source1: &FileKeyBatch<K, T, R>,
+        source2: &FileKeyBatch<K, T, R>,
         key_filter: &Option<Filter<K>>,
         _value_filter: &Option<Filter<()>>,
         fuel: &mut isize,
@@ -222,7 +222,7 @@ where
     }
 }
 
-impl<K, T, R> SizeOf for OrdKeyMerger<K, T, R>
+impl<K, T, R> SizeOf for FileKeyMerger<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -235,7 +235,7 @@ where
 
 /// A cursor for navigating a single layer.
 #[derive(Debug, SizeOf, Clone)]
-pub struct OrdKeyCursor<'s, K, T, R>
+pub struct FileKeyCursor<'s, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -245,13 +245,13 @@ where
     cursor: FileOrderedCursor<'s, K, T, R>,
 }
 
-impl<'s, K, T, R> OrdKeyCursor<'s, K, T, R>
+impl<'s, K, T, R> FileKeyCursor<'s, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
 {
-    fn new(batch: &'s OrdKeyBatch<K, T, R>) -> Self {
+    fn new(batch: &'s FileKeyBatch<K, T, R>) -> Self {
         Self {
             cursor: batch.layer.cursor(),
             val_valid: true,
@@ -259,7 +259,7 @@ where
     }
 }
 
-impl<'s, K, T, R> Cursor<K, (), T, R> for OrdKeyCursor<'s, K, T, R>
+impl<'s, K, T, R> Cursor<K, (), T, R> for FileKeyCursor<'s, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -399,7 +399,7 @@ where
 }
 
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdKeyBuilder<K, T, R>
+pub struct FileKeyBuilder<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -409,7 +409,7 @@ where
     builder: FileOrderedTupleBuilder<K, T, R>,
 }
 
-impl<K, T, R> Builder<K, T, R, OrdKeyBatch<K, T, R>> for OrdKeyBuilder<K, T, R>
+impl<K, T, R> Builder<K, T, R, FileKeyBatch<K, T, R>> for FileKeyBuilder<K, T, R>
 where
     Self: SizeOf,
     K: DBData,
@@ -441,7 +441,7 @@ where
     }
 
     #[inline(never)]
-    fn done(self) -> OrdKeyBatch<K, T, R> {
+    fn done(self) -> FileKeyBatch<K, T, R> {
         let time_next = self.time.advance(0);
         let upper = if time_next <= self.time {
             Antichain::new()
@@ -449,7 +449,7 @@ where
             Antichain::from_elem(time_next)
         };
 
-         OrdKeyBatch {
+         FileKeyBatch {
             layer: self.builder.done(),
             lower: Antichain::from_elem(self.time),
             upper,
@@ -457,7 +457,7 @@ where
     }
 }
 
-impl<K, T, R> SizeOf for OrdKeyBuilder<K, T, R>
+impl<K, T, R> SizeOf for FileKeyBuilder<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -468,7 +468,7 @@ where
     }
 }
 
-pub struct OrdKeyConsumer<K, T, R>
+pub struct FileKeyConsumer<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -477,13 +477,13 @@ where
     consumer: FileOrderedLayerConsumer<K, T, R>,
 }
 
-impl<K, T, R> Consumer<K, (), R, T> for OrdKeyConsumer<K, T, R>
+impl<K, T, R> Consumer<K, (), R, T> for FileKeyConsumer<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
 {
-    type ValueConsumer<'a> = OrdKeyValueConsumer<'a, K, T, R>
+    type ValueConsumer<'a> = FileKeyValueConsumer<'a, K, T, R>
     where
         Self: 'a;
 
@@ -497,7 +497,7 @@ where
 
     fn next_key(&mut self) -> (K, Self::ValueConsumer<'_>) {
         let (key, values) = self.consumer.next_key();
-        (key, OrdKeyValueConsumer::new(values))
+        (key, FileKeyValueConsumer::new(values))
     }
 
     fn seek_key(&mut self, key: &K)
@@ -508,7 +508,7 @@ where
     }
 }
 
-pub struct OrdKeyValueConsumer<'a, K, T, R>
+pub struct FileKeyValueConsumer<'a, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -517,7 +517,7 @@ where
     consumer: FileOrderedLayerValues<'a, K, T, R>,
 }
 
-impl<'a, K, T, R> OrdKeyValueConsumer<'a, K, T, R>
+impl<'a, K, T, R> FileKeyValueConsumer<'a, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -528,7 +528,7 @@ where
     }
 }
 
-impl<'a, K, T, R> ValueConsumer<'a, (), R, T> for OrdKeyValueConsumer<'a, K, T, R>
+impl<'a, K, T, R> ValueConsumer<'a, (), R, T> for FileKeyValueConsumer<'a, K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -548,7 +548,7 @@ where
     }
 }
 
-impl<K, T, R> SizeOf for OrdKeyBatch<K, T, R>
+impl<K, T, R> SizeOf for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -559,7 +559,7 @@ where
     }
 }
 
-impl<K, T, R> Archive for OrdKeyBatch<K, T, R>
+impl<K, T, R> Archive for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -573,7 +573,7 @@ where
     }
 }
 
-impl<K, T, R, S> Serialize<S> for OrdKeyBatch<K, T, R>
+impl<K, T, R, S> Serialize<S> for FileKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
@@ -585,14 +585,14 @@ where
     }
 }
 
-impl<K, T, R, D> Deserialize<OrdKeyBatch<K, T, R>, D> for Archived<OrdKeyBatch<K, T, R>>
+impl<K, T, R, D> Deserialize<FileKeyBatch<K, T, R>, D> for Archived<FileKeyBatch<K, T, R>>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
     D: Fallible,
 {
-    fn deserialize(&self, _deserializer: &mut D) -> Result<OrdKeyBatch<K, T, R>, D::Error> {
+    fn deserialize(&self, _deserializer: &mut D) -> Result<FileKeyBatch<K, T, R>, D::Error> {
         unimplemented!();
     }
 }

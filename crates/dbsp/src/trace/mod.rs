@@ -37,6 +37,7 @@ pub mod consolidation;
 pub mod cursor;
 pub mod layers;
 pub mod ord;
+pub mod file;
 //#[cfg(feature = "persistence")]
 //pub mod persistent;
 pub mod spine_fueled;
