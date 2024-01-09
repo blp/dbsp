@@ -13,5 +13,6 @@ use crate::trace::Spine;
 /// A trace implementation for empty values using a spine of ordered lists.
 pub type FileKeySpine<K, T, R> = Spine<FileKeyBatch<K, T, R>>;
 pub type FileIndexedZSetSpine<K, V, R> = Spine<FileIndexedZSet<K, V, R>>;
+/// A trace implementation using a [`Spine`] of [`FileZSet`].
 pub type FileZSetSpine<K, R> = Spine<FileZSet<K, R>>;
 
