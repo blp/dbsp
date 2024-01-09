@@ -954,7 +954,6 @@ where
     where
         C: Fn(&K) -> Ordering,
     {
-        // XXX optimization possibilities here
         let position = Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Less)?;
         if position > self.position {
             self.position = position;
@@ -984,7 +983,6 @@ where
     where
         C: Fn(&K) -> Ordering,
     {
-        // XXX optimization possibilities here
         let position =
             Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Greater)?;
         if position < self.position {
