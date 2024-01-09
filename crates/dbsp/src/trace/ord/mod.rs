@@ -40,7 +40,7 @@ use crate::trace::Spine;
 pub type OrdValSpine<K, V, T, R, O = usize> = Spine<OrdValBatch<K, V, T, R, O>>;
 
 /// A trace implementation for empty values using a spine of ordered lists.
-pub type OrdKeySpine<K, T, R, O = usize> = Spine<OrdKeyBatch<K, T, R, O>>;
+pub type OrdKeySpine<K, T, R> = Spine<OrdKeyBatch<K, T, R>>;
 
 /// A trace implementation using a [`Spine`] of [`OrdZSet`].
 pub type OrdZSetSpine<K, R> = Spine<OrdZSet<K, R>>;

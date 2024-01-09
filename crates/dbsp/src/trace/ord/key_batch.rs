@@ -1,54 +1,44 @@
 use super::merge_batcher::MergeBatcher;
 use crate::{
-    algebra::{Lattice, MonoidValue},
     time::{Antichain, AntichainRef},
     trace::{
         layers::{
-            column_layer::{ColumnLayer, ColumnLayerBuilder},
-            ordered::{
-                OrderedBuilder, OrderedCursor, OrderedLayer, OrderedLayerConsumer,
-                OrderedLayerValues,
+            file::ordered::{
+                FileOrderedCursor, FileOrderedLayer, FileOrderedLayerConsumer,
+                FileOrderedLayerValues, FileOrderedTupleBuilder,
             },
-            Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, OrdOffset, Trie,
-            TupleBuilder,
+            Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBTimestamp, DBWeight, NumEntries,
 };
 use rand::Rng;
-use rkyv::{Archive, Deserialize, Serialize};
+use rkyv::{ser::Serializer, Archive, Archived, Deserialize, Fallible, Serialize};
 use size_of::SizeOf;
-use std::{
-    fmt::{self, Debug, Display},
-    marker::PhantomData,
-};
-
-pub type OrdKeyBatchLayer<K, T, R, O> = OrderedLayer<K, ColumnLayer<T, R>, O>;
+use std::fmt::{self, Debug, Display};
 
 /// An immutable collection of update tuples, from a contiguous interval of
 /// logical times.
-#[derive(Debug, Clone, SizeOf, Archive, Serialize, Deserialize)]
-pub struct OrdKeyBatch<K, T, R, O = usize>
-where
-    K: 'static,
-    T: 'static,
-    R: 'static,
-    O: 'static,
-{
-    /// Where all the dataz is.
-    pub layer: OrdKeyBatchLayer<K, T, R, O>,
-    pub lower: Antichain<T>,
-    pub upper: Antichain<T>,
-}
-
-impl<K, T, R, O> Display for OrdKeyBatch<K, T, R, O>
+#[derive(Debug, Clone)]
+pub struct OrdKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
-    OrdKeyBatchLayer<K, T, R, O>: Display,
+{
+    /// Where all the dataz is.
+    pub layer: FileOrderedLayer<K, T, R>,
+    pub lower: Antichain<T>,
+    pub upper: Antichain<T>,
+}
+
+impl<K, T, R> Display for OrdKeyBatch<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+    FileOrderedLayer<K, T, R>: Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -59,14 +49,13 @@ where
     }
 }
 
-impl<K, T, R, O> NumEntries for OrdKeyBatch<K, T, R, O>
+impl<K, T, R> NumEntries for OrdKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
 {
-    const CONST_NUM_ENTRIES: Option<usize> = <OrdKeyBatchLayer<K, T, R, O>>::CONST_NUM_ENTRIES;
+    const CONST_NUM_ENTRIES: Option<usize> = <FileOrderedLayer<K, T, R>>::CONST_NUM_ENTRIES;
 
     #[inline]
     fn num_entries_shallow(&self) -> usize {
@@ -79,25 +68,21 @@ where
     }
 }
 
-impl<K, T, R, O> BatchReader for OrdKeyBatch<K, T, R, O>
+impl<K, T, R> BatchReader for OrdKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
 {
     type Key = K;
     type Val = ();
     type Time = T;
     type R = R;
-    type Cursor<'s> = OrdKeyCursor<'s, K, T, R, O> where O: 's;
-    type Consumer = OrdKeyConsumer<K, T, R, O>;
+    type Cursor<'s> = OrdKeyCursor<'s, K, T, R>;
+    type Consumer = OrdKeyConsumer<K, T, R>;
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        OrdKeyCursor {
-            valid: true,
-            cursor: self.layer.cursor(),
-        }
+        OrdKeyCursor::new(self)
     }
 
     fn consumer(self) -> Self::Consumer {
@@ -105,11 +90,11 @@ where
     }
 
     fn key_count(&self) -> usize {
-        <OrdKeyBatchLayer<K, T, R, O> as Trie>::keys(&self.layer)
+        <FileOrderedLayer<K, T, R> as Trie>::keys(&self.layer)
     }
 
     fn len(&self) -> usize {
-        <OrdKeyBatchLayer<K, T, R, O> as Trie>::tuples(&self.layer)
+        <FileOrderedLayer<K, T, R> as Trie>::tuples(&self.layer)
     }
 
     fn lower(&self) -> AntichainRef<'_, T> {
@@ -132,17 +117,16 @@ where
     }
 }
 
-impl<K, T, R, O> Batch for OrdKeyBatch<K, T, R, O>
+impl<K, T, R> Batch for OrdKeyBatch<K, T, R>
 where
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
 {
     type Item = K;
     type Batcher = MergeBatcher<K, T, R, Self>;
-    type Builder = OrdKeyBuilder<K, T, R, O>;
-    type Merger = OrdKeyMerger<K, T, R, O>;
+    type Builder = OrdKeyBuilder<K, T, R>;
+    type Merger = OrdKeyMerger<K, T, R>;
 
     fn item_from(key: K, _val: ()) -> Self::Item {
         key
@@ -165,124 +149,47 @@ where
     }
 }
 
-impl<K, T, R, O> OrdKeyBatch<K, T, R, O>
+impl<K, T, R> OrdKeyBatch<K, T, R>
 where
-    K: Ord + Clone + 'static,
-    T: Lattice + Ord + Clone + 'static,
-    R: MonoidValue,
-    O: OrdOffset,
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    fn do_recede_to(&mut self, frontier: &T) {
-        // We will zip through the time leaves, calling advance on each,
-        //    then zip through the value layer, sorting and collapsing each,
-        //    then zip through the key layer, collapsing each .. ?
-
-        // 1. For each (time, diff) pair, advance the time.
-        for time in self.layer.vals.keys_mut() {
-            time.meet_assign(frontier);
-        }
-        // for time_diff in self.layer.vals.vals.iter_mut() {
-        //     time_diff.0 = time_diff.0.advance_by(frontier);
-        // }
-
-        // 2. For each `(val, off)` pair, sort the range, compact, and rewrite `off`.
-        //    This may leave `val` with an empty range; filtering happens in step 3.
-        let mut write_position = 0;
-        for i in 0..self.layer.keys.len() {
-            // NB: batch.layer.vals.offs[i+1] will be used next iteration, and should not be
-            // changed.     we will change batch.layer.vals.offs[i] in this
-            // iteration, from `write_position`'s     initial value.
-
-            let lower: usize = self.layer.offs[i].into_usize();
-            let upper: usize = self.layer.offs[i + 1].into_usize();
-
-            self.layer.offs[i] = O::from_usize(write_position);
-
-            let (times, diffs) = self.layer.vals.columns_mut();
-
-            // sort the range by the times (ignore the diffs; they will collapse).
-            let count = crate::trace::consolidation::consolidate_paired_slices(
-                &mut times[lower..upper],
-                &mut diffs[lower..upper],
-            );
-
-            for index in lower..(lower + count) {
-                times.swap(write_position, index);
-                diffs.swap(write_position, index);
-                write_position += 1;
-            }
-        }
-        self.layer.vals.truncate(write_position);
-        self.layer.offs[self.layer.keys.len()] = O::from_usize(write_position);
-
-        // 4. Remove empty keys.
-        let mut write_position = 0;
-        for i in 0..self.layer.keys.len() {
-            let lower: usize = self.layer.offs[i].into_usize();
-            let upper: usize = self.layer.offs[i + 1].into_usize();
-
-            if lower < upper {
-                self.layer.keys.swap(write_position, i);
-                // batch.layer.offs updated via `dedup` below; keeps me sane.
-                write_position += 1;
-            }
-        }
-        self.layer.offs.dedup();
-        self.layer.keys.truncate(write_position);
-        self.layer.offs.truncate(write_position + 1);
+    fn do_recede_to(&mut self, _frontier: &T) {
+        todo!()
     }
 }
 
 /// State for an in-progress merge.
-#[derive(SizeOf)]
-pub struct OrdKeyMerger<K, T, R, O = usize>
+pub struct OrdKeyMerger<K, T, R>
 where
     K: DBData,
-    T: DBData + Lattice,
-    R: DBData + MonoidValue,
-    O: OrdOffset,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    // first batch, and position therein.
-    lower1: usize,
-    upper1: usize,
-    // second batch, and position therein.
-    lower2: usize,
-    upper2: usize,
-    // result that we are currently assembling.
-    result: <OrdKeyBatchLayer<K, T, R, O> as Trie>::MergeBuilder,
+    result: Option<FileOrderedLayer<K, T, R>>,
     lower: Antichain<T>,
     upper: Antichain<T>,
 }
 
-impl<K, T, R, O> Merger<K, (), T, R, OrdKeyBatch<K, T, R, O>> for OrdKeyMerger<K, T, R, O>
+impl<K, T, R> Merger<K, (), T, R, OrdKeyBatch<K, T, R>> for OrdKeyMerger<K, T, R>
 where
     Self: SizeOf,
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
 {
-    fn new_merger(batch1: &OrdKeyBatch<K, T, R, O>, batch2: &OrdKeyBatch<K, T, R, O>) -> Self {
-        // Leonid: we do not require batch bounds to grow monotonically.
-        //assert!(batch1.upper() == batch2.lower());
-
+    fn new_merger(batch1: &OrdKeyBatch<K, T, R>, batch2: &OrdKeyBatch<K, T, R>) -> Self {
         OrdKeyMerger {
-            lower1: batch1.layer.lower_bound(),
-            upper1: batch1.layer.lower_bound() + batch1.layer.keys(),
-            lower2: batch2.layer.lower_bound(),
-            upper2: batch2.layer.lower_bound() + batch2.layer.keys(),
-            result: <<OrdKeyBatchLayer<K, T, R, O> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(&batch1.layer, &batch2.layer),
+            result: None,
             lower: batch1.lower().meet(batch2.lower()),
             upper: batch1.upper().join(batch2.upper()),
         }
     }
 
-    fn done(self) -> OrdKeyBatch<K, T, R, O> {
-        assert!(self.lower1 == self.upper1);
-        assert!(self.lower2 == self.upper2);
-
+    fn done(mut self) -> OrdKeyBatch<K, T, R> {
         OrdKeyBatch {
-            layer: self.result.done(),
+            layer: self.result.take().unwrap_or_default(),
             lower: self.lower,
             upper: self.upper,
         }
@@ -290,48 +197,73 @@ where
 
     fn work(
         &mut self,
-        source1: &OrdKeyBatch<K, T, R, O>,
-        source2: &OrdKeyBatch<K, T, R, O>,
+        source1: &OrdKeyBatch<K, T, R>,
+        source2: &OrdKeyBatch<K, T, R>,
         key_filter: &Option<Filter<K>>,
         _value_filter: &Option<Filter<()>>,
         fuel: &mut isize,
     ) {
-        if let Some(key_filter) = key_filter {
-            self.result.push_merge_retain_keys_fueled(
-                (&source1.layer, &mut self.lower1, self.upper1),
-                (&source2.layer, &mut self.lower2, self.upper2),
-                key_filter,
-                fuel,
-            );
-        } else {
-            self.result.push_merge_fueled(
-                (&source1.layer, &mut self.lower1, self.upper1),
-                (&source2.layer, &mut self.lower2, self.upper2),
-                fuel,
-            );
+        debug_assert!(*fuel > 0);
+        if self.result.is_none() {
+            let mut builder =
+                <<FileOrderedLayer<K, T, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
+                    &source1.layer,
+                    &source2.layer,
+                );
+            let cursor1 = source1.layer.cursor();
+            let cursor2 = source2.layer.cursor();
+            if let Some(key_filter) = key_filter {
+                builder.push_merge_retain_keys(cursor1, cursor2, key_filter)
+            } else {
+                builder.push_merge(cursor1, cursor2);
+            }
+            self.result = Some(builder.done());
         }
+    }
+}
+
+impl<K, T, R> SizeOf for OrdKeyMerger<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    fn size_of_children(&self, _context: &mut size_of::Context) {
+        // XXX
     }
 }
 
 /// A cursor for navigating a single layer.
 #[derive(Debug, SizeOf, Clone)]
-pub struct OrdKeyCursor<'s, K, T, R, O = usize>
+pub struct OrdKeyCursor<'s, K, T, R>
 where
-    O: OrdOffset,
     K: DBData,
-    T: DBData + Lattice,
-    R: DBWeight + MonoidValue,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    valid: bool,
-    cursor: OrderedCursor<'s, K, O, ColumnLayer<T, R>>,
+    val_valid: bool,
+    cursor: FileOrderedCursor<'s, K, T, R>,
 }
 
-impl<'s, K, T, R, O> Cursor<K, (), T, R> for OrdKeyCursor<'s, K, T, R, O>
+impl<'s, K, T, R> OrdKeyCursor<'s, K, T, R>
 where
     K: DBData,
-    T: DBData + Lattice + Ord + Clone,
+    T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
+{
+    fn new(batch: &'s OrdKeyBatch<K, T, R>) -> Self {
+        Self {
+            cursor: batch.layer.cursor(),
+            val_valid: true,
+        }
+    }
+}
+
+impl<'s, K, T, R> Cursor<K, (), T, R> for OrdKeyCursor<'s, K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
     fn key(&self) -> &K {
         self.cursor.item()
@@ -345,14 +277,9 @@ where
     where
         F: FnMut(U, &T, &R) -> U,
     {
-        self.cursor.child.rewind();
-        while self.cursor.child.valid() {
-            init = fold(
-                init,
-                self.cursor.child.current_key(),
-                self.cursor.child.current_diff(),
-            );
-            self.cursor.child.step();
+        let mut subcursor = self.cursor.values();
+        while let Some((time, diff)) = subcursor.take_current_item() {
+            init = fold(init, &time, &diff);
         }
 
         init
@@ -362,16 +289,11 @@ where
     where
         F: FnMut(U, &T, &R) -> U,
     {
-        self.cursor.child.rewind();
-        while self.cursor.child.valid() {
-            if self.cursor.child.item().0.less_equal(upper) {
-                init = fold(
-                    init,
-                    self.cursor.child.current_key(),
-                    self.cursor.child.current_diff(),
-                );
+        let mut subcursor = self.cursor.values();
+        while let Some((time, diff)) = subcursor.take_current_item() {
+            if time.less_equal(upper) {
+                init = fold(init, &time, &diff);
             }
-            self.cursor.child.step();
         }
 
         init
@@ -381,8 +303,7 @@ where
     where
         T: PartialEq<()>,
     {
-        debug_assert!(self.cursor.child.valid());
-        self.cursor.child.item().1.clone()
+        self.cursor.values().take_current_item().unwrap().1.clone()
     }
 
     fn key_valid(&self) -> bool {
@@ -390,22 +311,22 @@ where
     }
 
     fn val_valid(&self) -> bool {
-        self.valid
+        self.val_valid
     }
 
     fn step_key(&mut self) {
         self.cursor.step();
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn step_key_reverse(&mut self) {
         self.cursor.step_reverse();
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn seek_key(&mut self, key: &K) {
         self.cursor.seek(key);
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn seek_key_with<P>(&mut self, predicate: P)
@@ -413,7 +334,7 @@ where
         P: Fn(&K) -> bool + Clone,
     {
         self.cursor.seek_with(|k| !predicate(k));
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn seek_key_with_reverse<P>(&mut self, predicate: P)
@@ -421,16 +342,16 @@ where
         P: Fn(&K) -> bool + Clone,
     {
         self.cursor.seek_with_reverse(|k| !predicate(k));
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn seek_key_reverse(&mut self, key: &K) {
         self.cursor.seek_reverse(key);
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn step_val(&mut self) {
-        self.valid = false;
+        self.val_valid = false;
     }
 
     fn seek_val(&mut self, _val: &()) {}
@@ -439,26 +360,26 @@ where
         P: Fn(&()) -> bool + Clone,
     {
         if !predicate(&()) {
-            self.valid = false;
+            self.val_valid = false;
         }
     }
 
     fn rewind_keys(&mut self) {
         self.cursor.rewind();
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn fast_forward_keys(&mut self) {
         self.cursor.fast_forward();
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn rewind_vals(&mut self) {
-        self.valid = true;
+        self.val_valid = true;
     }
 
     fn step_val_reverse(&mut self) {
-        self.valid = false;
+        self.val_valid = false;
     }
 
     fn seek_val_reverse(&mut self, _val: &()) {}
@@ -468,43 +389,38 @@ where
         P: Fn(&()) -> bool + Clone,
     {
         if !predicate(&()) {
-            self.valid = false;
+            self.val_valid = false;
         }
     }
 
     fn fast_forward_vals(&mut self) {
-        self.valid = true;
+        self.val_valid = true;
     }
 }
 
-type RawOrdKeyBuilder<K, T, R, O> = OrderedBuilder<K, ColumnLayerBuilder<T, R>, O>;
-
 /// A builder for creating layers from unsorted update tuples.
-#[derive(SizeOf)]
-pub struct OrdKeyBuilder<K, T, R, O = usize>
+pub struct OrdKeyBuilder<K, T, R>
 where
-    K: Ord,
-    T: Ord + Lattice,
-    R: MonoidValue,
-    O: OrdOffset,
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
     time: T,
-    builder: RawOrdKeyBuilder<K, T, R, O>,
+    builder: FileOrderedTupleBuilder<K, T, R>,
 }
 
-impl<K, T, R, O> Builder<K, T, R, OrdKeyBatch<K, T, R, O>> for OrdKeyBuilder<K, T, R, O>
+impl<K, T, R> Builder<K, T, R, OrdKeyBatch<K, T, R>> for OrdKeyBuilder<K, T, R>
 where
     Self: SizeOf,
     K: DBData,
     T: DBTimestamp,
     R: DBWeight,
-    O: OrdOffset,
 {
     #[inline]
     fn new_builder(time: T) -> Self {
         Self {
             time,
-            builder: <RawOrdKeyBuilder<K, T, R, O> as TupleBuilder>::new(),
+            builder: <FileOrderedTupleBuilder<K, T, R> as TupleBuilder>::new(),
         }
     }
 
@@ -512,14 +428,12 @@ where
     fn with_capacity(time: T, cap: usize) -> Self {
         Self {
             time,
-            builder: <RawOrdKeyBuilder<K, T, R, O> as TupleBuilder>::with_capacity(cap),
+            builder: <FileOrderedTupleBuilder<K, T, R> as TupleBuilder>::with_capacity(cap),
         }
     }
 
     #[inline]
-    fn reserve(&mut self, additional: usize) {
-        self.builder.reserve(additional);
-    }
+    fn reserve(&mut self, _additional: usize) {}
 
     #[inline]
     fn push(&mut self, (key, diff): (K, R)) {
@@ -527,7 +441,7 @@ where
     }
 
     #[inline(never)]
-    fn done(self) -> OrdKeyBatch<K, T, R, O> {
+    fn done(self) -> OrdKeyBatch<K, T, R> {
         let time_next = self.time.advance(0);
         let upper = if time_next <= self.time {
             Antichain::new()
@@ -535,7 +449,7 @@ where
             Antichain::from_elem(time_next)
         };
 
-        OrdKeyBatch {
+         OrdKeyBatch {
             layer: self.builder.done(),
             lower: Antichain::from_elem(self.time),
             upper,
@@ -543,21 +457,33 @@ where
     }
 }
 
-pub struct OrdKeyConsumer<K, T, R, O>
+impl<K, T, R> SizeOf for OrdKeyBuilder<K, T, R>
 where
-    K: 'static,
-    T: 'static,
-    R: 'static,
-    O: OrdOffset,
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    consumer: OrderedLayerConsumer<K, T, R, O>,
+    fn size_of_children(&self, _context: &mut size_of::Context) {
+        // XXX
+    }
 }
 
-impl<K, T, R, O> Consumer<K, (), R, T> for OrdKeyConsumer<K, T, R, O>
+pub struct OrdKeyConsumer<K, T, R>
 where
-    O: OrdOffset,
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    type ValueConsumer<'a> = OrdKeyValueConsumer<'a, K, T, R, O>
+    consumer: FileOrderedLayerConsumer<K, T, R>,
+}
+
+impl<K, T, R> Consumer<K, (), R, T> for OrdKeyConsumer<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    type ValueConsumer<'a> = OrdKeyValueConsumer<'a, K, T, R>
     where
         Self: 'a;
 
@@ -582,25 +508,32 @@ where
     }
 }
 
-pub struct OrdKeyValueConsumer<'a, K, T, R, O>
+pub struct OrdKeyValueConsumer<'a, K, T, R>
 where
-    T: 'static,
-    R: 'static,
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
 {
-    consumer: OrderedLayerValues<'a, T, R>,
-    __type: PhantomData<(K, O)>,
+    consumer: FileOrderedLayerValues<'a, K, T, R>,
 }
 
-impl<'a, K, T, R, O> OrdKeyValueConsumer<'a, K, T, R, O> {
-    const fn new(consumer: OrderedLayerValues<'a, T, R>) -> Self {
-        Self {
-            consumer,
-            __type: PhantomData,
-        }
+impl<'a, K, T, R> OrdKeyValueConsumer<'a, K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    const fn new(consumer: FileOrderedLayerValues<'a, K, T, R>) -> Self {
+        Self { consumer }
     }
 }
 
-impl<'a, K, T, R, O> ValueConsumer<'a, (), R, T> for OrdKeyValueConsumer<'a, K, T, R, O> {
+impl<'a, K, T, R> ValueConsumer<'a, (), R, T> for OrdKeyValueConsumer<'a, K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
     fn value_valid(&self) -> bool {
         self.consumer.value_valid()
     }
@@ -612,5 +545,54 @@ impl<'a, K, T, R, O> ValueConsumer<'a, (), R, T> for OrdKeyValueConsumer<'a, K, 
 
     fn remaining_values(&self) -> usize {
         self.consumer.remaining_values()
+    }
+}
+
+impl<K, T, R> SizeOf for OrdKeyBatch<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    fn size_of_children(&self, _context: &mut size_of::Context) {
+        // XXX
+    }
+}
+
+impl<K, T, R> Archive for OrdKeyBatch<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    type Archived = ();
+    type Resolver = ();
+
+    unsafe fn resolve(&self, _pos: usize, _resolver: Self::Resolver, _out: *mut Self::Archived) {
+        unimplemented!();
+    }
+}
+
+impl<K, T, R, S> Serialize<S> for OrdKeyBatch<K, T, R>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+    S: Serializer + ?Sized,
+{
+    fn serialize(&self, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        unimplemented!();
+    }
+}
+
+impl<K, T, R, D> Deserialize<OrdKeyBatch<K, T, R>, D> for Archived<OrdKeyBatch<K, T, R>>
+where
+    K: DBData,
+    T: DBTimestamp,
+    R: DBWeight,
+    D: Fallible,
+{
+    fn deserialize(&self, _deserializer: &mut D) -> Result<OrdKeyBatch<K, T, R>, D::Error> {
+        unimplemented!();
     }
 }
