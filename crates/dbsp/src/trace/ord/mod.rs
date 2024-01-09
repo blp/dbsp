@@ -22,13 +22,11 @@
 //! Likewise, `OrdIndexedZSet` and `OrdZSet` are less general than `OrdVal` and
 //! `OrdKey` respectively, but are more light-weight.
 
-pub mod indexed_zset_batch;
 pub mod val_batch;
 pub mod zset_batch;
 
 pub(crate) mod merge_batcher;
 
-pub use indexed_zset_batch::OrdIndexedZSet;
 pub use val_batch::OrdValBatch;
 pub use zset_batch::OrdZSet;
 
@@ -40,7 +38,7 @@ pub type OrdValSpine<K, V, T, R, O = usize> = Spine<OrdValBatch<K, V, T, R, O>>;
 /// A trace implementation using a [`Spine`] of [`OrdZSet`].
 pub type OrdZSetSpine<K, R> = Spine<OrdZSet<K, R>>;
 
-pub type OrdIndexedZSetSpine<K, V, R> = Spine<OrdIndexedZSet<K, V, R>>;
-
 pub use crate::trace::file::FileKeySpine as OrdKeySpine;
 pub use crate::trace::file::FileKeyBatch as OrdKeyBatch;
+pub use crate::trace::file::FileIndexedZSet as OrdIndexedZSet;
+pub use crate::trace::file::FileIndexedZSetSpine as OrdIndexedZSetSpine;

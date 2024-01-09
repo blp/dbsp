@@ -1,4 +1,3 @@
-use crate::trace::ord::merge_batcher::MergeBatcher;
 use crate::{
     time::{Antichain, AntichainRef},
     trace::{
@@ -9,6 +8,7 @@ use crate::{
             },
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
+        ord::merge_batcher::MergeBatcher,
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBTimestamp, DBWeight, NumEntries,
@@ -449,7 +449,7 @@ where
             Antichain::from_elem(time_next)
         };
 
-         FileKeyBatch {
+        FileKeyBatch {
             layer: self.builder.done(),
             lower: Antichain::from_elem(self.time),
             upper,

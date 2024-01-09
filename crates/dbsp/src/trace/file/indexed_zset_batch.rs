@@ -1,4 +1,3 @@
-use super::merge_batcher::MergeBatcher;
 use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     time::AntichainRef,
@@ -10,6 +9,7 @@ use crate::{
             },
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
+        ord::merge_batcher::MergeBatcher,
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBWeight, NumEntries,
@@ -25,7 +25,7 @@ use std::{
 
 /// An immutable collection of update tuples.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OrdIndexedZSet<K, V, R>
+pub struct FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -36,7 +36,7 @@ where
     pub layer: FileOrderedLayer<K, V, R>,
 }
 
-impl<K, V, R> Display for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Display for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -52,7 +52,7 @@ where
     }
 }
 
-impl<K, V, R> Default for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Default for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -64,7 +64,7 @@ where
     }
 }
 
-impl<K, V, R> From<FileOrderedLayer<K, V, R>> for OrdIndexedZSet<K, V, R>
+impl<K, V, R> From<FileOrderedLayer<K, V, R>> for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -76,7 +76,7 @@ where
     }
 }
 
-impl<K, V, R> From<FileOrderedLayer<K, V, R>> for Rc<OrdIndexedZSet<K, V, R>>
+impl<K, V, R> From<FileOrderedLayer<K, V, R>> for Rc<FileIndexedZSet<K, V, R>>
 where
     K: DBData,
     V: DBData,
@@ -88,7 +88,7 @@ where
     }
 }
 
-impl<K, V, R> NumEntries for OrdIndexedZSet<K, V, R>
+impl<K, V, R> NumEntries for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -107,7 +107,7 @@ where
     }
 }
 
-impl<K, V, R> NegByRef for OrdIndexedZSet<K, V, R>
+impl<K, V, R> NegByRef for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -121,7 +121,7 @@ where
     }
 }
 
-impl<K, V, R> Neg for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Neg for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -137,7 +137,7 @@ where
     }
 }
 
-impl<K, V, R> Add<Self> for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Add<Self> for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -153,7 +153,7 @@ where
     }
 }
 
-impl<K, V, R> AddAssign<Self> for OrdIndexedZSet<K, V, R>
+impl<K, V, R> AddAssign<Self> for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -165,7 +165,7 @@ where
     }
 }
 
-impl<K, V, R> AddAssignByRef for OrdIndexedZSet<K, V, R>
+impl<K, V, R> AddAssignByRef for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -177,7 +177,7 @@ where
     }
 }
 
-impl<K, V, R> AddByRef for OrdIndexedZSet<K, V, R>
+impl<K, V, R> AddByRef for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -191,7 +191,7 @@ where
     }
 }
 
-impl<K, V, R> BatchReader for OrdIndexedZSet<K, V, R>
+impl<K, V, R> BatchReader for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -201,19 +201,19 @@ where
     type Val = V;
     type Time = ();
     type R = R;
-    type Cursor<'s> = OrdIndexedZSetCursor<'s, K, V, R>
+    type Cursor<'s> = FileIndexedZSetCursor<'s, K, V, R>
     where
         V: 's;
-    type Consumer = OrdIndexedZSetConsumer<K, V, R>;
+    type Consumer = FileIndexedZSetConsumer<K, V, R>;
 
     #[inline]
     fn cursor(&self) -> Self::Cursor<'_> {
-        OrdIndexedZSetCursor::new(self)
+        FileIndexedZSetCursor::new(self)
     }
 
     #[inline]
     fn consumer(self) -> Self::Consumer {
-        OrdIndexedZSetConsumer {
+        FileIndexedZSetConsumer {
             consumer: FileOrderedLayerConsumer::from(self.layer),
         }
     }
@@ -250,7 +250,7 @@ where
     }
 }
 
-impl<K, V, R> Batch for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Batch for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -258,8 +258,8 @@ where
 {
     type Item = (K, V);
     type Batcher = MergeBatcher<(K, V), (), R, Self>;
-    type Builder = OrdIndexedZSetBuilder<K, V, R>;
-    type Merger = OrdIndexedZSetMerger<K, V, R>;
+    type Builder = FileIndexedZSetBuilder<K, V, R>;
+    type Merger = FileIndexedZSetMerger<K, V, R>;
 
     fn item_from(key: K, val: V) -> Self::Item {
         (key, val)
@@ -278,7 +278,7 @@ where
     }
 
     fn begin_merge(&self, other: &Self) -> Self::Merger {
-        OrdIndexedZSetMerger::new_merger(self, other)
+        FileIndexedZSetMerger::new_merger(self, other)
     }
 
     fn recede_to(&mut self, _frontier: &()) {}
@@ -291,7 +291,7 @@ where
 }
 
 /// State for an in-progress merge.
-pub struct OrdIndexedZSetMerger<K, V, R>
+pub struct FileIndexedZSetMerger<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -300,7 +300,7 @@ where
     result: Option<FileOrderedLayer<K, V, R>>,
 }
 
-impl<K, V, R> Merger<K, V, (), R, OrdIndexedZSet<K, V, R>> for OrdIndexedZSetMerger<K, V, R>
+impl<K, V, R> Merger<K, V, (), R, FileIndexedZSet<K, V, R>> for FileIndexedZSetMerger<K, V, R>
 where
     Self: SizeOf,
     K: DBData,
@@ -308,21 +308,21 @@ where
     R: DBWeight,
 {
     #[inline]
-    fn new_merger(_batch1: &OrdIndexedZSet<K, V, R>, _batch2: &OrdIndexedZSet<K, V, R>) -> Self {
+    fn new_merger(_batch1: &FileIndexedZSet<K, V, R>, _batch2: &FileIndexedZSet<K, V, R>) -> Self {
         Self { result: None }
     }
 
     #[inline]
-    fn done(mut self) -> OrdIndexedZSet<K, V, R> {
-        OrdIndexedZSet {
+    fn done(mut self) -> FileIndexedZSet<K, V, R> {
+        FileIndexedZSet {
             layer: self.result.take().unwrap_or_default(),
         }
     }
 
     fn work(
         &mut self,
-        source1: &OrdIndexedZSet<K, V, R>,
-        source2: &OrdIndexedZSet<K, V, R>,
+        source1: &FileIndexedZSet<K, V, R>,
+        source2: &FileIndexedZSet<K, V, R>,
         key_filter: &Option<Filter<K>>,
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
@@ -353,7 +353,7 @@ where
     }
 }
 
-impl<K, V, R> SizeOf for OrdIndexedZSetMerger<K, V, R>
+impl<K, V, R> SizeOf for FileIndexedZSetMerger<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -366,7 +366,7 @@ where
 
 /// A cursor for navigating a single layer.
 #[derive(Debug, SizeOf, Clone)]
-pub struct OrdIndexedZSetCursor<'s, K, V, R>
+pub struct FileIndexedZSetCursor<'s, K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -376,13 +376,13 @@ where
     val_cursor: FileOrderedValueCursor<'s, K, V, R>,
 }
 
-impl<'s, K, V, R> OrdIndexedZSetCursor<'s, K, V, R>
+impl<'s, K, V, R> FileIndexedZSetCursor<'s, K, V, R>
 where
     K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    fn new(zset: &'s OrdIndexedZSet<K, V, R>) -> Self {
+    fn new(zset: &'s FileIndexedZSet<K, V, R>) -> Self {
         let key_cursor = zset.layer.cursor();
         let val_cursor = key_cursor.values();
         Self {
@@ -400,7 +400,7 @@ where
     }
 }
 
-impl<'s, K, V, R> Cursor<K, V, (), R> for OrdIndexedZSetCursor<'s, K, V, R>
+impl<'s, K, V, R> Cursor<K, V, (), R> for FileIndexedZSetCursor<'s, K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -523,7 +523,7 @@ where
 }
 
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdIndexedZSetBuilder<K, V, R>
+pub struct FileIndexedZSetBuilder<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -532,7 +532,7 @@ where
     builder: FileOrderedTupleBuilder<K, V, R>,
 }
 
-impl<K, V, R> Builder<(K, V), (), R, OrdIndexedZSet<K, V, R>> for OrdIndexedZSetBuilder<K, V, R>
+impl<K, V, R> Builder<(K, V), (), R, FileIndexedZSet<K, V, R>> for FileIndexedZSetBuilder<K, V, R>
 where
     Self: SizeOf,
     K: DBData,
@@ -562,14 +562,14 @@ where
     }
 
     #[inline(never)]
-    fn done(self) -> OrdIndexedZSet<K, V, R> {
-        OrdIndexedZSet {
+    fn done(self) -> FileIndexedZSet<K, V, R> {
+        FileIndexedZSet {
             layer: self.builder.done(),
         }
     }
 }
 
-impl<K, V, R> SizeOf for OrdIndexedZSetBuilder<K, V, R>
+impl<K, V, R> SizeOf for FileIndexedZSetBuilder<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -580,7 +580,7 @@ where
     }
 }
 
-pub struct OrdIndexedZSetConsumer<K, V, R>
+pub struct FileIndexedZSetConsumer<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -589,13 +589,13 @@ where
     consumer: FileOrderedLayerConsumer<K, V, R>,
 }
 
-impl<K, V, R> Consumer<K, V, R, ()> for OrdIndexedZSetConsumer<K, V, R>
+impl<K, V, R> Consumer<K, V, R, ()> for FileIndexedZSetConsumer<K, V, R>
 where
     K: DBData,
     V: DBData,
     R: DBWeight,
 {
-    type ValueConsumer<'a> = OrdIndexedZSetValueConsumer<'a, K, V,  R>
+    type ValueConsumer<'a> = FileIndexedZSetValueConsumer<'a, K, V,  R>
     where
         Self: 'a;
 
@@ -609,7 +609,7 @@ where
 
     fn next_key(&mut self) -> (K, Self::ValueConsumer<'_>) {
         let (key, consumer) = self.consumer.next_key();
-        (key, OrdIndexedZSetValueConsumer::new(consumer))
+        (key, FileIndexedZSetValueConsumer::new(consumer))
     }
 
     fn seek_key(&mut self, key: &K)
@@ -620,7 +620,7 @@ where
     }
 }
 
-pub struct OrdIndexedZSetValueConsumer<'a, K, V, R>
+pub struct FileIndexedZSetValueConsumer<'a, K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -629,7 +629,7 @@ where
     consumer: FileOrderedLayerValues<'a, K, V, R>,
 }
 
-impl<'a, K, V, R> OrdIndexedZSetValueConsumer<'a, K, V, R>
+impl<'a, K, V, R> FileIndexedZSetValueConsumer<'a, K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -641,7 +641,7 @@ where
     }
 }
 
-impl<'a, K, V, R> ValueConsumer<'a, V, R, ()> for OrdIndexedZSetValueConsumer<'a, K, V, R>
+impl<'a, K, V, R> ValueConsumer<'a, V, R, ()> for FileIndexedZSetValueConsumer<'a, K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -660,7 +660,7 @@ where
     }
 }
 
-impl<K, V, R> SizeOf for OrdIndexedZSet<K, V, R>
+impl<K, V, R> SizeOf for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -671,7 +671,7 @@ where
     }
 }
 
-impl<K, V, R> Archive for OrdIndexedZSet<K, V, R>
+impl<K, V, R> Archive for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -685,7 +685,7 @@ where
     }
 }
 
-impl<K, V, R, S> Serialize<S> for OrdIndexedZSet<K, V, R>
+impl<K, V, R, S> Serialize<S> for FileIndexedZSet<K, V, R>
 where
     K: DBData,
     V: DBData,
@@ -697,14 +697,14 @@ where
     }
 }
 
-impl<K, V, R, D> Deserialize<OrdIndexedZSet<K, V, R>, D> for Archived<OrdIndexedZSet<K, V, R>>
+impl<K, V, R, D> Deserialize<FileIndexedZSet<K, V, R>, D> for Archived<FileIndexedZSet<K, V, R>>
 where
     K: DBData,
     V: DBData,
     R: DBWeight,
     D: Fallible,
 {
-    fn deserialize(&self, _deserializer: &mut D) -> Result<OrdIndexedZSet<K, V, R>, D::Error> {
+    fn deserialize(&self, _deserializer: &mut D) -> Result<FileIndexedZSet<K, V, R>, D::Error> {
         unimplemented!();
     }
 }
