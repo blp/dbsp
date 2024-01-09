@@ -178,7 +178,7 @@ mod test {
         algebra::HasZero,
         monitor::TraceMonitor,
         operator::{DelayedFeedback, Generator},
-        trace::{ord::OrdZSet, Batch},
+        trace::{Batch, OrdZSet},
         zset, Circuit, RootCircuit,
     };
 

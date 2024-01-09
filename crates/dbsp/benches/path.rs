@@ -1,7 +1,7 @@
 use dbsp::{
     mimalloc::MiMalloc,
     operator::{FilterMap, Generator},
-    trace::{ord::OrdZSet, Batch},
+    trace::{OrdZSet, Batch},
     Circuit, RootCircuit, Runtime, Stream,
 };
 

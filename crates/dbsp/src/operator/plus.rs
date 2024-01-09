@@ -223,7 +223,7 @@ mod test {
         algebra::HasZero,
         circuit::OwnershipPreference,
         operator::{Generator, Inspect},
-        trace::{ord::OrdZSet, Batch},
+        trace::{Batch, OrdZSet},
         zset, Circuit, RootCircuit,
     };
 

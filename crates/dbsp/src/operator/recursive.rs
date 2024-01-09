@@ -183,7 +183,7 @@ where
     /// use dbsp::{
     ///     operator::Generator,
     ///     time::NestedTimestamp32,
-    ///     trace::ord::OrdZSet,
+    ///     trace::OrdZSet,
     ///     Circuit, RootCircuit, Stream, zset, zset_set,
     /// };
     /// use std::vec;
@@ -298,7 +298,7 @@ where
 mod test {
     use crate::{
         operator::{FilterMap, Generator},
-        trace::ord::OrdZSet,
+        trace::OrdZSet,
         zset, Circuit, RootCircuit, Stream,
     };
     use std::vec;

@@ -8,10 +8,10 @@ use crate::{
     time::NestedTimestamp32,
     trace::{
         cursor::Cursor,
-        ord::{OrdIndexedZSet, OrdKeyBatch, OrdValBatch, OrdZSet},
         persistent::{cursor::PersistentTraceCursor, PersistentTrace},
         spine_fueled::{Spine, SpineCursor},
-        Batch, BatchReader, Builder, Rkyv, Trace,
+        Batch, BatchReader, Builder, OrdIndexedZSet, OrdKeyBatch, OrdValBatch, OrdZSet, Rkyv,
+        Trace,
     },
 };
 use proptest::prelude::*;

@@ -713,7 +713,7 @@ mod test {
     use crate::{
         indexed_zset,
         operator::{FilterMap, Generator},
-        trace::ord::OrdZSet,
+        trace::OrdZSet,
         zset, Circuit, RootCircuit,
     };
     use std::vec;

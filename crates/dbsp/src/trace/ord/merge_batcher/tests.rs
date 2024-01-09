@@ -1,14 +1,9 @@
 #![cfg(test)]
 
+use super::super::merge_batcher::{MergeBatcher, MergeSorter};
 use crate::{
     algebra::MonoidValue,
-    trace::{
-        ord::{
-            merge_batcher::{MergeBatcher, MergeSorter},
-            OrdValBatch,
-        },
-        Batcher,
-    },
+    trace::{Batcher, OrdValBatch},
 };
 use std::marker::PhantomData;
 
@@ -162,11 +157,9 @@ fn count_tuples() {
 // These tests will utterly destroy miri's performance
 #[cfg_attr(miri, ignore)]
 mod proptests {
+    use super::super::super::merge_batcher::MergeSorter;
     use super::preallocated_stashes;
-    use crate::{
-        trace::{consolidation::consolidate, ord::merge_batcher::MergeSorter},
-        utils::VecExt,
-    };
+    use crate::{trace::consolidation::consolidate, utils::VecExt};
     use proptest::{collection::vec, prelude::*};
     use std::collections::BTreeMap;
 

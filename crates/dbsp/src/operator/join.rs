@@ -876,10 +876,7 @@ mod test {
         circuit::WithClock,
         indexed_zset,
         operator::{DelayedFeedback, FilterMap, Generator},
-        trace::{
-            ord::{OrdIndexedZSet, OrdZSet},
-            Batch,
-        },
+        trace::{Batch, OrdIndexedZSet, OrdZSet},
         zset, Circuit, DBTimestamp, RootCircuit, Runtime, Stream, Timestamp,
     };
     use rkyv::{Archive, Deserialize, Serialize};

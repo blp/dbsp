@@ -144,7 +144,7 @@ mod test {
         circuit::schedule::{DynamicScheduler, Scheduler, StaticScheduler},
         monitor::TraceMonitor,
         operator::{DelayedFeedback, FilterMap, Generator},
-        trace::ord::{OrdIndexedZSet, OrdZSet},
+        trace::{OrdIndexedZSet, OrdZSet},
         zset, ChildCircuit, Circuit, RootCircuit, Stream,
     };
 

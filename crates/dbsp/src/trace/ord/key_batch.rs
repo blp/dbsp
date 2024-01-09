@@ -1,3 +1,4 @@
+use super::merge_batcher::MergeBatcher;
 use crate::{
     algebra::{Lattice, MonoidValue},
     time::{Antichain, AntichainRef},
@@ -11,7 +12,6 @@ use crate::{
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, OrdOffset, Trie,
             TupleBuilder,
         },
-        ord::merge_batcher::MergeBatcher,
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBTimestamp, DBWeight, NumEntries,

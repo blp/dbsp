@@ -42,6 +42,8 @@ pub mod ord;
 pub mod spine_fueled;
 
 pub use cursor::{Consumer, Cursor, ValueConsumer};
+pub use ord::{OrdIndexedZSet, OrdKeyBatch, OrdValBatch, OrdValSpine, OrdZSet};
+
 //#[cfg(feature = "persistence")]
 //pub use persistent::PersistentTrace as Spine;
 //#[cfg(not(feature = "persistence"))]

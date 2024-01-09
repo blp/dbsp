@@ -10,8 +10,8 @@ mod proptests;
 use super::PersistentTrace;
 use crate::time::NestedTimestamp32;
 use crate::trace::cursor::Cursor;
-use crate::trace::ord::{OrdIndexedZSet, OrdKeyBatch, OrdValBatch, OrdZSet};
 use crate::trace::{Batch, BatchReader, Batcher, Trace};
+use crate::trace::{OrdIndexedZSet, OrdKeyBatch, OrdValBatch, OrdZSet};
 use proptests::{spine_ptrace_are_equal, ComplexKey};
 
 #[test]

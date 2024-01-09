@@ -2,7 +2,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
     time::{Product, Timestamp},
-    trace::ord::{OrdKeyBatch, OrdValBatch},
+    trace::{OrdKeyBatch, OrdValBatch},
     DBData, DBWeight,
 };
 use rkyv::{Archive, Deserialize, Serialize};

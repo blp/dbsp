@@ -65,10 +65,7 @@ mod product;
 use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
-    trace::{
-        ord::{OrdKeyBatch, OrdValBatch},
-        Batch, Rkyv,
-    },
+    trace::{Batch, OrdKeyBatch, OrdValBatch, Rkyv},
     DBData, DBWeight, OrdIndexedZSet, OrdZSet,
 };
 use rkyv::{Archive, Deserialize, Serialize};

@@ -66,8 +66,7 @@ pub use circuit::{
     SchedulerError, Stream,
 };
 pub use operator::{CollectionHandle, InputHandle, OutputHandle, UpsertHandle};
-pub use trace::ord::{OrdIndexedZSet, OrdZSet};
-pub use trace::{DBData, DBTimestamp, DBWeight, Rkyv};
+pub use trace::{DBData, DBTimestamp, DBWeight, OrdIndexedZSet, OrdZSet, Rkyv};
 
 #[cfg(doc)]
 pub mod tutorial;

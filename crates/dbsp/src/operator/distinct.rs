@@ -8,7 +8,7 @@ use crate::{
         Circuit, GlobalNodeId, Scope, Stream, WithClock,
     },
     circuit_cache_key,
-    trace::{ord::OrdValSpine, Batch, BatchReader, Builder, Cursor as TraceCursor, Trace},
+    trace::{Batch, BatchReader, Builder, Cursor as TraceCursor, OrdValSpine, Trace},
     DBTimestamp, OrdIndexedZSet, Timestamp,
 };
 use size_of::SizeOf;

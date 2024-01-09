@@ -2,7 +2,7 @@
 mod zset_macro;
 
 #[cfg(doc)]
-use crate::trace::{ord::OrdIndexedZSet, ord::OrdZSet, BatchReader, DBWeight, Trace};
+use crate::trace::{BatchReader, DBWeight, OrdIndexedZSet, OrdZSet, Trace};
 use crate::{
     algebra::{GroupValue, HasOne, HasZero, ZRingValue},
     trace::{cursor::Cursor, Batch, Builder},

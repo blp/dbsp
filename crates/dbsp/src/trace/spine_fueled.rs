@@ -1361,12 +1361,11 @@ mod test {
     use crate::{
         trace::{
             cursor::CursorPair,
-            ord::{OrdKeyBatch, OrdValBatch},
             test_batch::{
                 assert_batch_cursors_eq, assert_batch_eq, assert_trace_eq, test_batch_sampling,
                 test_trace_sampling, TestBatch,
             },
-            Batch, BatchReader, Spine, Trace,
+            Batch, BatchReader, OrdKeyBatch, OrdValBatch, Spine, Trace,
         },
         OrdIndexedZSet, OrdZSet,
     };

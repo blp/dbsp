@@ -6,9 +6,7 @@ use crate::{
         Circuit, GlobalNodeId, OwnershipPreference, Scope, Stream,
     },
     circuit_cache_key,
-    trace::{
-        cursor::Cursor, ord::OrdIndexedZSet, Batch, BatchReader, Builder, Consumer, ValueConsumer,
-    },
+    trace::{cursor::Cursor, Batch, BatchReader, Builder, Consumer, OrdIndexedZSet, ValueConsumer},
     DBData,
 };
 use std::{borrow::Cow, marker::PhantomData};
@@ -234,7 +232,7 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        indexed_zset, operator::Generator, trace::ord::OrdIndexedZSet, zset, Circuit, RootCircuit,
+        indexed_zset, operator::Generator, trace::OrdIndexedZSet, zset, Circuit, RootCircuit,
     };
 
     #[test]

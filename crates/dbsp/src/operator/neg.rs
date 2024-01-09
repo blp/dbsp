@@ -80,7 +80,7 @@ mod test {
     use crate::{
         algebra::HasZero,
         operator::Generator,
-        trace::{ord::OrdZSet, Batch},
+        trace::{Batch, OrdZSet},
         zset, Circuit, RootCircuit,
     };
 

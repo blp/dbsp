@@ -1,3 +1,4 @@
+use super::merge_batcher::MergeBatcher;
 use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     time::AntichainRef,
@@ -9,7 +10,6 @@ use crate::{
             },
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
-        ord::merge_batcher::MergeBatcher,
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBWeight, NumEntries,
