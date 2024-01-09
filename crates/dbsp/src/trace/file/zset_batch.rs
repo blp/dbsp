@@ -1,4 +1,3 @@
-use super::merge_batcher::MergeBatcher;
 use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     time::AntichainRef,
@@ -10,6 +9,7 @@ use crate::{
             },
             Builder as TrieBuilder, Cursor as TrieCursor, MergeBuilder, Trie, TupleBuilder,
         },
+        ord::merge_batcher::MergeBatcher,
         Batch, BatchReader, Builder, Consumer, Cursor, Filter, Merger, ValueConsumer,
     },
     DBData, DBWeight, NumEntries,
@@ -26,7 +26,7 @@ use std::{
 
 /// An immutable collection of `(key, weight)` pairs without timing information.
 #[derive(Debug, Clone, Eq, PartialEq, SizeOf, Archive, Serialize, Deserialize)]
-pub struct OrdZSet<K, R>
+pub struct FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -35,7 +35,7 @@ where
     pub layer: FileColumnLayer<K, R>,
 }
 
-impl<K, R> OrdZSet<K, R>
+impl<K, R> FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -69,7 +69,7 @@ where
     }
 }
 
-impl<K, R> Display for OrdZSet<K, R>
+impl<K, R> Display for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -83,7 +83,7 @@ where
     }
 }
 
-impl<K, R> From<FileColumnLayer<K, R>> for OrdZSet<K, R>
+impl<K, R> From<FileColumnLayer<K, R>> for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -93,7 +93,7 @@ where
     }
 }
 
-impl<K, R> From<FileColumnLayer<K, R>> for Rc<OrdZSet<K, R>>
+impl<K, R> From<FileColumnLayer<K, R>> for Rc<FileZSet<K, R>>
 where
     K: DBData,
     R: DBWeight,
@@ -103,7 +103,7 @@ where
     }
 }
 
-impl<K, R> NumEntries for OrdZSet<K, R>
+impl<K, R> NumEntries for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -119,7 +119,7 @@ where
     }
 }
 
-impl<K, R> Default for OrdZSet<K, R>
+impl<K, R> Default for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -131,7 +131,7 @@ where
     }
 }
 
-impl<K, R> NegByRef for OrdZSet<K, R>
+impl<K, R> NegByRef for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight + NegByRef,
@@ -143,7 +143,7 @@ where
     }
 }
 
-impl<K, R> Neg for OrdZSet<K, R>
+impl<K, R> Neg for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight + Neg<Output = R>,
@@ -158,7 +158,7 @@ where
 }
 
 // TODO: by-value merge
-impl<K, R> Add<Self> for OrdZSet<K, R>
+impl<K, R> Add<Self> for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -172,7 +172,7 @@ where
     }
 }
 
-impl<K, R> AddAssign<Self> for OrdZSet<K, R>
+impl<K, R> AddAssign<Self> for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -182,7 +182,7 @@ where
     }
 }
 
-impl<K, R> AddAssignByRef for OrdZSet<K, R>
+impl<K, R> AddAssignByRef for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -192,7 +192,7 @@ where
     }
 }
 
-impl<K, R> AddByRef for OrdZSet<K, R>
+impl<K, R> AddByRef for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -204,7 +204,7 @@ where
     }
 }
 
-impl<K, R> BatchReader for OrdZSet<K, R>
+impl<K, R> BatchReader for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -213,12 +213,12 @@ where
     type Val = ();
     type Time = ();
     type R = R;
-    type Cursor<'s> = OrdZSetCursor<'s, K, R>;
-    type Consumer = OrdZSetConsumer<K, R>;
+    type Cursor<'s> = FileZSetCursor<'s, K, R>;
+    type Consumer = FileZSetConsumer<K, R>;
 
     #[inline]
     fn cursor(&self) -> Self::Cursor<'_> {
-        OrdZSetCursor {
+        FileZSetCursor {
             valid: true,
             cursor: self.layer.cursor(),
         }
@@ -226,7 +226,7 @@ where
 
     #[inline]
     fn consumer(self) -> Self::Consumer {
-        OrdZSetConsumer {
+        FileZSetConsumer {
             consumer: FileColumnLayerConsumer::from(self.layer),
         }
     }
@@ -263,15 +263,15 @@ where
     }
 }
 
-impl<K, R> Batch for OrdZSet<K, R>
+impl<K, R> Batch for FileZSet<K, R>
 where
     K: DBData,
     R: DBWeight,
 {
     type Item = K;
     type Batcher = MergeBatcher<K, (), R, Self>;
-    type Builder = OrdZSetBuilder<K, R>;
-    type Merger = OrdZSetMerger<K, R>;
+    type Builder = FileZSetBuilder<K, R>;
+    type Merger = FileZSetMerger<K, R>;
 
     fn item_from(key: K, _val: ()) -> Self::Item {
         key
@@ -282,7 +282,7 @@ where
     }
 
     fn begin_merge(&self, other: &Self) -> Self::Merger {
-        OrdZSetMerger::new_merger(self, other)
+        FileZSetMerger::new_merger(self, other)
     }
 
     fn recede_to(&mut self, _frontier: &()) {}
@@ -296,7 +296,7 @@ where
 
 /// State for an in-progress merge.
 #[derive(SizeOf)]
-pub struct OrdZSetMerger<K, R>
+pub struct FileZSetMerger<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -305,13 +305,13 @@ where
     result: <FileColumnLayer<K, R> as Trie>::MergeBuilder,
 }
 
-impl<K, R> Merger<K, (), (), R, OrdZSet<K, R>> for OrdZSetMerger<K, R>
+impl<K, R> Merger<K, (), (), R, FileZSet<K, R>> for FileZSetMerger<K, R>
 where
     Self: SizeOf,
     K: DBData,
     R: DBWeight,
 {
-    fn new_merger(batch1: &OrdZSet<K, R>, batch2: &OrdZSet<K, R>) -> Self {
+    fn new_merger(batch1: &FileZSet<K, R>, batch2: &FileZSet<K, R>) -> Self {
         Self {
             result: <<FileColumnLayer<K, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
                 &batch1.layer,
@@ -320,16 +320,16 @@ where
         }
     }
 
-    fn done(self) -> OrdZSet<K, R> {
-        OrdZSet {
+    fn done(self) -> FileZSet<K, R> {
+        FileZSet {
             layer: self.result.done(),
         }
     }
 
     fn work(
         &mut self,
-        source1: &OrdZSet<K, R>,
-        source2: &OrdZSet<K, R>,
+        source1: &FileZSet<K, R>,
+        source2: &FileZSet<K, R>,
         key_filter: &Option<Filter<K>>,
         _value_filter: &Option<Filter<()>>,
         fuel: &mut isize,
@@ -355,7 +355,7 @@ where
 
 /// A cursor for navigating a single layer.
 #[derive(Debug, SizeOf, Clone)]
-pub struct OrdZSetCursor<'s, K, R>
+pub struct FileZSetCursor<'s, K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -364,7 +364,7 @@ where
     cursor: FileColumnLayerCursor<'s, K, R>,
 }
 
-impl<'s, K, R> Cursor<K, (), (), R> for OrdZSetCursor<'s, K, R>
+impl<'s, K, R> Cursor<K, (), (), R> for FileZSetCursor<'s, K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -495,7 +495,7 @@ where
 
 /// A builder for creating layers from unsorted update tuples.
 #[derive(SizeOf)]
-pub struct OrdZSetBuilder<K, R>
+pub struct FileZSetBuilder<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -503,7 +503,7 @@ where
     builder: FileColumnLayerBuilder<K, R>,
 }
 
-impl<K, R> Builder<K, (), R, OrdZSet<K, R>> for OrdZSetBuilder<K, R>
+impl<K, R> Builder<K, (), R, FileZSet<K, R>> for FileZSetBuilder<K, R>
 where
     Self: SizeOf,
     K: DBData,
@@ -534,15 +534,15 @@ where
     }
 
     #[inline(never)]
-    fn done(self) -> OrdZSet<K, R> {
-        OrdZSet {
+    fn done(self) -> FileZSet<K, R> {
+        FileZSet {
             layer: self.builder.done(),
         }
     }
 }
 
 #[derive(Debug, SizeOf)]
-pub struct OrdZSetConsumer<K, R>
+pub struct FileZSetConsumer<K, R>
 where
     K: DBData,
     R: DBWeight,
@@ -550,12 +550,12 @@ where
     consumer: FileColumnLayerConsumer<K, R>,
 }
 
-impl<K, R> Consumer<K, (), R, ()> for OrdZSetConsumer<K, R>
+impl<K, R> Consumer<K, (), R, ()> for FileZSetConsumer<K, R>
 where
     K: DBData,
     R: DBWeight,
 {
-    type ValueConsumer<'a> = OrdZSetValueConsumer<R>
+    type ValueConsumer<'a> = FileZSetValueConsumer<R>
     where
         Self: 'a;
 
@@ -569,7 +569,7 @@ where
 
     fn next_key(&mut self) -> (K, Self::ValueConsumer<'_>) {
         let (key, values) = self.consumer.next_key();
-        (key, OrdZSetValueConsumer { values })
+        (key, FileZSetValueConsumer { values })
     }
 
     fn seek_key(&mut self, key: &K)
@@ -581,14 +581,14 @@ where
 }
 
 #[derive(Debug)]
-pub struct OrdZSetValueConsumer<R>
+pub struct FileZSetValueConsumer<R>
 where
     R: DBWeight,
 {
     values: FileColumnLayerValues<R>,
 }
 
-impl<'a, R> ValueConsumer<'a, (), R, ()> for OrdZSetValueConsumer<R>
+impl<'a, R> ValueConsumer<'a, (), R, ()> for FileZSetValueConsumer<R>
 where
     R: DBWeight,
 {
