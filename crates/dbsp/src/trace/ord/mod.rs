@@ -24,13 +24,14 @@
 
 mod merge_batcher;
 
+pub mod file;
 pub mod vec;
 
-pub use vec::VecZSet as OrdZSet;
-pub use vec::VecZSetSpine as OrdZSetSpine;
-pub use vec::VecIndexedZSet as OrdIndexedZSet;
-pub use vec::VecIndexedZSetSpine as OrdIndexedZSetSpine;
-pub use vec::VecKeySpine as OrdKeySpine;
-pub use vec::VecKeyBatch as OrdKeyBatch;
+pub use file::FileZSet as OrdZSet;
+pub use file::FileZSetSpine as OrdZSetSpine;
+pub use file::FileIndexedZSet as OrdIndexedZSet;
+pub use file::FileIndexedZSetSpine as OrdIndexedZSetSpine;
+pub use file::FileKeySpine as OrdKeySpine;
+pub use file::FileKeyBatch as OrdKeyBatch;
 pub use vec::VecValBatch as OrdValBatch;
 pub use vec::VecValSpine as OrdValSpine;

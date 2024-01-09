@@ -1,3 +1,4 @@
+#![allow(unreachable_code, unused_variables, unused_mut)]
 use crate::backend::StorageBackend;
 use io_uring::squeue::Entry;
 use io_uring::{opcode, types, IoUring};
