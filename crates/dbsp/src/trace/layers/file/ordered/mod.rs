@@ -264,13 +264,13 @@ where
             while value_cursor.valid() {
                 let (value, diff) = value_cursor.item();
                 if value_filter(value) {
-                    self.0.write2((value, diff)).unwrap();
+                    self.0.write1((value, diff)).unwrap();
                     n += 1;
                 }
                 value_cursor.step();
             }
             if n > 0 {
-                self.0.write1((&key, &())).unwrap();
+                self.0.write0((&key, &())).unwrap();
             }
         }
         cursor.step();
@@ -286,7 +286,7 @@ where
     {
         let (value, diff) = cursor.current_item();
         let retval = if value_filter(value) {
-            self.0.write2((value, diff)).unwrap();
+            self.0.write1((value, diff)).unwrap();
             1
         } else {
             0
@@ -318,7 +318,7 @@ where
                         let mut sum = cursor1.current_diff().clone();
                         sum.add_assign_by_ref(cursor2.current_diff());
                         if !sum.is_zero() {
-                            self.0.write2((value1, &sum)).unwrap();
+                            self.0.write1((value1, &sum)).unwrap();
                             n += 1;
                         }
                     }
@@ -362,7 +362,7 @@ where
                     if key_filter(key1)
                         && self.merge_values(cursor1.values(), cursor2.values(), value_filter)
                     {
-                        self.0.write1((key1, &())).unwrap();
+                        self.0.write0((key1, &())).unwrap();
                     }
                     cursor1.step();
                     cursor2.step();
@@ -470,7 +470,7 @@ where
 
     fn boundary(&mut self) -> usize {
         if let Some(key) = self.key.take() {
-            self.writer.write1((&key, &())).unwrap()
+            self.writer.write0((&key, &())).unwrap()
         }
         self.writer.n_rows() as usize
     }
@@ -512,13 +512,13 @@ where
     fn push_tuple(&mut self, (key, val): (K, (V, R))) {
         if let Some(ref cur_key) = self.key {
             if *cur_key != key {
-                self.writer.write1((cur_key, &())).unwrap();
+                self.writer.write0((cur_key, &())).unwrap();
                 self.key = Some(key);
             }
         } else {
             self.key = Some(key);
         }
-        self.writer.write2((&val.0, &val.1)).unwrap();
+        self.writer.write1((&val.0, &val.1)).unwrap();
     }
 }
 

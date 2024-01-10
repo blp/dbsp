@@ -1,3 +1,72 @@
+//! # Layer file
+//!
+//! A layer file stores `n > 0` columns of data, each of which has a key type
+//! `K[i]` and an auxiliary data type `A[i]`.  Each column is arranged into
+//! groups of rows, where column 0 forms a single group and each row in column
+//! `i` is associated with a group of one or more rows in column `i + 1` (for
+//! `i + 1 < n`).  A group contains sorted, unique values. A group cursor for
+//! column `i` can move forward and backward by rows, seek forward and backward
+//! by the key type `K[i]` or using a predicate based on `K[i]`, and (when `i +
+//! 1 < n`) move to the row group in column `i + 1` associated with the cursor's
+//! row.
+//!
+//! Thus, ignoring the auxiliary data in each column, a 1-column layer file is
+//! analogous to `BTreeSet<K[0]>`, a 2-column layer file is analogous to
+//! `BTreeMap<K[0], BTreeSet<K[1]>>`, and a 3-column layer file is analogous to
+//! `BTreeMap<K[0], BTreeMap<K[1], BTreeSet<K[2]>>>`.
+//!
+//! For DBSP, it is likely that only 1-, 2, and 3-column layer files matter, and
+//! maybe not even 3-column.
+//!
+//! Layer files are written once in their entirety and immutable thereafter.
+//! Therefore, there are APIs for reading and writing layer files, but no API
+//! for modifying them.
+//!
+//! Layer files use [`rkyv`] for serialization and deserialization.
+//!
+//! The "layer file" name comes from the `ColumnLayer` and `OrderedLayer` data
+//! structures used in DBSP and inherited from Differential Dataflow.
+//!
+//! ## Goals
+//!
+//! Layer files aim to balance read and write performance.  That is, neither
+//! should be sacrificed to benefit the other.
+//!
+//! Row groups should implement indexing efficiently for `O(lg n)` seek by data
+//! value and for sequential reads.  It should be possible to disable indexing
+//! by data value for workloads that don't require it.[^0]
+//!
+//! Layer files should support approximate set membership query in `~O(1)`
+//! time.[^0]
+//!
+//! Layer files should support 1 TB data size.
+//!
+//! Layer files should include data checksums to detect accidental corruption.
+//!
+//! [^0]: Not yet implemented.
+//!
+//! ## Design
+//!
+//! Layer files are stored as on-disk trees, one tree per column, with data
+//! blocks as leaf nodes and index blocks as interior nodes.  Each tree's
+//! branching factor is the number of values per data block and the number of
+//! index entries per index block.  Block sizes and the branching factor can be
+//! set as [parameters](`writer::Parameters`) at write time.
+//!
+//! Layer files support variable-length data in all columns.  The layer file
+//! writer automatically detects fixed-length data and store it slightly more
+//! efficiently.
+//!
+//! Layer files index and compare data using [`Ord`] and [`Eq`], unlike many
+//! data storage libraries that compare data lexicographically as byte arrays.
+//! This convenience does prevent layer files from usefully storing only a
+//! prefix of large data items plus a pointer to their full content.  In turn,
+//! that means that, while layer files don't limit the size of data items, they
+//! are always stored in full in index and data blocks, limiting performance for
+//! large data.  This could be ameliorated if the layer file's clients were
+//! permitted to provide a way to summarize data for comparisons.  The need for
+//! this improvement is not yet clear, so it is not yet implemented.
+
 use binrw::{binrw, io::Error as IoError, BinRead, BinResult, BinWrite, Error as BinError};
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
@@ -341,14 +410,15 @@ mod test {
         let a2 = 0x2222_u64;
         for i in range.clone() {
             for j in c2range.clone() {
-                layer_file.write2((&j, &a2)).unwrap();
+                layer_file.write1((&j, &a2)).unwrap();
             }
-            layer_file.write1((&i, &a1)).unwrap();
+            layer_file.write0((&i, &a1)).unwrap();
         }
         println!("written");
         layer_file.close().unwrap();
 
-        let reader = Reader::<(i32, u64, (i32, u64, ()))>::new(File::open("file.layer").unwrap()).unwrap();
+        let reader =
+            Reader::<(i32, u64, (i32, u64, ()))>::new(File::open("file.layer").unwrap()).unwrap();
         for i in range.clone() {
             if i % (end / 16) == 0 {
                 println!("{i}");

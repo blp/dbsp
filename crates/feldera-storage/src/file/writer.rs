@@ -1,3 +1,9 @@
+//! Layer file writer.
+//!
+//! Use [`Writer1`] to write a 1-column layer file and [`Writer2`] to write a
+//! 2-column layer file.  To write more columns, either add another `Writer<N>`
+//! struct, which is easily done, or mark the currently private `Writer` as
+//! `pub`.
 use std::{
     marker::PhantomData,
     mem::{replace, take},
@@ -60,9 +66,49 @@ impl VarintWriter {
     }
 }
 
+/// Configuration parameters for writing a layer file.
 pub struct Parameters {
+    /// Minimum size of a data block, in bytes.  Must be a power of 2 and at
+    /// least 4096.
+    ///
+    /// Larger data blocks reduce the size of the indexes (by allowing an
+    /// individual index entry to span a wider range of data, reducing the
+    /// number of index entries) and they allow a single IOP to retrieve more
+    /// data, but they also fill up more of the cache.
+    ///
+    /// An individual data block will be bigger than the minimum if necessary
+    /// for at least [`min_branch`](Self::min_branch) data and auxiliary data
+    /// values to fit.
     pub min_data_block: usize,
+
+    /// Minimum size of an index block, in bytes.  Must be a power of 2 and at
+    /// least 4096.
+    ///
+    /// Larger index blocks have similar advantages and disadvantages to larger
+    /// data blocks, but with less of an effect.
+    ///
+    /// An individual data block will be bigger than the minimum if necessary
+    /// for at least [`2 * min_branch`](Self::min_branch) data values to fit.
     pub min_index_block: usize,
+
+    /// Minimum branching factor.  This controls the minimum number of data
+    /// items in a data block and the minimum number of child nodes in an index
+    /// block.
+    ///
+    /// Increasing the branching factor reduces the number of nodes that must be
+    /// read to find a particular value.  It also increases the memory required
+    /// to read each block.
+    ///
+    /// The branching factor is not an important consideration for small data
+    /// values, because our 4-kB (or larger) minimum data and index block size
+    /// means that the minimum branching factor will be high.  For example, over
+    /// 100 32-byte values fit in a 4-kB block, even considering overhead.
+    /// 
+    /// The branching factor is more important for large values.  Suppose only
+    /// a single value fits into a data block.  The index block that refers to
+    /// it reproduces the first value in each data block, which in turn makes
+    /// it likely that index block only fits a single child, which is
+    /// pathological and silly.
     pub min_branch: usize,
 }
 
@@ -754,11 +800,17 @@ where
     Ok(BlockLocation::new(offset, block.len()).unwrap())
 }
 
+/// General-purpose layer file writer.
+///
+/// A `Writer` can write a layer file with any number of columns.  It lacks type
+/// safety to ensure that the data and auxiliary values written to columns are
+/// all the same type.  Thus, [`Writer1`] and [`Writer2`] exist for writing
+/// 1-column and 2-column layer files, respectively, with added type safety.
 impl<W> Writer<W>
 where
     W: Write + Seek,
 {
-    fn new(mut writer: W, parameters: Parameters, n_columns: usize) -> IoResult<Self> {
+    pub fn new(mut writer: W, parameters: Parameters, n_columns: usize) -> IoResult<Self> {
         let file_header = FileHeader {
             checksum: 0,
             version: VERSION_NUMBER,
@@ -779,7 +831,7 @@ where
         Ok(writer)
     }
 
-    fn write<K, A>(&mut self, column: usize, item: (&K, &A)) -> IoResult<()>
+    pub fn write<K, A>(&mut self, column: usize, item: (&K, &A)) -> IoResult<()>
     where
         K: Rkyv,
         A: Rkyv,
@@ -797,7 +849,7 @@ where
         self.cws[column].add_item(&mut self.writer, item, &row_group)
     }
 
-    fn finish_column<K, A>(&mut self, column: usize) -> IoResult<()>
+    pub fn finish_column<K, A>(&mut self, column: usize) -> IoResult<()>
     where
         K: Rkyv,
         A: Rkyv,
@@ -812,7 +864,7 @@ where
         Ok(())
     }
 
-    fn close(mut self) -> IoResult<W> {
+    pub fn close(mut self) -> IoResult<W> {
         debug_assert_eq!(self.cws.len(), self.finished_columns.len());
 
         // Write the file trailer block.
@@ -826,30 +878,30 @@ where
         Ok(self.writer)
     }
 
-    fn n_columns(&self) -> usize {
+    pub fn n_columns(&self) -> usize {
         self.cws.len()
     }
 
-    fn n_rows(&self) -> u64 {
+    pub fn n_rows(&self) -> u64 {
         self.cws[0].rows.end
     }
 }
 
-pub struct Writer1<W, K1, A1>
+pub struct Writer1<W, K0, A0>
 where
     W: Write + Seek,
-    K1: Rkyv,
-    A1: Rkyv,
+    K0: Rkyv,
+    A0: Rkyv,
 {
     inner: Writer<W>,
-    _phantom: PhantomData<(K1, A1)>,
+    _phantom: PhantomData<(K0, A0)>,
 }
 
-impl<W, K1, A1> Writer1<W, K1, A1>
+impl<W, K0, A0> Writer1<W, K0, A0>
 where
     W: Write + Seek,
-    K1: Rkyv,
-    A1: Rkyv,
+    K0: Rkyv,
+    A0: Rkyv,
 {
     pub fn new(writer: W, parameters: Parameters) -> IoResult<Self> {
         Ok(Self {
@@ -857,37 +909,37 @@ where
             _phantom: PhantomData,
         })
     }
-    pub fn write(&mut self, item: (&K1, &A1)) -> IoResult<()> {
+    pub fn write(&mut self, item: (&K0, &A0)) -> IoResult<()> {
         self.inner.write(0, item)
     }
     pub fn n_rows(&self) -> u64 {
         self.inner.n_rows()
     }
     pub fn close(mut self) -> IoResult<W> {
-        self.inner.finish_column::<K1, A1>(0)?;
+        self.inner.finish_column::<K0, A0>(0)?;
         self.inner.close()
     }
 }
 
-pub struct Writer2<W, K1, A1, K2, A2>
+pub struct Writer2<W, K0, A0, K1, A1>
 where
     W: Write + Seek,
+    K0: Rkyv,
+    A0: Rkyv,
     K1: Rkyv,
     A1: Rkyv,
-    K2: Rkyv,
-    A2: Rkyv,
 {
     inner: Writer<W>,
-    _phantom: PhantomData<(K1, A1, K2, A2)>,
+    _phantom: PhantomData<(K0, A0, K1, A1)>,
 }
 
-impl<W, K1, A1, K2, A2> Writer2<W, K1, A1, K2, A2>
+impl<W, K0, A0, K1, A1> Writer2<W, K0, A0, K1, A1>
 where
     W: Write + Seek,
+    K0: Rkyv,
+    A0: Rkyv,
     K1: Rkyv,
     A1: Rkyv,
-    K2: Rkyv,
-    A2: Rkyv,
 {
     pub fn new(writer: W, parameters: Parameters) -> IoResult<Self> {
         Ok(Self {
@@ -895,18 +947,18 @@ where
             _phantom: PhantomData,
         })
     }
-    pub fn write1(&mut self, item: (&K1, &A1)) -> IoResult<()> {
+    pub fn write0(&mut self, item: (&K0, &A0)) -> IoResult<()> {
         self.inner.write(0, item)
     }
-    pub fn write2(&mut self, item: (&K2, &A2)) -> IoResult<()> {
+    pub fn write1(&mut self, item: (&K1, &A1)) -> IoResult<()> {
         self.inner.write(1, item)
     }
     pub fn n_rows(&self) -> u64 {
         self.inner.n_rows()
     }
     pub fn close(mut self) -> IoResult<W> {
-        self.inner.finish_column::<K1, A1>(0)?;
-        self.inner.finish_column::<K2, A2>(1)?;
+        self.inner.finish_column::<K0, A0>(0)?;
+        self.inner.finish_column::<K1, A1>(1)?;
         self.inner.close()
     }
 }
@@ -956,9 +1008,9 @@ mod test {
             Writer2::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000_u32 {
             for j in 0..10_u32 {
-                layer_file.write2((&j, &())).unwrap();
+                layer_file.write1((&j, &())).unwrap();
             }
-            layer_file.write1((&i, &())).unwrap();
+            layer_file.write0((&i, &())).unwrap();
         }
         layer_file.close().unwrap();
     }
