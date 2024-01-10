@@ -70,7 +70,7 @@ where
         while cursor.valid() {
             let item = cursor.current_item();
             if filter(&item.0) {
-                self.0.write((&item.0, &item.1)).unwrap();
+                self.0.write0((&item.0, &item.1)).unwrap();
             }
             cursor.step();
         }
@@ -89,7 +89,7 @@ where
                 Ordering::Less => {
                     let item = cursor1.current_item();
                     if filter(&item.0) {
-                        self.0.write((&item.0, &item.1)).unwrap();
+                        self.0.write0((&item.0, &item.1)).unwrap();
                     }
                     cursor1.step();
                 }
@@ -98,7 +98,7 @@ where
                     sum.add_assign_by_ref(cursor2.current_diff());
 
                     if !sum.is_zero() && filter(cursor1.current_key()) {
-                        self.0.write(((cursor1.current_key()), &sum)).unwrap();
+                        self.0.write0(((cursor1.current_key()), &sum)).unwrap();
                     }
                     cursor1.step();
                     cursor2.step();
@@ -107,7 +107,7 @@ where
                 Ordering::Greater => {
                     let item = cursor2.current_item();
                     if filter(&item.0) {
-                        self.0.write((&item.0, &item.1)).unwrap();
+                        self.0.write0((&item.0, &item.1)).unwrap();
                     }
                     cursor2.step();
                 }
@@ -116,12 +116,12 @@ where
 
         while let Some(item) = cursor1.take_current_item() {
             if filter(&item.0) {
-                self.0.write((&item.0, &item.1)).unwrap();
+                self.0.write0((&item.0, &item.1)).unwrap();
             }
         }
         while let Some(item) = cursor2.take_current_item() {
             if filter(&item.0) {
-                self.0.write((&item.0, &item.1)).unwrap();
+                self.0.write0((&item.0, &item.1)).unwrap();
             }
         }
     }
@@ -149,7 +149,7 @@ where
     }
 
     fn push_tuple(&mut self, item: (K, R)) {
-        self.0.write((&item.0, &item.1)).unwrap();
+        self.0.write0((&item.0, &item.1)).unwrap();
     }
 }
 

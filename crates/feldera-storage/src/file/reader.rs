@@ -1,3 +1,7 @@
+//! Layer file reader.
+//!
+//! [`Reader`] is the top-level interface for reading layer files.
+
 use std::{
     cmp::Ordering,
     fmt::{Debug, Formatter, Result as FmtResult},
@@ -10,19 +14,108 @@ use std::{
 };
 
 use binrw::{
-    io::{self, Seek, SeekFrom},
-    BinRead,
+    io::{self, Error as IoError, Seek, SeekFrom},
+    BinRead, Error as BinError,
 };
 use crc32c::crc32c;
 use rkyv::{archived_value, AlignedVec, Deserialize, Infallible};
 use tempfile::tempfile;
+use thiserror::Error as ThisError;
 
 use crate::file::Item;
 
 use super::{
-    ArchivedItem, BlockLocation, CorruptionError, DataBlockHeader, Error, FileHeader, FileTrailer,
-    FileTrailerColumn, IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER,
+    ArchivedItem, BlockLocation, DataBlockHeader, FileHeader, FileTrailer, FileTrailerColumn,
+    IndexBlockHeader, NodeType, Rkyv, Varint, VERSION_NUMBER,
 };
+
+/// Any kind of error encountered reading a layer file.
+#[derive(ThisError, Debug)]
+pub enum Error {
+    /// Errors that indicate a problem with the layer file contents.
+    #[error("Corrupt layer file: {0}")]
+    Corruption(#[from] CorruptionError),
+
+    /// Errors reading the layer file.
+    #[error("I/O error: {0}")]
+    Io(#[from] IoError),
+
+    #[error("File has {actual} column(s) but should have {expected}.")]
+    WrongNumberOfColumns { actual: usize, expected: usize },
+}
+
+impl From<BinError> for Error {
+    fn from(source: BinError) -> Self {
+        Error::Corruption(source.into())
+    }
+}
+
+/// Errors that indicate a problem with the layer file contents.
+#[derive(ThisError, Debug)]
+pub enum CorruptionError {
+    #[error("File size {0} must be a positive multiple of 4096")]
+    InvalidFileSize(u64),
+
+    #[error("{size}-byte block at offset {offset} has invalid checksum {checksum:#x} (expected {computed_checksum:#})")]
+    InvalidChecksum {
+        offset: u64,
+        size: usize,
+        checksum: u32,
+        computed_checksum: u32,
+    },
+
+    #[error("File has invalid version {version} (expected {expected_version})")]
+    InvalidVersion { version: u32, expected_version: u32 },
+
+    #[error("Binary read/write error: {0}")]
+    Binrw(#[from] BinError),
+
+    #[error("{count}-element array of {each}-byte elements starting at offset {offset} within block overflows {block_size}-byte block")]
+    InvalidArray {
+        block_size: usize,
+        offset: usize,
+        count: usize,
+        each: usize,
+    },
+
+    #[error("{count} strides of {stride} bytes each starting at offset {start} overflows {block_size}-byte block")]
+    InvalidStride {
+        block_size: usize,
+        start: usize,
+        stride: usize,
+        count: usize,
+    },
+
+    #[error("Index nesting depth {0} exceeds maximum.")]
+    TooDeep(usize),
+
+    #[error("File has no columns.")]
+    NoColumns,
+
+    #[error("{size}-byte index block at offset {offset} is empty")]
+    EmptyIndex { offset: u64, size: usize },
+
+    #[error("{size}-byte data block at offset {offset} is empty")]
+    EmptyData { offset: u64, size: usize },
+
+    #[error("Column {0} is empty even though column 0 was not empty")]
+    UnexpectedlyEmptyColumn(usize),
+
+    #[error("Unexpectedly missing row {0} in column 1 (or later)")]
+    MissingRow(u64),
+
+    #[error("{index_size}-byte index block at offset {index_offset} has child pointer {index} with invalid offset {child_offset} or size {child_size}.")]
+    InvalidChildPointer {
+        index_offset: u64,
+        index_size: usize,
+        index: usize,
+        child_offset: u64,
+        child_size: usize,
+    },
+
+    #[error("File trailer column specification has invalid index offset {index_offset} or size {index_size}.")]
+    InvalidIndexRoot { index_offset: u64, index_size: u32 },
+}
 
 #[derive(Clone)]
 struct VarintReader {
@@ -180,7 +273,8 @@ where
         let raw = read_block(file, node.location)?;
         let header = DataBlockHeader::read_le(&mut io::Cursor::new(&raw))?;
         if header.n_values == 0 {
-            return Err(CorruptionError::EmptyData(node.location).into());
+            let BlockLocation { size, offset } = node.location;
+            return Err(CorruptionError::EmptyData { size, offset }.into());
         }
         Ok(Self {
             value_map: ValueMapReader::new(
@@ -324,7 +418,7 @@ where
                 }
             }
             Self::Index(index_block) => {
-                if let Some(child_node) = index_block.get_child_by_row(row) {
+                if let Some(child_node) = index_block.get_child_by_row(row)? {
                     return Ok(Some(child_node));
                 }
             }
@@ -334,6 +428,7 @@ where
 }
 
 struct IndexBlock<K> {
+    location: BlockLocation,
     raw: Rc<AlignedVec>,
     child_type: NodeType,
     bounds: VarintReader,
@@ -347,6 +442,7 @@ struct IndexBlock<K> {
 impl<K> Clone for IndexBlock<K> {
     fn clone(&self) -> Self {
         Self {
+            location: self.location,
             raw: self.raw.clone(),
             child_type: self.child_type,
             bounds: self.bounds.clone(),
@@ -374,10 +470,12 @@ where
         let raw = read_block(file, node.location)?;
         let header = IndexBlockHeader::read_le(&mut io::Cursor::new(&raw))?;
         if header.n_children == 0 {
-            return Err(CorruptionError::EmptyIndex(node.location).into());
+            let BlockLocation { size, offset } = node.location;
+            return Err(CorruptionError::EmptyIndex { size, offset }.into());
         }
 
         Ok(Self {
+            location: node.location,
             child_type: header.child_type,
             bounds: VarintReader::new(
                 &raw,
@@ -404,18 +502,30 @@ where
         })
     }
 
-    fn get_child(&self, index: usize) -> TreeNode {
-        TreeNode {
-            location: self.child_pointers.get(&self.raw, index).into(),
+    fn get_child(&self, index: usize) -> Result<TreeNode, Error> {
+        Ok(TreeNode {
+            location: match self.child_pointers.get(&self.raw, index).try_into() {
+                Ok(location) => location,
+                Err(error) => {
+                    return Err(Error::Corruption(CorruptionError::InvalidChildPointer {
+                        index_offset: self.location.offset,
+                        index_size: self.location.size,
+                        index,
+                        child_offset: error.offset,
+                        child_size: error.size,
+                    }))
+                }
+            },
             node_type: self.child_type,
             depth: self.depth + 1,
             first_row: self.get_rows(index).start,
-        }
+        })
     }
 
-    fn get_child_by_row(&self, row: u64) -> Option<TreeNode> {
+    fn get_child_by_row(&self, row: u64) -> Result<Option<TreeNode>, Error> {
         self.find_row(row)
             .map(|child_idx| self.get_child(child_idx))
+            .transpose()
     }
 
     fn get_rows(&self, index: usize) -> Range<u64> {
@@ -538,9 +648,23 @@ struct Column {
 
 impl Column {
     fn new(info: &FileTrailerColumn) -> Result<Self, Error> {
-        let root = if info.n_rows != 0 {
+        let FileTrailerColumn {
+            index_offset,
+            index_size,
+            n_rows,
+        } = *info;
+        let root = if n_rows != 0 {
+            let location = match BlockLocation::new(index_offset, index_size as usize) {
+                Ok(location) => location,
+                Err(_) => {
+                    return Err(Error::Corruption(CorruptionError::InvalidIndexRoot {
+                        index_offset,
+                        index_size,
+                    }))
+                }
+            };
             Some(TreeNode {
-                location: BlockLocation::new(info.index_offset, info.index_size as usize)?,
+                location,
                 node_type: NodeType::Index,
                 depth: 0,
                 first_row: 0,
@@ -548,10 +672,7 @@ impl Column {
         } else {
             None
         };
-        Ok(Self {
-            root,
-            n_rows: info.n_rows,
-        })
+        Ok(Self { root, n_rows })
     }
     fn empty() -> Self {
         Self {
@@ -578,8 +699,10 @@ fn read_block(file: &File, location: BlockLocation) -> Result<AlignedVec, Error>
     let computed_checksum = crc32c(&block[4..]);
     let checksum = u32::from_le_bytes(block[..4].try_into().unwrap());
     if checksum != computed_checksum {
+        let BlockLocation { size, offset } = location;
         return Err(CorruptionError::InvalidChecksum {
-            location,
+            size,
+            offset,
             checksum,
             computed_checksum,
         }
@@ -632,6 +755,9 @@ where
 }
 
 /// Layer file reader.
+///
+/// `T` in `Reader<T>` must be a [`ColumnSpec`] that specifies the key and
+/// auxiliary data types for all of the columns in the file to be read.
 #[derive(Clone)]
 pub struct Reader<T>(Arc<ReaderInner<T>>);
 
@@ -639,6 +765,7 @@ impl<T> Reader<T>
 where
     T: ColumnSpec,
 {
+    /// Creates and returns a new `Reader` for `file`.
     pub fn new(mut file: File) -> Result<Self, Error> {
         let file_size = file.seek(SeekFrom::End(0))?;
         if file_size == 0 || file_size % 4096 != 0 {
@@ -739,6 +866,7 @@ fn is_same_file(file1: &File, file2: &File) -> Option<bool> {
     }
 }
 
+/// A sorted, indexed group of unique rows.
 #[derive(Clone)]
 pub struct RowGroup<'a, K, A, N, T>
 where
@@ -1085,7 +1213,7 @@ where
             });
         }
         for (idx, index_block) in hint.indexes.iter().enumerate().rev() {
-            if let Some(node) = index_block.get_child_by_row(row) {
+            if let Some(node) = index_block.get_child_by_row(row)? {
                 return Self::for_row_from_ancestor(
                     reader,
                     hint.indexes[0..=idx].iter().cloned().collect(),
@@ -1134,20 +1262,17 @@ where
                     else {
                         return Ok(None);
                     };
-                    node = index_block.get_child(child_idx);
+                    node = index_block.get_child(child_idx)?;
                     indexes.push(index_block);
                 }
                 TreeBlock::Data(data_block) => {
-                    let Some(child_idx) =
-                        data_block.find_best_match(&row_group.rows, compare, bias)
-                    else {
-                        return Ok(None);
-                    };
-                    return Ok(Some(Self {
-                        row: data_block.first_row + child_idx as u64,
-                        indexes,
-                        data: data_block,
-                    }));
+                    return Ok(data_block
+                        .find_best_match(&row_group.rows, compare, bias)
+                        .map(|child_idx| Self {
+                            row: data_block.first_row + child_idx as u64,
+                            indexes,
+                            data: data_block,
+                        }))
                 }
             }
         }

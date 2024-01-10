@@ -67,6 +67,8 @@ impl VarintWriter {
 }
 
 /// Configuration parameters for writing a layer file.
+///
+/// The default parameters should usually be good enough.
 pub struct Parameters {
     /// Minimum size of a data block, in bytes.  Must be a power of 2 and at
     /// least 4096.
@@ -103,7 +105,7 @@ pub struct Parameters {
     /// values, because our 4-kB (or larger) minimum data and index block size
     /// means that the minimum branching factor will be high.  For example, over
     /// 100 32-byte values fit in a 4-kB block, even considering overhead.
-    /// 
+    ///
     /// The branching factor is more important for large values.  Suppose only
     /// a single value fits into a data block.  The index block that refers to
     /// it reproduces the first value in each data block, which in turn makes
@@ -887,6 +889,26 @@ where
     }
 }
 
+/// 1-column layer file writer.
+///
+/// `Writer1<W, K0, A0>` writes a new 1-column layer file in which column 0 has
+/// key and auxiliary data types `(K0, A0)`.
+///
+/// # Example
+///
+/// The following code writes 1000 rows in column 0 with values `(0, ())`
+/// through `(999, ())`.
+///
+/// ```
+/// # use feldera_storage::file::writer::{Parameters, Writer1};
+/// # use std::fs::File;
+/// let mut file = File::create("file.layer").unwrap();
+/// let mut file = Writer1::new(file, Parameters::default()).unwrap();
+/// for i in 0..1000_u32 {
+///     file.write0((&i, &())).unwrap();
+/// }
+/// file.close().unwrap();
+/// ```
 pub struct Writer1<W, K0, A0>
 where
     W: Write + Seek,
@@ -903,24 +925,62 @@ where
     K0: Rkyv,
     A0: Rkyv,
 {
+    /// Creates a new writer with the given parameters.
     pub fn new(writer: W, parameters: Parameters) -> IoResult<Self> {
         Ok(Self {
             inner: Writer::new(writer, parameters, 1)?,
             _phantom: PhantomData,
         })
     }
-    pub fn write(&mut self, item: (&K0, &A0)) -> IoResult<()> {
+    /// Writes `item` to column 0.  `item.0` must be greater than passed in the
+    /// previous call to this function (if any).
+    pub fn write0(&mut self, item: (&K0, &A0)) -> IoResult<()> {
         self.inner.write(0, item)
     }
+
+    /// Returns the number of calls to [`write0`](Self::write0) so far.
     pub fn n_rows(&self) -> u64 {
         self.inner.n_rows()
     }
+
+    /// Finishes writing the layer file and returns the writer passed to
+    /// [`new`](Self::new).
     pub fn close(mut self) -> IoResult<W> {
         self.inner.finish_column::<K0, A0>(0)?;
         self.inner.close()
     }
 }
 
+/// 2-column layer file writer.
+///
+/// `Writer2<W, K0, A0, K1, A1>` writes a new 2-column layer file in which
+/// column 0 has key and auxiliary data types `(K0, A0)` and column 1 has `(K1,
+/// A1)`.
+///
+/// Each row in column 0 must be associated with a group of one or more rows in
+/// column 1.  To form the association, first write the rows to column 1 using
+/// [`write1`](Self::write1) then the row to column 0 with
+/// [`write0`](Self::write0).
+///
+/// # Example
+///
+/// The following code writes 1000 rows in column 0 with values `(0, ())`
+/// through `(999, ())`, each associated with 10 rows in column 1 with values
+/// `(0, ())` through `(9, ())`.
+///
+/// ```
+/// # use feldera_storage::file::writer::{Parameters, Writer2};
+/// # use std::fs::File;
+/// let mut file = File::create("file.layer").unwrap();
+/// let mut file = Writer2::new(file, Parameters::default()).unwrap();
+/// for i in 0..1000_u32 {
+///     for j in 0..10_u32 {
+///         file.write1((&j, &())).unwrap();
+///     }
+///     file.write0((&i, &())).unwrap();
+/// }
+/// file.close().unwrap();
+/// ```
 pub struct Writer2<W, K0, A0, K1, A1>
 where
     W: Write + Seek,
@@ -941,21 +1001,40 @@ where
     K1: Rkyv,
     A1: Rkyv,
 {
+    /// Creates a new writer with the given parameters.
     pub fn new(writer: W, parameters: Parameters) -> IoResult<Self> {
         Ok(Self {
             inner: Writer::new(writer, parameters, 2)?,
             _phantom: PhantomData,
         })
     }
+    /// Writes `item` to column 0.  All of the items previously written to
+    /// column 1 since the last call to this function (if any) become the row
+    /// group associated with `item`.  There must be at least one such item.
+    ///
+    /// `item.0` must be greater than passed in the previous call to this
+    /// function (if any).
     pub fn write0(&mut self, item: (&K0, &A0)) -> IoResult<()> {
         self.inner.write(0, item)
     }
+
+    /// Writes `item` to column 1.  `item.0` must be greater than passed in the
+    /// previous call to this function (if any) since the last call to
+    /// [`write0`](Self::write0) (if any).
     pub fn write1(&mut self, item: (&K1, &A1)) -> IoResult<()> {
         self.inner.write(1, item)
     }
+
+    /// Returns the number of calls to [`write0`](Self::write0) so far.
     pub fn n_rows(&self) -> u64 {
         self.inner.n_rows()
     }
+
+    /// Finishes writing the layer file and returns the writer passed to
+    /// [`new`](Self::new).
+    ///
+    /// This function will panic if [`write1`](Self::write1) has been called
+    /// without a subsequent call to [`write0`](Self::write0).
     pub fn close(mut self) -> IoResult<W> {
         self.inner.finish_column::<K0, A0>(0)?;
         self.inner.finish_column::<K1, A1>(1)?;
@@ -974,7 +1053,7 @@ mod test {
         let mut layer_file =
             Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000i64 {
-            layer_file.write((&i, &())).unwrap();
+            layer_file.write0((&i, &())).unwrap();
         }
         layer_file.close().unwrap();
     }
@@ -983,12 +1062,12 @@ mod test {
     fn write_tuple() {
         let mut layer_file =
             Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
-        layer_file.write((&(1i32, 'a'), &2i32)).unwrap();
-        layer_file.write((&(3, 'b'), &4)).unwrap();
-        layer_file.write((&(5, 'a'), &6)).unwrap();
-        layer_file.write((&(7, 'c'), &8)).unwrap();
-        layer_file.write((&(9, 'a'), &10)).unwrap();
-        layer_file.write((&(11, 'b'), &12)).unwrap();
+        layer_file.write0((&(1i32, 'a'), &2i32)).unwrap();
+        layer_file.write0((&(3, 'b'), &4)).unwrap();
+        layer_file.write0((&(5, 'a'), &6)).unwrap();
+        layer_file.write0((&(7, 'c'), &8)).unwrap();
+        layer_file.write0((&(9, 'a'), &10)).unwrap();
+        layer_file.write0((&(11, 'b'), &12)).unwrap();
         layer_file.close().unwrap();
     }
 
@@ -997,7 +1076,7 @@ mod test {
         let mut layer_file =
             Writer1::new(File::create("file.layer").unwrap(), Parameters::default()).unwrap();
         for i in 0..1000 {
-            layer_file.write((&format!("{i:04}"), &())).unwrap();
+            layer_file.write0((&format!("{i:04}"), &())).unwrap();
         }
         layer_file.close().unwrap();
     }
