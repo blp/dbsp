@@ -43,7 +43,7 @@ where
 
     pub fn empty() -> Self {
         Self {
-            file: Reader::empty(1).unwrap(),
+            file: Reader::empty().unwrap(),
             lower_bound: 0,
         }
     }

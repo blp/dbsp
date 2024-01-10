@@ -736,10 +736,11 @@ fn check_version_number(version: u32) -> Result<(), Error> {
 ///
 /// * For three columns, `T` is `(K1, A1, (K2, A2, (K3, A3, ())))`.
 pub trait ColumnSpec {
-    fn count() -> usize;
+    /// Returns the number of columns in this `ColumnSpec`.
+    fn n_columns() -> usize;
 }
 impl ColumnSpec for () {
-    fn count() -> usize {
+    fn n_columns() -> usize {
         0
     }
 }
@@ -749,8 +750,8 @@ where
     A: Rkyv,
     N: ColumnSpec,
 {
-    fn count() -> usize {
-        1 + N::count()
+    fn n_columns() -> usize {
+        1 + N::n_columns()
     }
 }
 
@@ -791,10 +792,10 @@ where
         if columns.is_empty() {
             return Err(CorruptionError::NoColumns.into());
         }
-        if columns.len() != T::count() {
+        if columns.len() != T::n_columns() {
             return Err(Error::WrongNumberOfColumns {
                 actual: columns.len(),
-                expected: T::count(),
+                expected: T::n_columns(),
             });
         }
         if columns[0].n_rows > 0 {
@@ -812,10 +813,14 @@ where
         })))
     }
 
-    pub fn empty(n_columns: usize) -> Result<Self, Error> {
+    /// Create and returns a new `Reader` that has no rows.
+    ///
+    /// This internally creates an empty temporary file, which means that it can
+    /// fail with an I/O error.
+    pub fn empty() -> Result<Self, Error> {
         Ok(Self(Arc::new(ReaderInner {
             file: tempfile()?,
-            columns: (0..n_columns).map(|_| Column::empty()).collect(),
+            columns: (0..T::n_columns()).map(|_| Column::empty()).collect(),
             _phantom: PhantomData,
         })))
     }
