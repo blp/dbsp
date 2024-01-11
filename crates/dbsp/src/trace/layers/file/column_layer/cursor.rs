@@ -92,7 +92,7 @@ where
     type ValueCursor = ();
 
     fn keys(&self) -> usize {
-        self.cursor.n_rows() as usize
+        self.cursor.len() as usize
     }
 
     fn item(&self) -> Self::Item<'_> {

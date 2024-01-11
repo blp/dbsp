@@ -2,7 +2,7 @@ mod consumer;
 
 pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
-    reader::{Cursor as FileCursor, Reader},
+    reader::{Cursor as FileCursor, Reader, FallibleEq},
     writer::{Parameters, Writer2},
 };
 use rand::{seq::index::sample, Rng};
@@ -158,39 +158,7 @@ where
     R: DBWeight,
 {
     fn eq(&self, other: &Self) -> bool {
-        if self.keys() != other.keys() {
-            println!("{}:{}", file!(), line!());
-            false
-        } else if let Some(true) = self.file.equal(&other.file) {
-            println!("{}:{}", file!(), line!());
-            self.lower_bound != other.lower_bound
-        } else {
-            let mut cursor1 = self.cursor();
-            let mut cursor2 = other.cursor();
-            while cursor1.valid() {
-                let (key1, mut values1) = cursor1.take_current_key_and_values().unwrap();
-                let (key2, mut values2) = cursor2.take_current_key_and_values().unwrap();
-                if key1 != key2 || values1.remaining_rows() != values2.remaining_rows() {
-                    println!("{}:{}", file!(), line!());
-                    return false;
-                }
-                while values1.valid() {
-                    let (value1, diff1) = values1.take_current_item().unwrap();
-                    let (value2, diff2) = values2.take_current_item().unwrap();
-                    if value1 != value2 || diff1 != diff2 {
-                        println!(
-                            "{}:{} ({value1:?}, {value2:?}) ({diff1:?}, {diff2:?})",
-                            file!(),
-                            line!()
-                        );
-                        return false;
-                    }
-                }
-                debug_assert!(!values2.valid());
-            }
-            debug_assert!(!cursor2.valid());
-            true
-        }
+        self.file.equals(&other.file).unwrap()
     }
 }
 
@@ -619,7 +587,7 @@ where
     type ValueCursor = FileOrderedValueCursor<'s, K, V, R>;
 
     fn keys(&self) -> usize {
-        self.cursor.n_rows() as usize
+        self.cursor.len() as usize
     }
 
     fn item<'a>(&'a self) -> Self::Item<'a> {
@@ -693,7 +661,7 @@ where
     R: DBWeight,
 {
     pub fn new(cursor: &FileCursor<'s, K, (), (V, R, ()), (K, (), (V, R, ()))>) -> Self {
-        let cursor = cursor.next_column().first().unwrap();
+        let cursor = cursor.next_column().unwrap().first().unwrap();
         let item = unsafe { cursor.item() };
         Self { cursor, item }
     }
@@ -756,7 +724,7 @@ where
     type ValueCursor = ();
 
     fn keys(&self) -> usize {
-        self.cursor.n_rows() as usize
+        self.cursor.len() as usize
     }
 
     fn item<'a>(&'a self) -> Self::Item<'a> {

@@ -67,6 +67,8 @@
 //! permitted to provide a way to summarize data for comparisons.  The need for
 //! this improvement is not yet clear, so it is not yet implemented.
 
+#![warn(missing_docs)]
+
 use binrw::{binrw, BinRead, BinResult, BinWrite, Error as BinError};
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
@@ -298,6 +300,7 @@ impl<T> Rkyv for T where T: Archive + for<'a> Serialize<Serializer<'a>> + Deseri
 
 /// Trait for data that can be deserialized with [`rkyv`].
 pub trait Deserializable: Archive<Archived = Self::ArchivedDeser> + Sized {
+    /// Deserialized type.
     type ArchivedDeser: Deserialize<Self, Deserializer>;
 }
 impl<T: Archive> Deserializable for T

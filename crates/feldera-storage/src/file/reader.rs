@@ -3,7 +3,7 @@
 //! [`Reader`] is the top-level interface for reading layer files.
 
 use std::{
-    cmp::Ordering,
+    cmp::Ordering::{self, *},
     fmt::{Debug, Formatter, Result as FmtResult},
     fs::File,
     marker::PhantomData,
@@ -40,6 +40,7 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] IoError),
 
+    #[allow(missing_docs)]
     #[error("File has {actual} column(s) but should have {expected}.")]
     WrongNumberOfColumns { actual: usize, expected: usize },
 }
@@ -51,6 +52,7 @@ impl From<BinError> for Error {
 }
 
 /// Errors that indicate a problem with the layer file contents.
+#[allow(missing_docs)]
 #[derive(ThisError, Debug)]
 pub enum CorruptionError {
     #[error("File size {0} must be a positive multiple of 4096")]
@@ -95,8 +97,21 @@ pub enum CorruptionError {
     #[error("{size}-byte index block at offset {offset} is empty")]
     EmptyIndex { offset: u64, size: usize },
 
-    #[error("{size}-byte data block at offset {offset} is empty")]
-    EmptyData { offset: u64, size: usize },
+    #[error("{size}-byte index or data block at offset {offset} contains {n_rows} rows but {expected_rows} were expected.")]
+    WrongNumberOfRows {
+        offset: u64,
+        size: usize,
+        n_rows: u64,
+        expected_rows: u64,
+    },
+
+    #[error("{size}-byte index block at offset {offset} has nonmonotonic row totals ({prev} then {next}).")]
+    NonmonotonicIndex {
+        offset: u64,
+        size: usize,
+        prev: u64,
+        next: u64,
+    },
 
     #[error("Column {0} is empty even though column 0 was not empty")]
     UnexpectedlyEmptyColumn(usize),
@@ -115,6 +130,15 @@ pub enum CorruptionError {
 
     #[error("File trailer column specification has invalid index offset {index_offset} or size {index_size}.")]
     InvalidIndexRoot { index_offset: u64, index_size: u32 },
+
+    #[error("Row group {index} in {size}-byte data block at offset {offset} has invalid row range {start}..{end}.")]
+    InvalidRowGroup {
+        offset: u64,
+        size: usize,
+        index: usize,
+        start: u64,
+        end: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -244,6 +268,7 @@ impl ValueMapReader {
 }
 
 struct DataBlock<K, A> {
+    location: BlockLocation,
     raw: Rc<AlignedVec>,
     value_map: ValueMapReader,
     row_groups: Option<VarintReader>,
@@ -254,6 +279,7 @@ struct DataBlock<K, A> {
 impl<K, A> Clone for DataBlock<K, A> {
     fn clone(&self) -> Self {
         Self {
+            location: self.location,
             raw: self.raw.clone(),
             value_map: self.value_map.clone(),
             row_groups: self.row_groups.clone(),
@@ -272,11 +298,19 @@ where
         // XXX return error if there's no row_groups and this isn't the last column
         let raw = read_block(file, node.location)?;
         let header = DataBlockHeader::read_le(&mut io::Cursor::new(&raw))?;
-        if header.n_values == 0 {
+        let expected_rows = node.rows.end - node.rows.start;
+        if header.n_values as u64 != expected_rows {
             let BlockLocation { size, offset } = node.location;
-            return Err(CorruptionError::EmptyData { size, offset }.into());
+            return Err(CorruptionError::WrongNumberOfRows {
+                offset,
+                size,
+                n_rows: header.n_values as u64,
+                expected_rows,
+            }
+            .into());
         }
         Ok(Self {
+            location: node.location,
             value_map: ValueMapReader::new(
                 &raw,
                 header.value_map_varint,
@@ -290,7 +324,7 @@ where
                 header.n_values as usize + 1,
             )?,
             raw: Rc::new(raw),
-            first_row: node.first_row,
+            first_row: node.rows.start,
             _phantom: PhantomData,
         })
     }
@@ -300,11 +334,23 @@ where
     fn rows(&self) -> Range<u64> {
         self.first_row..(self.first_row + self.n_values() as u64)
     }
-    fn get_row_group(&self, row: u64) -> Option<Range<u64>> {
-        self.row_groups.as_ref().map(|row_groups| {
-            let index = (row - self.first_row) as usize;
-            row_groups.get(&self.raw, index)..row_groups.get(&self.raw, index + 1)
-        })
+    fn row_group(&self, row: u64) -> Result<Range<u64>, Error> {
+        let row_groups = self.row_groups.as_ref().unwrap();
+        let index = (row - self.first_row) as usize;
+        let start = row_groups.get(&self.raw, index);
+        let end = row_groups.get(&self.raw, index + 1);
+        if start < end {
+            Ok(start..end)
+        } else {
+            Err(CorruptionError::InvalidRowGroup {
+                offset: self.location.offset,
+                size: self.location.size,
+                index,
+                start,
+                end,
+            }
+            .into())
+        }
     }
     unsafe fn archived_item(&self, index: usize) -> &ArchivedItem<K, A> {
         archived_value::<Item<K, A>>(&self.raw, self.value_map.get(&self.raw, index))
@@ -346,20 +392,20 @@ where
             let row = self.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
-                Ordering::Equal => {
+                Equal => {
                     let key = self.key(mid);
                     let cmp = compare(&key);
                     match cmp {
-                        Ordering::Less => end = mid,
-                        Ordering::Equal => return Some(mid),
-                        Ordering::Greater => start = mid + 1,
+                        Less => end = mid,
+                        Equal => return Some(mid),
+                        Greater => start = mid + 1,
                     };
                     if cmp == bias {
                         best = Some(mid);
                     }
                 }
-                Ordering::Less => end = mid,
-                Ordering::Greater => start = mid + 1,
+                Less => end = mid,
+                Greater => start = mid + 1,
             };
         }
         best
@@ -371,20 +417,20 @@ where
     T: Ord,
 {
     if target < range.start {
-        Ordering::Greater
+        Greater
     } else if target >= range.end {
-        Ordering::Less
+        Less
     } else {
-        Ordering::Equal
+        Equal
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct TreeNode {
     location: BlockLocation,
     node_type: NodeType,
     depth: usize,
-    first_row: u64,
+    rows: Range<u64>,
 }
 
 impl TreeNode {
@@ -469,9 +515,41 @@ where
 
         let raw = read_block(file, node.location)?;
         let header = IndexBlockHeader::read_le(&mut io::Cursor::new(&raw))?;
+        let BlockLocation { size, offset } = node.location;
         if header.n_children == 0 {
-            let BlockLocation { size, offset } = node.location;
             return Err(CorruptionError::EmptyIndex { size, offset }.into());
+        }
+
+        let row_totals = VarintReader::new(
+            &raw,
+            header.row_total_varint,
+            header.row_totals_offset as usize,
+            header.n_children as usize,
+        )?;
+        for i in 1..header.n_children as usize {
+            let prev = row_totals.get(&raw, i - 1);
+            let next = row_totals.get(&raw, i);
+            if prev >= next {
+                return Err(CorruptionError::NonmonotonicIndex {
+                    size,
+                    offset,
+                    prev,
+                    next,
+                }
+                .into());
+            }
+        }
+
+        let expected_rows = node.rows.end - node.rows.start;
+        let n_rows = row_totals.get(&raw, header.n_children as usize - 1);
+        if n_rows != expected_rows {
+            return Err(CorruptionError::WrongNumberOfRows {
+                offset,
+                size,
+                n_rows,
+                expected_rows,
+            }
+            .into());
         }
 
         Ok(Self {
@@ -483,12 +561,7 @@ where
                 header.bound_map_offset as usize,
                 header.n_children as usize * 2,
             )?,
-            row_totals: VarintReader::new(
-                &raw,
-                header.row_total_varint,
-                header.row_totals_offset as usize,
-                header.n_children as usize,
-            )?,
+            row_totals,
             child_pointers: VarintReader::new(
                 &raw,
                 header.child_pointer_varint,
@@ -497,7 +570,7 @@ where
             )?,
             raw: Rc::new(raw),
             depth: node.depth,
-            first_row: node.first_row,
+            first_row: node.rows.start,
             _phantom: PhantomData,
         })
     }
@@ -518,7 +591,7 @@ where
             },
             node_type: self.child_type,
             depth: self.depth + 1,
-            first_row: self.get_rows(index).start,
+            rows: self.get_rows(index),
         })
     }
 
@@ -586,17 +659,17 @@ where
             let mid = (start + end) / 2;
             let row = self.get_row_bound(mid);
             let cmp = match range_compare(target_rows, row) {
-                Ordering::Equal => {
+                Equal => {
                     let bound = self.get_bound(mid);
                     let cmp = compare(&bound);
-                    if cmp == Ordering::Equal {
+                    if cmp == Equal {
                         return Some(mid / 2);
                     }
                     cmp
                 }
                 cmp => cmp,
             };
-            if cmp == Ordering::Less {
+            if cmp == Less {
                 end = mid
             } else {
                 start = mid + 1
@@ -667,7 +740,7 @@ impl Column {
                 location,
                 node_type: NodeType::Index,
                 depth: 0,
-                first_row: 0,
+                rows: 0..n_rows,
             })
         } else {
             None
@@ -825,26 +898,19 @@ where
         })))
     }
 
-    pub fn equal(&self, other: &Self) -> Option<bool> {
-        if Arc::ptr_eq(&self.0, &other.0) {
-            // Definitely the same.
-            Some(true)
-        } else if self.0.columns.len() != other.0.columns.len() {
-            // Definitely different.
-            Some(false)
-        } else if let Some(true) = is_same_file(&self.0.file, &other.0.file) {
-            // Definitely the same.
-            Some(true)
-        } else {
-            // Who knows?
-            None
-        }
-    }
-
+    /// The number of columns in the layer file.
+    ///
+    /// This is a fixed value for any given `Reader`.
     pub fn n_columns(&self) -> usize {
-        self.0.columns.len()
+        T::n_columns()
     }
 
+    /// The number of rows in the given `column`.
+    ///
+    /// For column 0, this is the number of rows that may be visited with
+    /// [`rows`](Self::rows).  In other columns, it is the number of rows that
+    /// may be visited in total by calling `next_column()` on each of the rows
+    /// in the previous column.
     pub fn n_rows(&self, column: usize) -> u64 {
         self.0.columns[column].n_rows
     }
@@ -856,23 +922,22 @@ where
     A: Rkyv,
     (K, A, N): ColumnSpec,
 {
+    /// Returns a [`RowGroup`] for all of the rows in column 0.
     pub fn rows(&self) -> RowGroup<K, A, N, (K, A, N)> {
         RowGroup::new(self, 0, 0..self.0.columns[0].n_rows)
     }
 }
 
-fn is_same_file(file1: &File, file2: &File) -> Option<bool> {
-    #[cfg(unix)]
-    if let (Ok(md1), Ok(md2)) = (file1.metadata(), file2.metadata()) {
-        use std::os::unix::fs::MetadataExt;
-        Some(md1.dev() == md2.dev() && md1.ino() == md2.ino())
-    } else {
-        None
-    }
-}
-
-/// A sorted, indexed group of unique rows.
-#[derive(Clone)]
+/// A sorted, indexed group of unique rows in a [`Reader`].
+///
+/// Column 0 in a layer file has a single [`RowGroup`] that includes all of the
+/// rows in column 0.  This row group, obtained with [`Reader::rows`], is empty
+/// if the layer file is empty.
+///
+/// Row groups for other columns are obtained by first obtaining a [`Cursor`]
+/// for a row in column 0 and calling [`Cursor::next_column`] to get its row
+/// group in column 1, and then repeating as many times as necessary to get to
+/// the desired column.
 pub struct RowGroup<'a, K, A, N, T>
 where
     K: Rkyv,
@@ -883,6 +948,22 @@ where
     column: usize,
     rows: Range<u64>,
     _phantom: PhantomData<(K, A, N)>,
+}
+
+impl<'a, K, A, N, T> Clone for RowGroup<'a, K, A, N, T>
+where
+    K: Rkyv,
+    A: Rkyv,
+    T: ColumnSpec,
+{
+    fn clone(&self) -> Self {
+        Self {
+            reader: self.reader,
+            column: self.column,
+            rows: self.rows.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<'a, K, A, N, T> Debug for RowGroup<'a, K, A, N, T>
@@ -911,22 +992,32 @@ where
         }
     }
 
+    /// Returns `true` if the row group contains no rows.
+    ///
+    /// The row group for column 0 is empty if and only if the layer file is
+    /// empty.  A row group obtained from [`Cursor::next_column`] is never
+    /// empty.
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
+    /// Returns the number of rows in the row group.
     pub fn len(&self) -> u64 {
         self.rows.end - self.rows.start
     }
 
+    /// Returns a cursor for just before the row group.
     pub fn before(self) -> Cursor<'a, K, A, N, T> {
         Cursor::<K, A, N, T>::new(self, Position::Before)
     }
 
+    /// Return a cursor for just after the row group.
     pub fn after(self) -> Cursor<'a, K, A, N, T> {
         Cursor::<K, A, N, T>::new(self, Position::After)
     }
 
+    /// Return a cursor for the first row in the row group, or just after the
+    /// row group if it is empty.
     pub fn first(self) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if self.is_empty() {
             Position::After
@@ -936,6 +1027,8 @@ where
         Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
+    /// Return a cursor for the last row in the row group, or just after the
+    /// row group if it is empty.
     pub fn last(self) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if self.is_empty() {
             Position::After
@@ -945,6 +1038,9 @@ where
         Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
+    /// If `row` is less than the number of rows in the row group, returns a
+    /// cursor for that row; otherwise, returns a cursor for just after the row
+    /// group.
     pub fn nth(self, row: u64) -> Result<Cursor<'a, K, A, N, T>, Error> {
         let position = if row < self.len() {
             Position::for_row(&self, self.rows.start + row)?
@@ -954,6 +1050,7 @@ where
         Ok(Cursor::<K, A, N, T>::new(self, position))
     }
 
+    /// Returns a row group for a subset of the rows in this one.
     pub fn subset(mut self, subset: Range<u64>) -> Self {
         assert!(subset.end <= self.len());
         self.rows.start += subset.start;
@@ -962,10 +1059,82 @@ where
     }
 }
 
+/// Trait for equality comparisons that might fail due to an I/O error.
+pub trait FallibleEq {
+    /// Compares `self` to `other` and returns whether they are equal, with
+    /// the possibility of failure due to an I/O error.
+    fn equals(&self, other: &Self) -> Result<bool, Error>;
+}
+
+impl<K, A, N> FallibleEq for Reader<(K, A, N)>
+where
+    K: Rkyv,
+    A: Rkyv,
+    (K, A, N): ColumnSpec,
+    for<'a> RowGroup<'a, K, A, N, (K, A, N)>: FallibleEq,
+{
+    fn equals(&self, other: &Self) -> Result<bool, Error> {
+        self.rows().equals(&other.rows())
+    }
+}
+
+impl<'a, K, A, T> FallibleEq for RowGroup<'a, K, A, (), T>
+where
+    K: Rkyv + Eq,
+    A: Rkyv + Eq,
+    T: ColumnSpec,
+{
+    fn equals(&self, other: &Self) -> Result<bool, Error> {
+        if self.len() != other.len() {
+            return Ok(false);
+        }
+        let mut sc = self.clone().first()?;
+        let mut oc = other.clone().first()?;
+        while sc.has_value() {
+            if unsafe { sc.item() != oc.item() } {
+                return Ok(false);
+            }
+            sc.move_next()?;
+            oc.move_next()?;
+        }
+        Ok(true)
+    }
+}
+
+impl<'a, K, A, NK, NA, NN, T> FallibleEq for RowGroup<'a, K, A, (NK, NA, NN), T>
+where
+    K: Rkyv + Eq,
+    A: Rkyv + Eq,
+    NK: Rkyv + Eq,
+    NA: Rkyv + Eq,
+    T: ColumnSpec,
+    RowGroup<'a, NK, NA, NN, T>: FallibleEq,
+{
+    fn equals(&self, other: &Self) -> Result<bool, Error> {
+        if self.len() != other.len() {
+            return Ok(false);
+        }
+        let mut sc = self.clone().first()?;
+        let mut oc = other.clone().first()?;
+        while sc.has_value() {
+            if unsafe { sc.item() != oc.item() } {
+                return Ok(false);
+            }
+            if !sc.next_column()?.equals(&oc.next_column()?)? {
+                return Ok(false);
+            }
+            sc.move_next()?;
+            oc.move_next()?;
+        }
+        Ok(true)
+    }
+}
+
 /// A cursor for a layer file.
 ///
-/// A cursor can be positioned on a particular value or before or after all the
-/// values.
+/// A cursor traverses a [`RowGroup`].  It can be positioned on a particular row
+/// or before or after the row group.  (If the row group is empty, then the
+/// cursor can only be before or after the row group.)
 #[derive(Clone)]
 pub struct Cursor<'a, K, A, N, T>
 where
@@ -1001,21 +1170,31 @@ where
         }
     }
 
+    /// Moves to the next row in the row group.  If the cursor was previously
+    /// before the row group, it moves to the first row; if it was on the last
+    /// row, it moves after the row group.
     pub fn move_next(&mut self) -> Result<(), Error> {
         self.position.next(&self.row_group)?;
         Ok(())
     }
 
+    /// Moves to the previous row in the row group.  If the cursor was
+    /// previously after the row group, it moves to the last row; if it was
+    /// on the first row, it moves before the row group.
     pub fn move_prev(&mut self) -> Result<(), Error> {
         self.position.prev(&self.row_group)?;
         Ok(())
     }
 
+    /// Moves to the first row in the row group.  If the row group is empty,
+    /// this has no effect.
     pub fn move_first(&mut self) -> Result<(), Error> {
         self.position
             .move_to_row(&self.row_group, self.row_group.rows.start)
     }
 
+    /// Moves to the last row in the row group.  If the row group is empty,
+    /// this has no effect.
     pub fn move_last(&mut self) -> Result<(), Error> {
         if !self.row_group.is_empty() {
             self.position
@@ -1026,6 +1205,7 @@ where
         }
     }
 
+    /// Moves to row `row`.  If `row >= self.len()`, this has no effect.
     pub fn move_to_row(&mut self, row: u64) -> Result<(), Error> {
         if row < self.row_group.rows.end - self.row_group.rows.start {
             self.position
@@ -1036,88 +1216,128 @@ where
         }
     }
 
+    /// Returns the key in the current row, or `None` if the cursor is before or
+    /// after the row group.
     pub unsafe fn key(&self) -> Option<K> {
         self.position.key()
     }
 
+    /// Returns the key and auxiliary data in the current row, or `None` if the
+    /// cursor is before or after the row group.
     pub unsafe fn item(&self) -> Option<(K, A)> {
         self.position.item()
     }
 
+    /// Returns `true` if the cursor is on a row.
     pub fn has_value(&self) -> bool {
         self.position.has_value()
     }
 
-    // Only meaningful in column 0.
-    pub const fn bounds(&self) -> &Range<u64> {
-        &self.row_group.rows
-    }
-
-    pub fn n_rows(&self) -> u64 {
+    /// Returns the number of rows in the cursor's row group.
+    pub fn len(&self) -> u64 {
         self.row_group.len()
     }
 
+    /// Returns the current row's offset from the start of the row group.  If
+    /// the cursor is before the row group or on the first row, returns 0; if
+    /// the cursor is on the last row, returns `self.len() - 1`; if the cursor
+    /// is after the row group, returns `self.len()`.
     pub fn position(&self) -> u64 {
         self.position.position(&self.row_group)
     }
 
+    /// Returns `self.len() - self.position()`.
     pub fn remaining_rows(&self) -> u64 {
         self.position.remaining_rows(&self.row_group)
     }
 
+    /// Moves the cursor forward past rows for which `predicate` returns false,
+    /// where `predicate` is a function such that if it is true for a given key,
+    /// it is also true for all larger keys.
+    ///
+    /// This function does not move the cursor if `predicate` is true for the
+    /// current row or a previous row.
     pub unsafe fn seek_forward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
     {
         self.advance_to_first_ge(&|key| {
             if predicate(key) {
-                Ordering::Less
+                Less
             } else {
-                Ordering::Greater
+                Greater
             }
         })
     }
+
+    /// Moves the cursor forward past rows whose keys are less than `target`.
+    /// This function does not move the cursor if the current row's key is
+    /// greater than or equal to `target`.
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error>
     where
         K: Ord,
     {
         self.advance_to_first_ge(&|key| target.cmp(key))
     }
+
+    /// Moves the cursor forward past rows for which `compare` returns [`Less`],
+    /// where `compare` is a function such that if it returns [`Equal`] or
+    /// [`Greater`] for a given key, it returns [`Greater`] for all larger keys.
+    ///
+    /// This function does not move the cursor if `compare` returns [`Equal`] or
+    /// [`Greater`] for the current row or a previous row.
     pub unsafe fn advance_to_first_ge<C>(&mut self, compare: &C) -> Result<(), Error>
     where
         C: Fn(&K) -> Ordering,
     {
-        let position = Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Less)?;
+        let position = Position::best_match::<N, T, _>(&self.row_group, compare, Less)?;
         if position > self.position {
             self.position = position;
         }
         Ok(())
     }
 
+    /// Moves the cursor backward past rows for which `predicate` returns false,
+    /// where `predicate` is a function such that if it is true for a given key,
+    /// it is also true for all lesser keys.
+    ///
+    /// This function does not move the cursor if `predicate` is true for the
+    /// current row or a previous row.
     pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
     {
         self.rewind_to_last_le(&|key| {
             if !predicate(key) {
-                Ordering::Less
+                Less
             } else {
-                Ordering::Greater
+                Greater
             }
         })
     }
+
+    /// Moves the cursor backward past rows whose keys are greater than
+    /// `target`.  This function does not move the cursor if the current row's
+    /// key is less than or equal to `target`.
     pub unsafe fn rewind_to_value_or_smaller(&mut self, target: &K) -> Result<(), Error>
     where
         K: Ord,
     {
         self.rewind_to_last_le(&|key| target.cmp(key))
     }
+
+    /// Moves the cursor backward past rows for which `compare` returns
+    /// [`Greater`], where `compare` is a function such that if it returns
+    /// [`Equal`] or [`Less`] for a given key, it returns [`Less`] for all
+    /// lesser keys.
+    ///
+    /// This function does not move the cursor if `compare` returns [`Equal`] or
+    /// [`Less`] for the current row or a previous row.
     pub unsafe fn rewind_to_last_le<C>(&mut self, compare: &C) -> Result<(), Error>
     where
         C: Fn(&K) -> Ordering,
     {
-        let position =
-            Position::best_match::<N, T, _>(&self.row_group, compare, Ordering::Greater)?;
+        let position = Position::best_match::<N, T, _>(&self.row_group, compare, Greater)?;
         if position < self.position {
             self.position = position;
         }
@@ -1133,12 +1353,16 @@ where
     NA: Rkyv,
     T: ColumnSpec,
 {
-    pub fn next_column<'b>(&'b self) -> RowGroup<'a, NK, NA, NN, T> {
-        RowGroup::new(
+    /// Obtains the row group in the next column associated with the current
+    /// row.  If the cursor is on a row, the returned row group will contain at
+    /// least one row.  If the cursor is before or after the row group, the
+    /// returned row group will be empty.
+    pub fn next_column<'b>(&'b self) -> Result<RowGroup<'a, NK, NA, NN, T>, Error> {
+        Ok(RowGroup::new(
             self.row_group.reader,
             self.row_group.column + 1,
-            self.position.row_group(),
-        )
+            self.position.row_group()?,
+        ))
     }
 }
 
@@ -1190,7 +1414,10 @@ where
         Self::for_row_from_ancestor(
             row_group.reader,
             Vec::new(),
-            row_group.reader.0.columns[row_group.column].root.unwrap(),
+            row_group.reader.0.columns[row_group.column]
+                .root
+                .clone()
+                .unwrap(),
             row,
         )
     }
@@ -1235,8 +1462,8 @@ where
     unsafe fn item<'a>(&'a self) -> (K, A) {
         self.data.item_for_row(self.row)
     }
-    fn get_row_group(&self) -> Range<u64> {
-        self.data.get_row_group(self.row).unwrap()
+    fn row_group(&self) -> Result<Range<u64>, Error> {
+        self.data.row_group(self.row)
     }
     fn move_to_row<T>(&mut self, reader: &Reader<T>, row: u64) -> Result<(), Error> {
         if self.data.rows().contains(&row) {
@@ -1256,7 +1483,7 @@ where
         C: Fn(&K) -> Ordering,
     {
         let mut indexes = Vec::new();
-        let Some(mut node) = row_group.reader.0.columns[row_group.column].root else {
+        let Some(mut node) = row_group.reader.0.columns[row_group.column].root.clone() else {
             return Ok(None);
         };
         loop {
@@ -1358,17 +1585,17 @@ where
 {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Self::Before, Self::Before) => Ordering::Equal,
-            (Self::Before, Self::Row(_)) => Ordering::Less,
-            (Self::Before, Self::After) => Ordering::Less,
+            (Self::Before, Self::Before) => Equal,
+            (Self::Before, Self::Row(_)) => Less,
+            (Self::Before, Self::After) => Less,
 
-            (Self::Row(_), Self::Before) => Ordering::Greater,
+            (Self::Row(_), Self::Before) => Greater,
             (Self::Row(a), Self::Row(b)) => a.cmp(b),
-            (Self::Row(_), Self::After) => Ordering::Less,
+            (Self::Row(_), Self::After) => Less,
 
-            (Self::After, Self::Before) => Ordering::Greater,
-            (Self::After, Self::Row(_)) => Ordering::Greater,
-            (Self::After, Self::After) => Ordering::Equal,
+            (Self::After, Self::Before) => Greater,
+            (Self::After, Self::Row(_)) => Greater,
+            (Self::After, Self::After) => Equal,
         }
     }
 }
@@ -1450,10 +1677,10 @@ where
     pub unsafe fn item(&self) -> Option<(K, A)> {
         self.path().map(|path| path.item())
     }
-    pub fn row_group(&self) -> Range<u64> {
+    pub fn row_group(&self) -> Result<Range<u64>, Error> {
         match self.path() {
-            Some(path) => path.get_row_group(),
-            None => 0..0,
+            Some(path) => path.row_group(),
+            None => Ok(0..0),
         }
     }
     fn has_value(&self) -> bool {
@@ -1470,7 +1697,7 @@ where
     {
         match Path::best_match(row_group, compare, bias)? {
             Some(path) => Ok(Position::Row(path)),
-            None => Ok(if bias == Ordering::Less {
+            None => Ok(if bias == Less {
                 Position::After
             } else {
                 Position::Before

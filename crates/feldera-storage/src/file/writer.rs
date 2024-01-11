@@ -840,7 +840,7 @@ where
     {
         let row_group = if column + 1 < self.n_columns() {
             let row_group = self.cws[column + 1].take_rows();
-            debug_assert!(!row_group.is_empty());
+            assert!(!row_group.is_empty());
             Some(row_group)
         } else {
             None
@@ -858,7 +858,7 @@ where
     {
         debug_assert_eq!(column, self.finished_columns.len());
         for cw in self.cws.iter().skip(1) {
-            debug_assert!(cw.rows.is_empty());
+            assert!(cw.rows.is_empty());
         }
 
         self.finished_columns

@@ -2,7 +2,7 @@ mod builders;
 mod consumer;
 pub(crate) mod cursor;
 
-use feldera_storage::file::reader::Reader;
+use feldera_storage::file::reader::{Reader, FallibleEq};
 use rand::{seq::index::sample, Rng};
 use rkyv::ser::Serializer;
 use rkyv::{Archive, Archived, Deserialize, Fallible, Serialize};
@@ -15,7 +15,7 @@ use std::{
 };
 
 use crate::algebra::{AddAssignByRef, AddByRef, NegByRef};
-use crate::trace::layers::{Builder, Cursor, Trie, TupleBuilder};
+use crate::trace::layers::{Builder, Trie, TupleBuilder};
 use crate::{DBData, DBWeight, NumEntries, Rkyv};
 
 pub use self::builders::FileColumnLayerBuilder;
@@ -195,20 +195,7 @@ where
     R: DBWeight,
 {
     fn eq(&self, other: &Self) -> bool {
-        if self.keys() != other.keys() {
-            false
-        } else if let Some(true) = self.file.equal(&other.file) {
-            self.lower_bound != other.lower_bound
-        } else {
-            let mut cursor1 = self.cursor();
-            let mut cursor2 = other.cursor();
-            while cursor1.valid() && cursor2.valid() {
-                if cursor1.take_current_item() != cursor2.take_current_item() {
-                    return false;
-                }
-            }
-            true
-        }
+        self.file.equals(&other.file).unwrap()
     }
 }
 
