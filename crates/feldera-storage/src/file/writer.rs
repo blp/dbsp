@@ -125,7 +125,7 @@ impl Default for Parameters {
 }
 
 trait IntoBlock {
-    fn into_block(&self) -> AlignedVec;
+    fn into_block(self) -> AlignedVec;
     fn overwrite_head(&self, dst: &mut AlignedVec)
     where
         Self: FixedLen;
@@ -135,7 +135,7 @@ impl<B> IntoBlock for B
 where
     B: for<'a> BinWrite<Args<'a> = ()>,
 {
-    fn into_block(&self) -> AlignedVec {
+    fn into_block(self) -> AlignedVec {
         let mut block = NoSeek::new(AlignedVec::with_capacity(4096));
         self.write_le(&mut block).unwrap();
         block.into_inner()

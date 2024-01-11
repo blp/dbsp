@@ -181,6 +181,7 @@ enum Varint {
 }
 impl Varint {
     fn from_max_value(max_value: u64) -> Varint {
+        #[allow(clippy::unusual_byte_groupings, clippy::match_overlapping_arm)]
         match max_value {
             ..=0xff => Varint::B8,
             ..=0xffff => Varint::B16,
@@ -207,6 +208,7 @@ impl Varint {
         *self as usize
     }
     fn put(&self, dst: &mut AlignedVec, value: u64) {
+        #[allow(clippy::unnecessary_cast)]
         match *self {
             Self::B8 => dst.push(value as u8),
             Self::B16 => dst.extend_from_slice(&(value as u16).to_le_bytes()),
@@ -271,8 +273,8 @@ struct BlockLocation {
 
 impl BlockLocation {
     fn new(offset: u64, size: usize) -> Result<Self, InvalidBlockLocation> {
-        if (offset & 0xfff) != 0 || size < 4096 || size > 1 << 31 || !size.is_power_of_two() {
-            Err(InvalidBlockLocation { offset, size }.into())
+        if (offset & 0xfff) != 0 || !(4096..=1 << 31).contains(&size) || !size.is_power_of_two() {
+            Err(InvalidBlockLocation { offset, size })
         } else {
             Ok(Self { offset, size })
         }
@@ -389,35 +391,35 @@ mod test {
             assert_eq!(unsafe { cursor.item() }, Some((i, a1)));
 
             for j in c2range.clone() {
-                let mut c2cursor = cursor.next_column().first().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().first().unwrap();
                 unsafe { c2cursor.advance_to_value_or_larger(&j) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().first().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().first().unwrap();
                 unsafe { c2cursor.advance_to_value_or_larger(&(j - 1)) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().first().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().first().unwrap();
                 unsafe { c2cursor.seek_forward_until(|key| key >= &j) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().first().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().first().unwrap();
                 unsafe { c2cursor.seek_forward_until(|key| key >= &(j - 1)) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().last().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().last().unwrap();
                 unsafe { c2cursor.rewind_to_value_or_smaller(&j) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().last().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().last().unwrap();
                 unsafe { c2cursor.rewind_to_value_or_smaller(&(j + 1)) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().last().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().last().unwrap();
                 unsafe { c2cursor.seek_backward_until(|key| key <= &j) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
 
-                let mut c2cursor = cursor.next_column().last().unwrap();
+                let mut c2cursor = cursor.next_column().unwrap().last().unwrap();
                 unsafe { c2cursor.seek_backward_until(|key| key <= &(j + 1)) }.unwrap();
                 assert_eq!(unsafe { c2cursor.item() }, Some((j, a2)));
             }

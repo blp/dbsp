@@ -153,8 +153,7 @@ impl VarintReader {
         match varint
             .len()
             .checked_mul(count)
-            .map(|len| len.checked_add(start))
-            .flatten()
+            .and_then(|len| len.checked_add(start))
         {
             Some(end) if end <= block_size => Ok(Self {
                 varint,
@@ -199,8 +198,7 @@ impl StrideReader {
         if count > 0 {
             if let Some(last) = stride
                 .checked_mul(count - 1)
-                .map(|len| len.checked_add(start))
-                .flatten()
+                .and_then(|len| len.checked_add(start))
             {
                 if last < block_size {
                     return Ok(Self {
@@ -367,8 +365,7 @@ where
     }
     unsafe fn key(&self, index: usize) -> K {
         let item = self.archived_item(index);
-        let key = item.0.deserialize(&mut Infallible).unwrap();
-        key
+        item.0.deserialize(&mut Infallible).unwrap()
     }
     unsafe fn key_for_row(&self, row: u64) -> K {
         let index = (row - self.first_row) as usize;
@@ -846,14 +843,12 @@ where
             return Err(CorruptionError::InvalidFileSize(file_size).into());
         }
 
-        let file_header_block = read_block(&mut file, BlockLocation::new(0, 4096).unwrap())?;
+        let file_header_block = read_block(&file, BlockLocation::new(0, 4096).unwrap())?;
         let file_header = FileHeader::read_le(&mut io::Cursor::new(&file_header_block))?;
         check_version_number(file_header.version)?;
 
-        let file_trailer_block = read_block(
-            &mut file,
-            BlockLocation::new(file_size - 4096, 4096).unwrap(),
-        )?;
+        let file_trailer_block =
+            read_block(&file, BlockLocation::new(file_size - 4096, 4096).unwrap())?;
         let file_trailer = FileTrailer::read_le(&mut io::Cursor::new(&file_trailer_block))?;
         check_version_number(file_trailer.version)?;
 
@@ -1218,12 +1213,20 @@ where
 
     /// Returns the key in the current row, or `None` if the cursor is before or
     /// after the row group.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn key(&self) -> Option<K> {
         self.position.key()
     }
 
     /// Returns the key and auxiliary data in the current row, or `None` if the
     /// cursor is before or after the row group.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn item(&self) -> Option<(K, A)> {
         self.position.item()
     }
@@ -1236,6 +1239,11 @@ where
     /// Returns the number of rows in the cursor's row group.
     pub fn len(&self) -> u64 {
         self.row_group.len()
+    }
+
+    /// Returns true if this cursor's row group has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.row_group.is_empty()
     }
 
     /// Returns the current row's offset from the start of the row group.  If
@@ -1257,6 +1265,10 @@ where
     ///
     /// This function does not move the cursor if `predicate` is true for the
     /// current row or a previous row.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn seek_forward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
@@ -1273,6 +1285,10 @@ where
     /// Moves the cursor forward past rows whose keys are less than `target`.
     /// This function does not move the cursor if the current row's key is
     /// greater than or equal to `target`.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn advance_to_value_or_larger(&mut self, target: &K) -> Result<(), Error>
     where
         K: Ord,
@@ -1286,6 +1302,10 @@ where
     ///
     /// This function does not move the cursor if `compare` returns [`Equal`] or
     /// [`Greater`] for the current row or a previous row.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn advance_to_first_ge<C>(&mut self, compare: &C) -> Result<(), Error>
     where
         C: Fn(&K) -> Ordering,
@@ -1303,6 +1323,10 @@ where
     ///
     /// This function does not move the cursor if `predicate` is true for the
     /// current row or a previous row.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn seek_backward_until<P>(&mut self, predicate: P) -> Result<(), Error>
     where
         P: Fn(&K) -> bool + Clone,
@@ -1319,6 +1343,10 @@ where
     /// Moves the cursor backward past rows whose keys are greater than
     /// `target`.  This function does not move the cursor if the current row's
     /// key is less than or equal to `target`.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn rewind_to_value_or_smaller(&mut self, target: &K) -> Result<(), Error>
     where
         K: Ord,
@@ -1333,6 +1361,10 @@ where
     ///
     /// This function does not move the cursor if `compare` returns [`Equal`] or
     /// [`Less`] for the current row or a previous row.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe because `rkyv` deserialization is unsafe.
     pub unsafe fn rewind_to_last_le<C>(&mut self, compare: &C) -> Result<(), Error>
     where
         C: Fn(&K) -> Ordering,
@@ -1448,7 +1480,7 @@ where
             if let Some(node) = index_block.get_child_by_row(row)? {
                 return Self::for_row_from_ancestor(
                     reader,
-                    hint.indexes[0..=idx].iter().cloned().collect(),
+                    hint.indexes[0..=idx].to_vec(),
                     node,
                     row,
                 );
@@ -1456,10 +1488,10 @@ where
         }
         Err(CorruptionError::MissingRow(row).into())
     }
-    unsafe fn key<'a>(&'a self) -> K {
+    unsafe fn key(&self) -> K {
         self.data.key_for_row(self.row)
     }
-    unsafe fn item<'a>(&'a self) -> (K, A) {
+    unsafe fn item(&self) -> (K, A) {
         self.data.item_for_row(self.row)
     }
     fn row_group(&self) -> Result<Range<u64>, Error> {
@@ -1767,7 +1799,7 @@ mod test {
         let reader = Reader::<(String, (), ())>::new(File::open("file.layer").unwrap()).unwrap();
         let mut cursor = reader.rows().first().unwrap();
         let mut count = 0;
-        unsafe { cursor.advance_to_value_or_larger(&format!("01 1")).unwrap() };
+        unsafe { cursor.advance_to_value_or_larger(&String::from("01 1")).unwrap() };
         while let Some(value) = unsafe { cursor.key() } {
             println!("'{value}'");
             count += 1;
@@ -1786,7 +1818,7 @@ mod test {
         while let Some(key) = unsafe { keys.key() } {
             println!("{key}");
             count += 1;
-            let mut values = keys.next_column().last().unwrap();
+            let mut values = keys.next_column().unwrap().last().unwrap();
             unsafe { values.rewind_to_value_or_smaller(&3).unwrap() };
             while let Some(value) = unsafe { values.key() } {
                 count2 += 1;
