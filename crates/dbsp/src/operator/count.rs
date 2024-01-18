@@ -3,7 +3,7 @@
 use crate::{
     algebra::{HasOne, IndexedZSet, ZRingValue},
     circuit::{Circuit, Stream, WithClock},
-    trace::Batch,
+    trace::{Batch, ord::AsFileBatch},
     DBTimestamp, OrdIndexedZSet,
 };
 
@@ -37,7 +37,7 @@ where
     #[allow(clippy::type_complexity)]
     pub fn distinct_count(&self) -> Stream<C, OrdIndexedZSet<Z::Key, Z::R, Z::R>>
     where
-        Z: Send,
+        Z: AsFileBatch + Send,
     {
         self.distinct_count_generic()
     }
@@ -46,7 +46,7 @@ where
     pub fn distinct_count_generic<O>(&self) -> Stream<C, O>
     where
         O: Batch<Key = Z::Key, Val = Z::R, R = Z::R, Time = ()>,
-        Z: Send,
+        Z: AsFileBatch + Send,
     {
         self.distinct().weighted_count_generic()
     }

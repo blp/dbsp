@@ -14,7 +14,7 @@ use crate::{
         trace::{TraceBound, TraceBounds, TraceFeedback},
         Aggregator, Avg, FilterMap,
     },
-    trace::{BatchReader, Builder, Cursor, Spine},
+    trace::{ord::AsFileBatch, BatchReader, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, RootCircuit, Stream,
 };
@@ -223,7 +223,10 @@ where
     }
 }
 
-impl<B> Stream<RootCircuit, B> {
+impl<B> Stream<RootCircuit, B>
+where
+    B: AsFileBatch,
+{
     /// Rolling aggregate of a partitioned stream over time range.
     ///
     /// For each record in the input stream, computes an aggregate
@@ -315,8 +318,9 @@ impl<B> Stream<RootCircuit, B> {
         // Build the radix tree over the bounded window.
         let tree = stream_window
             .partitioned_tree_aggregate::<TS, V, Agg>(aggregator.clone())
+            .spill_to_file()
             .integrate_trace();
-        let input_trace = stream_window.integrate_trace();
+        let input_trace = stream_window.spill_to_file().integrate_trace();
 
         // Truncate timestamps `< bound` in the output trace.
         let bounds = TraceBounds::new();

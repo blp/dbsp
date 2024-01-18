@@ -10,6 +10,7 @@ use crate::{
     operator::trace::{TraceBounds, TraceFeedback},
     trace::{
         cursor::{CursorEmpty, CursorGroup, CursorPair},
+        ord::AsFileBatch,
         Builder, Cursor, Spine, Trace,
     },
     Circuit, DBData, DBWeight, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream,
@@ -268,7 +269,7 @@ where
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + AsFileBatch + Send,
 {
     /// Apply group `transformer` to each partition in the input stream.
     ///
@@ -317,7 +318,7 @@ where
             .add_ternary_operator(
                 GroupTransform::new(transform),
                 &stream,
-                &stream.integrate_trace().delay_trace(),
+                &stream.spill_to_file().integrate_trace().delay_trace(),
                 &feedback.delayed_trace,
             )
             .mark_sharded();

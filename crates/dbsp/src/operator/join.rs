@@ -1,6 +1,7 @@
 //! Relational join operator.
 
 use crate::circuit::metadata::{NUM_ENTRIES_LABEL, SHARED_BYTES_LABEL, USED_BYTES_LABEL};
+use crate::trace::ord::AsFileBatch;
 use crate::{
     algebra::{IndexedZSet, Lattice, MulByRef, PartialOrder, ZRingValue, ZSet},
     circuit::{
@@ -147,8 +148,8 @@ impl<I1> Stream<RootCircuit, I1> {
         join_func: F,
     ) -> Stream<RootCircuit, Z>
     where
-        I1: IndexedZSet + Send,
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I1: IndexedZSet + AsFileBatch + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + AsFileBatch + Send,
         F: Clone + Fn(&I1::Key, &I1::Val, &I2::Val) -> Z::Key + 'static,
         Z: ZSet<R = I1::R>,
         Z::R: ZRingValue,
@@ -156,10 +157,15 @@ impl<I1> Stream<RootCircuit, I1> {
         let left = self.shard();
         let right = other.shard();
 
-        left.integrate_trace()
+        left.spill_to_file()
+            .integrate_trace()
             .delay_trace()
             .stream_join_inner(&right, join_func.clone(), Location::caller())
-            .plus(&left.stream_join_inner(&right.integrate_trace(), join_func, Location::caller()))
+            .plus(&left.stream_join_inner(
+                &right.spill_to_file().integrate_trace(),
+                join_func,
+                Location::caller(),
+            ))
     }
 }
 
@@ -305,7 +311,7 @@ where
     /// excluding keys that are present in `other`.
     pub fn antijoin<I2>(&self, other: &Stream<C, I2>) -> Stream<C, I1>
     where
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + AsFileBatch + Send,
     {
         self.circuit()
             .cache_get_or_insert_with(
@@ -352,7 +358,8 @@ where
     ) -> Stream<C, OrdZSet<O, Z::R>>
     where
         Self: FilterMap<C, R = Z::R>,
-        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + Send,
+        Z: AsFileBatch,
+        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + AsFileBatch + Send,
         Z2::Val: Default,
         Stream<C, Z2>: FilterMap<C, R = Z::R>,
         O: DBData + Default,
@@ -377,7 +384,8 @@ where
     ) -> Stream<C, OrdZSet<O, Z::R>>
     where
         Self: for<'a> FilterMap<C, R = Z::R, ItemRef<'a> = (&'a Z::Key, &'a Z::Val)>,
-        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + Send,
+        Z: AsFileBatch,
+        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + AsFileBatch + Send,
         Z2::Val: Default,
         Stream<C, Z2>: for<'a> FilterMap<C, R = Z::R, ItemRef<'a> = (&'a Z2::Key, &'a Z2::Val)>,
         O: DBData + Default,

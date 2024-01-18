@@ -10,7 +10,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{Batch, BatchReader, Builder, Spine},
+    trace::{ord::AsFileBatch, Batch, BatchReader, Builder, Spine},
     Circuit, DBData, NumEntries, OrdIndexedZSet, Stream,
 };
 use num::PrimInt;
@@ -42,7 +42,7 @@ pub type OrdRadixTree<TS, A, R> = OrdIndexedZSet<Prefix<TS>, TreeNode<TS, A>, R>
 impl<C, Z> Stream<C, Z>
 where
     C: Circuit,
-    Z: Clone + 'static,
+    Z: AsFileBatch + Clone + 'static,
 {
     /// Given a batch of updates to a time series stream, computes a stream of
     /// updates to its radix tree.
@@ -114,7 +114,7 @@ where
                         let output = circuit.add_ternary_operator(
                             RadixTreeAggregate::new(aggregator),
                             &stream,
-                            &stream.integrate_trace(),
+                            &stream.spill_to_file().integrate_trace(),
                             &feedback.delayed_trace,
                         );
 

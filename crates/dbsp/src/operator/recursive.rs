@@ -4,7 +4,7 @@ use crate::{
     algebra::{IndexedZSet, ZRingValue},
     circuit::{schedule::Error as SchedulerError, ChildCircuit, Circuit, Stream, WithClock},
     operator::DelayedFeedback,
-    trace::Spine,
+    trace::{Spine, ord::AsFileBatch},
     DBTimestamp,
 };
 use impl_trait_for_tuples::impl_for_tuples;
@@ -53,7 +53,7 @@ where
     C: Circuit,
     C::Parent: Circuit,
     <C as WithClock>::Time: DBTimestamp,
-    B: IndexedZSet + Send,
+    B: IndexedZSet + AsFileBatch + Send,
     B::R: ZRingValue,
     Spine<B>: SizeOf,
 {

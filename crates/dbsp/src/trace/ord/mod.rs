@@ -31,3 +31,36 @@ pub use vec::VecIndexedZSet as OrdIndexedZSet;
 pub use vec::VecKeyBatch as OrdKeyBatch;
 pub use vec::VecValBatch as OrdValBatch;
 pub use vec::VecZSet as OrdZSet;
+pub use vec::{VecIndexedZSet, VecZSet};
+
+use crate::DBData;
+use crate::DBWeight;
+
+use self::file::FileIndexedZSet;
+use self::file::FileZSet;
+
+use super::layers::OrdOffset;
+use super::Batch;
+use super::BatchReader;
+
+pub trait AsFileBatch: BatchReader<Time = ()> {
+    type FileBatch: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()>;
+}
+
+impl<K, V, R, O> AsFileBatch for VecIndexedZSet<K, V, R, O>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+    O: OrdOffset + 'static,
+{
+    type FileBatch = FileIndexedZSet<K, V, R>;
+}
+
+impl<K, R> AsFileBatch for VecZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type FileBatch = FileZSet<K, R>;
+}
