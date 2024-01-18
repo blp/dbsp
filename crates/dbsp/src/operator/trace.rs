@@ -512,6 +512,88 @@ where
 
         (trace.clone(), bounds.clone())
     }
+
+    #[track_caller]
+    pub fn integrate_trace_as<OB>(&self) -> Stream<C, Spine<OB>>
+    where
+        B: Batch<Time = ()>,
+        OB: Batch<Key = B::Key, Val = B::Val, R = B::R, Time = ()>,
+        Spine<B>: SizeOf,
+    {
+        self.integrate_trace_with_bound_as(TraceBound::new(), TraceBound::new())
+    }
+
+    pub fn integrate_trace_with_bound_as<OB>(
+        &self,
+        lower_key_bound: TraceBound<B::Key>,
+        lower_val_bound: TraceBound<B::Val>,
+    ) -> Stream<C, Spine<OB>>
+    where
+        B: Batch<Time = ()>,
+        OB: Batch<Key = B::Key, Val = B::Val, R = B::R, Time = ()>,
+        Spine<B>: SizeOf,
+    {
+        let (trace, bounds) = self.integrate_trace_inner_as();
+
+        bounds.add_key_bound(lower_key_bound);
+        bounds.add_val_bound(lower_val_bound);
+
+        trace
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn integrate_trace_inner_as<OB>(&self) -> (Stream<C, Spine<OB>>, TraceBounds<B::Key, B::Val>)
+    where
+        B: Batch<Time = ()>,
+        OB: Batch<Key = B::Key, Val = B::Val, R = B::R, Time = ()>,
+        Spine<B>: SizeOf,
+    {
+        let mut trace_bounds = self.circuit().cache_get_or_insert_with(
+            TraceId::new(self.origin_node_id().clone()),
+            || {
+                let circuit = self.circuit();
+                let bounds = TraceBounds::new();
+
+                circuit.region("integrate_trace", || {
+                    let (ExportStream { local, export }, z1feedback) = circuit
+                        .add_feedback_with_export(Z1Trace::new(
+                            true,
+                            circuit.root_scope(),
+                            bounds.clone(),
+                        ));
+
+                    let trace = circuit.add_binary_operator_with_preference(
+                        ConvertTraceAppend::<Spine<OB>>::new(),
+                        (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
+                        (
+                            &self.try_sharded_version(),
+                            OwnershipPreference::PREFER_OWNED,
+                        ),
+                    );
+
+                    if self.has_sharded_version() {
+                        local.mark_sharded();
+                        trace.mark_sharded();
+                    }
+
+                    z1feedback.connect_with_preference(
+                        &trace,
+                        OwnershipPreference::STRONGLY_PREFER_OWNED,
+                    );
+
+                    circuit
+                        .cache_insert(DelayedTraceId::new(trace.origin_node_id().clone()), local);
+                    circuit.cache_insert(ExportId::new(trace.origin_node_id().clone()), export);
+
+                    (trace, bounds)
+                })
+            },
+        );
+
+        let (trace, bounds) = trace_bounds.deref_mut();
+
+        (trace.clone(), bounds.clone())
+    }
 }
 
 /// See [`trait TraceFeedback`] documentation.
@@ -631,6 +713,27 @@ where
     }
 }
 
+fn batch_convert<BI, BO>(batch: &BI) -> BO
+where
+    BI: BatchReader<Time = ()>,
+    BI::Key: Clone,
+    BI::Val: Clone,
+    BO: Batch<Key = BI::Key, Val = BI::Val, Time = (), R = BI::R>,
+{
+    let mut builder = BO::Builder::with_capacity((), batch.len());
+    let mut cursor = batch.cursor();
+    while cursor.key_valid() {
+        while cursor.val_valid() {
+            let val = cursor.val().clone();
+            let w = cursor.weight();
+            builder.push((BO::item_from(cursor.key().clone(), val), w.clone()));
+            cursor.step_val();
+        }
+        cursor.step_key();
+    }
+    builder.done()
+}
+
 pub struct UntimedTraceAppend<T>
 where
     T: Trace,
@@ -693,6 +796,86 @@ where
 
     fn eval_owned(&mut self, mut trace: T, batch: T::Batch) -> T {
         trace.insert(batch);
+        trace
+    }
+
+    fn input_preference(&self) -> (OwnershipPreference, OwnershipPreference) {
+        (
+            OwnershipPreference::PREFER_OWNED,
+            OwnershipPreference::PREFER_OWNED,
+        )
+    }
+}
+
+pub struct ConvertTraceAppend<T>
+where
+    T: Trace,
+{
+    _phantom: PhantomData<T>,
+}
+
+impl<T> ConvertTraceAppend<T>
+where
+    T: Trace,
+{
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T> Default for ConvertTraceAppend<T>
+where
+    T: Trace,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Operator for ConvertTraceAppend<T>
+where
+    T: Trace + 'static,
+{
+    fn name(&self) -> Cow<'static, str> {
+        Cow::from("ConvertTraceAppend")
+    }
+    fn fixedpoint(&self, _scope: Scope) -> bool {
+        true
+    }
+}
+
+impl<T, I, B> BinaryOperator<T, I, T> for ConvertTraceAppend<T>
+where
+    T: Trace<Batch = B> + 'static,
+    B: Batch<Time = ()>,
+    I: BatchReader<
+        Key = <T::Batch as BatchReader>::Key,
+        Val = <T::Batch as BatchReader>::Val,
+        R = <T::Batch as BatchReader>::R,
+        Time = (),
+    >,
+{
+    fn eval(&mut self, _trace: &T, _batch: &I) -> T {
+        // Refuse to accept trace by reference.  This should not happen in a correctly
+        // constructed circuit.
+        panic!("ConvertTraceAppend::eval(): cannot accept trace by reference")
+    }
+
+    fn eval_owned_and_ref(&mut self, mut trace: T, batch: &I) -> T {
+        trace.insert(batch_convert(batch));
+        trace
+    }
+
+    fn eval_ref_and_owned(&mut self, _trace: &T, _batch: I) -> T {
+        // Refuse to accept trace by reference.  This should not happen in a correctly
+        // constructed circuit.
+        panic!("ConvertTraceAppend::eval_ref_and_owned(): cannot accept trace by reference")
+    }
+
+    fn eval_owned(&mut self, mut trace: T, batch: I) -> T {
+        trace.insert(batch_convert(&batch));
         trace
     }
 

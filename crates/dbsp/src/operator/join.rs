@@ -11,7 +11,10 @@ use crate::{
     circuit_cache_key,
     operator::FilterMap,
     time::Timestamp,
-    trace::{cursor::Cursor as TraceCursor, Batch, BatchReader, Batcher, Builder, Spine, Trace},
+    trace::{
+        cursor::Cursor as TraceCursor, ord::file::FileIndexedZSet, Batch, BatchReader, Batcher,
+        Builder, Spine, Trace,
+    },
     DBData, DBTimestamp, OrdIndexedZSet, OrdZSet,
 };
 use size_of::{Context, SizeOf};
@@ -156,10 +159,14 @@ impl<I1> Stream<RootCircuit, I1> {
         let left = self.shard();
         let right = other.shard();
 
-        left.integrate_trace()
+        left.integrate_trace_as::<FileIndexedZSet<_, _, _>>()
             .delay_trace()
             .stream_join_inner(&right, join_func.clone(), Location::caller())
-            .plus(&left.stream_join_inner(&right.integrate_trace(), join_func, Location::caller()))
+            .plus(&left.stream_join_inner(
+                &right.integrate_trace_as::<FileIndexedZSet<_, _, _>>(),
+                join_func,
+                Location::caller(),
+            ))
     }
 }
 

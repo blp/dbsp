@@ -10,6 +10,7 @@ use crate::{
     operator::trace::{TraceBounds, TraceFeedback},
     trace::{
         cursor::{CursorEmpty, CursorGroup, CursorPair},
+        ord::file::FileIndexedZSet,
         Builder, Cursor, Spine, Trace,
     },
     Circuit, DBData, DBWeight, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream,
@@ -317,7 +318,9 @@ where
             .add_ternary_operator(
                 GroupTransform::new(transform),
                 &stream,
-                &stream.integrate_trace().delay_trace(),
+                &stream
+                    .integrate_trace_as::<FileIndexedZSet<_, _, _>>()
+                    .delay_trace(),
                 &feedback.delayed_trace,
             )
             .mark_sharded();

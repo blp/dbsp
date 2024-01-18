@@ -14,7 +14,7 @@ use crate::{
         trace::{TraceBound, TraceBounds, TraceFeedback},
         Aggregator, Avg, FilterMap,
     },
-    trace::{BatchReader, Builder, Cursor, Spine},
+    trace::{ord::file::FileIndexedZSet, BatchReader, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, RootCircuit, Stream,
 };
@@ -315,8 +315,8 @@ impl<B> Stream<RootCircuit, B> {
         // Build the radix tree over the bounded window.
         let tree = stream_window
             .partitioned_tree_aggregate::<TS, V, Agg>(aggregator.clone())
-            .integrate_trace();
-        let input_trace = stream_window.integrate_trace();
+            .integrate_trace_as::<FileIndexedZSet<_, _, _>>();
+        let input_trace = stream_window.integrate_trace_as::<FileIndexedZSet<_, _, _>>();
 
         // Truncate timestamps `< bound` in the output trace.
         let bounds = TraceBounds::new();

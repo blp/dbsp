@@ -13,7 +13,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{cursor::CursorEmpty, Builder, Cursor, Spine},
+    trace::{cursor::CursorEmpty, ord::file::FileIndexedZSet, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, OrdIndexedZSet, RootCircuit, Stream,
 };
@@ -193,7 +193,7 @@ where
                                 .add_ternary_operator(
                                     PartitionedRadixTreeAggregate::new(aggregator),
                                     &stream,
-                                    &stream.integrate_trace(),
+                                    &stream.integrate_trace_as::<FileIndexedZSet<_, _, _>>(),
                                     &feedback.delayed_trace,
                                 )
                                 .mark_sharded();

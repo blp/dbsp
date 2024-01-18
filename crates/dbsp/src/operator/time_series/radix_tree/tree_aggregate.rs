@@ -10,7 +10,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{Batch, BatchReader, Builder, Spine},
+    trace::{ord::file::FileIndexedZSet, Batch, BatchReader, Builder, Spine},
     Circuit, DBData, NumEntries, OrdIndexedZSet, Stream,
 };
 use num::PrimInt;
@@ -114,7 +114,7 @@ where
                         let output = circuit.add_ternary_operator(
                             RadixTreeAggregate::new(aggregator),
                             &stream,
-                            &stream.integrate_trace(),
+                            &stream.integrate_trace_as::<FileIndexedZSet<_, _, _>>(),
                             &feedback.delayed_trace,
                         );
 

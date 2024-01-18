@@ -9,7 +9,10 @@ use crate::{
         Circuit, GlobalNodeId, Scope, Stream, WithClock,
     },
     circuit_cache_key,
-    trace::{spine_fueled::Spine, Batch, BatchReader, Builder, Cursor as TraceCursor, Trace},
+    trace::{
+        ord::file::FileIndexedZSet, spine_fueled::Spine, Batch, BatchReader, Builder,
+        Cursor as TraceCursor, Trace,
+    },
     DBTimestamp, OrdIndexedZSet, Timestamp,
 };
 use size_of::SizeOf;
@@ -128,7 +131,9 @@ where
                             circuit.add_binary_operator(
                                 DistinctIncrementalTotal::new(),
                                 &stream,
-                                &stream.integrate_trace().delay_trace(),
+                                &stream
+                                    .integrate_trace_as::<FileIndexedZSet<_, _, _>>()
+                                    .delay_trace(),
                             )
                         } else {
                             // ```
