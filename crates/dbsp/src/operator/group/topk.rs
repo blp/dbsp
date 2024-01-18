@@ -3,14 +3,16 @@ use super::{
     DiffGroupTransformer, Monotonicity, NonIncrementalGroupTransformer,
 };
 use crate::{
-    algebra::ZRingValue, operator::FilterMap, trace::Cursor, DBData, DBWeight, IndexedZSet,
-    OrdIndexedZSet, RootCircuit, Stream,
+    algebra::ZRingValue,
+    operator::FilterMap,
+    trace::{ord::AsFileBatch, Cursor},
+    DBData, DBWeight, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream,
 };
 use std::marker::PhantomData;
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + AsFileBatch + Send,
 {
     /// Pick `k` smallest values in each group.
     ///

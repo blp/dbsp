@@ -13,7 +13,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{cursor::CursorEmpty, Builder, Cursor, Spine},
+    trace::{cursor::CursorEmpty, ord::AsFileBatch, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, OrdIndexedZSet, RootCircuit, Stream,
 };
@@ -110,7 +110,7 @@ impl<PK, TS, A, R, C> PartitionedRadixTreeCursor<PK, TS, A, R> for C where
 
 impl<Z> Stream<RootCircuit, Z>
 where
-    Z: Clone + 'static,
+    Z: AsFileBatch + Clone + 'static,
 {
     /// Given a batch of updates to a partitioned time series stream, computes a
     /// stream of updates to its partitioned radix tree.
@@ -193,7 +193,7 @@ where
                                 .add_ternary_operator(
                                     PartitionedRadixTreeAggregate::new(aggregator),
                                     &stream,
-                                    &stream.integrate_trace(),
+                                    &stream.spill_to_file().integrate_trace(),
                                     &feedback.delayed_trace,
                                 )
                                 .mark_sharded();

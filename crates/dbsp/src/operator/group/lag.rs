@@ -3,7 +3,7 @@ use crate::{
     algebra::{HasZero, ZRingValue},
     trace::{
         cursor::{CursorPair, ReverseKeyCursor},
-        Cursor,
+        Cursor, ord::AsFileBatch,
     },
     utils::Tup2,
     DBData, DBWeight, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream,
@@ -14,7 +14,7 @@ const MAX_RETRACTIONS_CAPACITY: usize = 100_000usize;
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + AsFileBatch + Send,
 {
     /// Lag operator matches each row in a group with a previous row in the
     /// same group.
