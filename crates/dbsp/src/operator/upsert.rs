@@ -4,7 +4,7 @@ use crate::{
         operator_traits::{BinaryOperator, Operator},
         OwnershipPreference, Scope, WithClock,
     },
-    operator::trace::{DelayedTraceId, TraceAppend, TraceBounds, TraceId, Z1Trace},
+    operator::trace::{DelayedTraceId, TraceBounds, TraceId, Z1Trace},
     trace::{
         consolidation::consolidate, cursor::Cursor, Batch, BatchReader, Builder, Spine, Trace,
     },
@@ -79,7 +79,7 @@ where
             delta.mark_sharded_if(self);
 
             let trace = circuit.add_binary_operator_with_preference(
-                <TraceAppend<
+                <UpsertAppend<
                     Spine<<<C as WithClock>::Time as Timestamp>::OrdKeyBatch<K, B::R>>,
                     B,
                     C,
@@ -100,6 +100,94 @@ where
             );
             delta
         })
+    }
+}
+
+pub struct UpsertAppend<T, B, C> {
+    clock: C,
+    _phantom: PhantomData<(T, B)>,
+}
+
+impl<T, B, C> UpsertAppend<T, B, C> {
+    pub fn new(clock: C) -> Self {
+        Self {
+            clock,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, B, Clk> Operator for UpsertAppend<T, B, Clk>
+where
+    T: 'static,
+    B: 'static,
+    Clk: 'static,
+{
+    fn name(&self) -> Cow<'static, str> {
+        Cow::from("TraceAppend")
+    }
+    fn fixedpoint(&self, _scope: Scope) -> bool {
+        true
+    }
+}
+
+fn batch_add_time<BI, TS, BO>(batch: &BI, timestamp: &TS) -> BO
+where
+    TS: Timestamp,
+    BI: BatchReader<Time = ()>,
+    BI::Key: Clone,
+    BI::Val: Clone,
+    BO: Batch<Key = BI::Key, Val = BI::Val, Time = TS, R = BI::R>,
+{
+    let mut builder = BO::Builder::with_capacity(timestamp.clone(), batch.len());
+    let mut cursor = batch.cursor();
+    while cursor.key_valid() {
+        while cursor.val_valid() {
+            let val = cursor.val().clone();
+            let w = cursor.weight();
+            builder.push((BO::item_from(cursor.key().clone(), val), w.clone()));
+            cursor.step_val();
+        }
+        cursor.step_key();
+    }
+    builder.done()
+}
+
+impl<T, B, Clk> BinaryOperator<T, B, T> for UpsertAppend<T, B, Clk>
+where
+    B: BatchReader<Time = ()>,
+    Clk: WithClock + 'static,
+    T: Trace<Key = B::Key, Val = B::Val, R = B::R, Time = Clk::Time>,
+{
+    fn eval(&mut self, _trace: &T, _batch: &B) -> T {
+        // Refuse to accept trace by reference.  This should not happen in a correctly
+        // constructed circuit.
+        unimplemented!()
+    }
+
+    fn eval_owned_and_ref(&mut self, mut trace: T, batch: &B) -> T {
+        // TODO: extend `trace` type to feed untimed batches directly
+        // (adding fixed timestamp on the fly).
+        trace.insert(batch_add_time(batch, &self.clock.time()));
+        trace
+    }
+
+    fn eval_ref_and_owned(&mut self, _trace: &T, _batch: B) -> T {
+        // Refuse to accept trace by reference.  This should not happen in a correctly
+        // constructed circuit.
+        unimplemented!()
+    }
+
+    fn eval_owned(&mut self, mut trace: T, batch: B) -> T {
+        trace.insert(batch_add_time(&batch, &self.clock.time()));
+        trace
+    }
+
+    fn input_preference(&self) -> (OwnershipPreference, OwnershipPreference) {
+        (
+            OwnershipPreference::PREFER_OWNED,
+            OwnershipPreference::PREFER_OWNED,
+        )
     }
 }
 
@@ -172,7 +260,7 @@ where
             delta.mark_sharded_if(self);
 
             let trace = circuit.add_binary_operator_with_preference(
-                <TraceAppend<
+                <UpsertAppend<
                     Spine<<<C as WithClock>::Time as Timestamp>::OrdValBatch<K, V, B::R>>,
                     B,
                     C,
