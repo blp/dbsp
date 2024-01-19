@@ -1076,3 +1076,15 @@ pub fn test_trace_sampling<T: Trace<Time = ()>>(trace: &T) {
     }
     sample.clear();
 }
+
+/*
+#[test]
+pub fn test_dyn_batch() {
+    let mut data = vec![];
+    for i in 0..10 {
+        data.push(((i, (), ()), 1));
+    }
+    let batch = TestBatch::from_data(&data);
+    let dyn_batch = Box::new(batch as &dyn Batch);
+}
+*/
