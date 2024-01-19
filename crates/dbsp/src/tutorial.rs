@@ -939,7 +939,8 @@
 //! )> {
 //!     let (input_stream, input_handle) =
 //!             circuit.add_input_zset::<Record, i64>();      
-//!     // ... #     let subset = input_stream.filter(|r| {
+//!     // ...
+//! #     let subset = input_stream.filter(|r| {
 //! #         r.location == "England"
 //! #             || r.location == "Northern Ireland"
 //! #             || r.location == "Scotland"
