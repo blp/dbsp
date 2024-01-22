@@ -42,6 +42,39 @@ where
     }
 }
 
+/*
+impl<A, B> Batch for Either<A, B>
+where
+    A: Batch,
+    B: Batch<Key = A::Key, Val = A::Val, R = A::R, Time = A::Time>,
+{
+    type Item = A::Item;
+
+    type Batcher;
+
+    type Builder;
+
+    type Merger;
+
+    fn item_from(key: Self::Key, val: Self::Val) -> Self::Item {
+        Self::A::item_from(key, val)
+    }
+
+    fn from_keys(time: Self::Time, keys: Vec<(Self::Key, Self::R)>) -> Self
+    where
+        Self::Val: From<()>,
+    {
+        Self::A(Self::A::from_keys(time, keys))
+    }
+
+    fn recede_to(&mut self, frontier: &Self::Time) {
+        match self {
+            Self::A(batch) => batch.recede_to(frontier),
+            Self::B(batch) => batch.recede_to(frontier),
+        }
+    }
+}
+*/
 impl<A, B> BatchReader for Either<A, B>
 where
     A: Batch,
