@@ -56,6 +56,21 @@ where
         .collect::<Vec<_>>()
 }
 
+pub fn trace_to_tuples<T>(trace: &T) -> Vec<((T::Key, T::Val, T::Time), T::R)>
+where
+    T: Trace,
+{
+    let mut tuples = batch_to_tuples(trace);
+    if let Some(filter) = trace.value_filter() {
+        tuples.retain(|((_k, v, _t), _r)| filter(v));
+    }
+
+    if let Some(filter) = trace.key_filter() {
+        tuples.retain(|((k, _v, _t), _r)| filter(k));
+    }
+    tuples
+}
+
 /// Convert any batch into a vector of tuples.
 pub fn batch_to_tuples_reverse_vals<B>(batch: &B) -> Vec<((B::Key, B::Val, B::Time), B::R)>
 where

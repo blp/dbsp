@@ -7,7 +7,7 @@ use std::{
     fmt::{Debug, Formatter, Result as FmtResult},
     fs::File,
     marker::PhantomData,
-    ops::Range,
+    ops::{Bound, Range, RangeBounds},
     os::unix::fs::FileExt,
     rc::Rc,
     sync::Arc,
@@ -1169,8 +1169,22 @@ where
     }
 
     /// Returns a row group for a subset of the rows in this one.
-    pub fn subset(&self, subset: Range<u64>) -> Self {
-        assert!(subset.end <= self.len());
+    pub fn subset<B>(&self, range: B) -> Self
+    where
+        B: RangeBounds<u64>,
+    {
+        let start = match range.start_bound() {
+            Bound::Included(&index) => index,
+            Bound::Excluded(&index) => index + 1,
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&index) => index + 1,
+            Bound::Excluded(&index) => index,
+            Bound::Unbounded => self.len(),
+        };
+        let subset = start..end;
+
         let start = self.rows.start + subset.start;
         let end = start + (subset.end - subset.start);
         Self {

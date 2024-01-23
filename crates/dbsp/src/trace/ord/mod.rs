@@ -27,21 +27,16 @@ mod merge_batcher;
 pub mod file;
 pub mod vec;
 
-pub use vec::VecIndexedZSet as OrdIndexedZSet;
-pub use vec::VecKeyBatch as OrdKeyBatch;
-pub use vec::VecValBatch as OrdValBatch;
-pub use vec::VecZSet as OrdZSet;
-pub use vec::{VecIndexedZSet, VecZSet};
+pub use file::{FileIndexedZSet, FileKeyBatch, FileValBatch, FileZSet};
+pub use vec::{VecIndexedZSet, VecKeyBatch, VecValBatch, VecZSet};
 
-use crate::DBData;
-use crate::DBWeight;
+pub use FileValBatch as OrdValBatch;
+pub use VecIndexedZSet as OrdIndexedZSet;
+pub use VecKeyBatch as OrdKeyBatch;
+pub use VecZSet as OrdZSet;
 
-use self::file::FileIndexedZSet;
-use self::file::FileZSet;
-
-use super::layers::OrdOffset;
-use super::Batch;
-use super::BatchReader;
+use super::{layers::OrdOffset, Batch, BatchReader};
+use crate::{DBData, DBWeight};
 
 pub trait AsFileBatch: BatchReader<Time = ()> {
     type FileBatch: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()>;

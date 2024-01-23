@@ -10,6 +10,7 @@ use feldera_storage::file::{
     reader::{ColumnSpec, Cursor as FileCursor, Reader},
     writer::{Parameters, Writer2},
 };
+use itertools::Itertools;
 use rand::{seq::index::sample, Rng};
 use rkyv::{ser::Serializer, Archive, Archived, Deserialize, Fallible, Serialize};
 use size_of::SizeOf;
@@ -124,6 +125,7 @@ where
     fn truncate_keys_below(&mut self, lower_bound: &Self::Key) {
         let mut cursor = self.file.rows().before();
         unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
+        println!("set lower bound to {lower_bound:?}");
         let lower_bound = cursor.absolute_position() as usize;
         if lower_bound > self.lower_bound {
             self.lower_bound = lower_bound;
@@ -187,9 +189,61 @@ where
         FileValMerger::new_merger(self, other)
     }
 
-    fn recede_to(&mut self, _frontier: &T) {
-        unimplemented!()
+    fn recede_to(&mut self, frontier: &T) {
+        // Nothing to do if the batch is entirely before the frontier.
+        if !self.upper().less_equal(frontier) {
+            println!("recede");
+            let mut writer = Writer2::new(tempfile().unwrap(), Parameters::default()).unwrap();
+            let mut key_cursor = self.file.rows().first().unwrap();
+            while key_cursor.has_value() {
+                let mut val_cursor = key_cursor.next_column().unwrap().first().unwrap();
+                let mut n_vals = 0;
+                while val_cursor.has_value() {
+                    let td = unsafe { val_cursor.aux() }.unwrap();
+                    let td = recede_times(td, frontier);
+                    if !td.is_empty() {
+                        let val = unsafe { val_cursor.key() }.unwrap();
+                        writer.write1((&val, &td)).unwrap();
+                        n_vals += 1;
+                    }
+                    val_cursor.move_next().unwrap();
+                }
+                if n_vals > 0 {
+                    let key = unsafe { key_cursor.key() }.unwrap();
+                    writer.write0((&key, &())).unwrap();
+                }
+                key_cursor.move_next().unwrap();
+            }
+            self.file = writer.into_reader().unwrap();
+        }
     }
+}
+
+fn recede_times<T, R>(mut td: Vec<(T, R)>, frontier: &T) -> Vec<(T, R)>
+where
+    T: DBTimestamp,
+    R: DBWeight,
+{
+    for (time, _diff) in &mut td {
+        time.meet_assign(frontier);
+    }
+    td.sort_unstable();
+
+    td.iter()
+        .cloned()
+        .coalesce(|prev, cur| {
+            let (prev_time, prev_diff) = prev;
+            let (cur_time, cur_diff) = cur;
+            if prev_time == cur_time {
+                let mut sum = prev_diff.clone();
+                sum.add_assign_by_ref(&cur_diff);
+                Ok((cur_time, sum))
+            } else {
+                Err(((prev_time, prev_diff), (cur_time, cur_diff)))
+            }
+        })
+        .filter(|(_time, diff)| !diff.is_zero())
+        .collect()
 }
 
 /// State for an in-progress merge.
@@ -340,6 +394,8 @@ where
                     let mut td2 = unsafe { cursor2.aux() }.unwrap();
                     td2.sort_unstable();
                     let td = merge_times(&td1, &td2);
+                    cursor1.move_next().unwrap();
+                    cursor2.move_next().unwrap();
                     if td.is_empty() {
                         continue;
                     }
@@ -357,17 +413,50 @@ where
         key_filter: &Option<Filter<K>>,
         value_filter: &Option<Filter<V>>,
     ) -> RawValBatch<K, V, T, R> {
+        println!("key_filter={:?} value_filter={:?}", key_filter.is_some(), value_filter.is_some());
+        println!("merge");
+        println!("source1:");
+        let mut key_cursor = source1.file.rows().nth(source1.lower_bound as u64).unwrap();
+        while key_cursor.has_value() {
+            let (key, ()) = unsafe { key_cursor.item() }.unwrap();
+            let mut val_cursor = key_cursor.next_column().unwrap().first().unwrap();
+            while val_cursor.has_value() {
+                let (val, times) = unsafe { val_cursor.item() }.unwrap();
+                for (time, diff) in times {
+                    println!("  (key {key:?}, value {val:?}, time {time:?}, diff {diff:?})");
+                }
+                val_cursor.move_next().unwrap();
+            }
+            key_cursor.move_next().unwrap();
+        }
+        println!("source2:");
+        let mut key_cursor = source2.file.rows().nth(source2.lower_bound as u64).unwrap();
+        while key_cursor.has_value() {
+            let (key, ()) = unsafe { key_cursor.item() }.unwrap();
+            let mut val_cursor = key_cursor.next_column().unwrap().first().unwrap();
+            while val_cursor.has_value() {
+                let (val, times) = unsafe { val_cursor.item() }.unwrap();
+                for (time, diff) in times {
+                    println!("  (key {key:?}, value {val:?}, time {time:?}, diff {diff:?})");
+                }
+                val_cursor.move_next().unwrap();
+            }
+            key_cursor.move_next().unwrap();
+        }
         let mut output = Writer2::new(tempfile().unwrap(), Parameters::default()).unwrap();
-        let mut cursor1 = source1.file.rows().first().unwrap();
-        let mut cursor2 = source2.file.rows().first().unwrap();
+        let mut cursor1 = source1.file.rows().nth(source1.lower_bound as u64).unwrap();
+        let mut cursor2 = source2.file.rows().nth(source2.lower_bound as u64).unwrap();
         loop {
+            println!("{}:{}", file!(), line!());
             let Some(key1) = read_filtered(&mut cursor1, key_filter) else {
+                println!("{}:{}", file!(), line!());
                 while let Some(key2) = read_filtered(&mut cursor2, key_filter) {
                     Self::copy_values_if(&mut output, &key2, &mut cursor2, value_filter);
                 }
                 break;
             };
             let Some(key2) = read_filtered(&mut cursor2, key_filter) else {
+                println!("{}:{}", file!(), line!());
                 while let Some(key1) = read_filtered(&mut cursor1, key_filter) {
                     Self::copy_values_if(&mut output, &key1, &mut cursor1, value_filter);
                 }
@@ -375,9 +464,11 @@ where
             };
             match key1.cmp(&key2) {
                 Ordering::Less => {
+                    println!("{}:{}", file!(), line!());
                     Self::copy_values_if(&mut output, &key1, &mut cursor1, value_filter);
                 }
                 Ordering::Equal => {
+                    println!("{}:{}", file!(), line!());
                     if Self::merge_values(
                         &mut output,
                         &mut cursor1.next_column().unwrap().first().unwrap(),
@@ -391,11 +482,27 @@ where
                 }
 
                 Ordering::Greater => {
+                    println!("{}:{}", file!(), line!());
                     Self::copy_values_if(&mut output, &key2, &mut cursor2, value_filter);
                 }
             }
         }
-        output.into_reader().unwrap()
+        let output = output.into_reader().unwrap();
+        println!("output:");
+        let mut key_cursor = output.rows().first().unwrap();
+        while key_cursor.has_value() {
+            let (key, ()) = unsafe { key_cursor.item() }.unwrap();
+            let mut val_cursor = key_cursor.next_column().unwrap().first().unwrap();
+            while val_cursor.has_value() {
+                let (val, times) = unsafe { val_cursor.item() }.unwrap();
+                for (time, diff) in times {
+                    println!("  (key {key:?}, value {val:?}, time {time:?}, diff {diff:?})");
+                }
+                val_cursor.move_next().unwrap();
+            }
+            key_cursor.move_next().unwrap();
+        }
+        output
     }
 }
 
@@ -473,7 +580,12 @@ where
     R: DBWeight,
 {
     fn new(batch: &'s FileValBatch<K, V, T, R>) -> Self {
-        let key_cursor = batch.file.rows().first().unwrap();
+        let key_cursor = batch
+            .file
+            .rows()
+            .subset(batch.lower_bound as u64..)
+            .first()
+            .unwrap();
         let val_cursor = key_cursor.next_column().unwrap().first().unwrap();
         let key = unsafe { key_cursor.key() };
         let val = unsafe { val_cursor.key() };
@@ -655,7 +767,7 @@ where
         Self {
             time,
             writer: Writer2::new(tempfile().unwrap(), Parameters::default()).unwrap(),
-            cur_key: None
+            cur_key: None,
         }
     }
 
@@ -674,7 +786,9 @@ where
         } else {
             self.cur_key = Some(key);
         }
-        self.writer.write1((&val, &vec![(self.time.clone(), diff)])).unwrap();
+        self.writer
+            .write1((&val, &vec![(self.time.clone(), diff)]))
+            .unwrap();
     }
 
     fn done(mut self) -> FileValBatch<K, V, T, R> {

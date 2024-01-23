@@ -1363,8 +1363,8 @@ mod test {
             cursor::CursorPair,
             ord::{OrdKeyBatch, OrdValBatch},
             test_batch::{
-                assert_batch_cursors_eq, assert_batch_eq, assert_trace_eq, test_batch_sampling,
-                test_trace_sampling, TestBatch,
+                assert_batch_cursors_eq, assert_batch_eq, assert_trace_eq, batch_to_tuples,
+                test_batch_sampling, test_trace_sampling, TestBatch, trace_to_tuples,
             },
             Batch, BatchReader, Spine, Trace,
         },
@@ -1458,6 +1458,163 @@ mod test {
             .boxed()
     }
 
+    #[test]
+    fn test_indexed_zset_trace_spine1() {
+        let batches = vec![(vec![((0, 0), -1)], 1, 0)];
+        let seed = 0;
+        // `trace1` uses `truncate_keys_below`.
+        // `trace2` uses `retain_keys`.
+        let mut trace1: Spine<OrdValBatch<i32, i32, u32, i32>> = Spine::new(None);
+        let mut trace2: Spine<OrdValBatch<i32, i32, u32, i32>> = Spine::new(None);
+        let mut ref_trace: TestBatch<i32, i32, u32, i32> = TestBatch::new(None);
+
+        let mut bound = 0;
+        let mut kbound = 0;
+        for (time, (tuples, key_bound, val_bound)) in batches.into_iter().enumerate() {
+            let batch = OrdValBatch::from_tuples(time as u32, tuples.clone());
+            let ref_batch = TestBatch::from_tuples(time as u32, tuples);
+
+            assert_batch_eq(&batch, &ref_batch);
+            assert_batch_cursors_eq(batch.cursor(), &ref_batch, seed);
+
+            ref_trace.insert(ref_batch);
+            assert_batch_cursors_eq(
+                CursorPair::new(&mut trace1.cursor(), &mut batch.cursor()),
+                &ref_trace,
+                seed,
+            );
+            assert_batch_cursors_eq(
+                CursorPair::new(&mut trace2.cursor(), &mut batch.cursor()),
+                &ref_trace,
+                seed,
+            );
+
+            trace1.insert(batch.clone());
+            trace2.insert(batch);
+
+            assert_trace_eq(&trace1, &ref_trace);
+            assert_trace_eq(&trace2, &ref_trace);
+            assert_batch_cursors_eq(trace1.cursor(), &ref_trace, seed);
+            assert_batch_cursors_eq(trace2.cursor(), &ref_trace, seed);
+
+            println!("{}:{}", file!(), line!());
+            let b = batch_to_tuples(&ref_trace);
+            println!("before...");
+            for ((key, _val, _time), _diff) in b {
+                println!("key={key:?}");
+            }
+            println!("...before");
+            kbound = max(kbound, key_bound);
+            println!("retain >= {kbound:?}");
+            trace1.truncate_keys_below(&key_bound);
+            trace2.retain_keys(Box::new(move |key| {
+                println!("{key:?} {kbound:?}");
+                *key >= kbound
+            }));
+            ref_trace.truncate_keys_below(&key_bound);
+            println!("after...");
+            for ((key, _val, _time), _diff) in batch_to_tuples(&trace1) {
+                println!("trace1: key={key:?}");
+            }
+            for ((key, _val, _time), _diff) in batch_to_tuples(&trace2) {
+                println!("trace2: key={key:?}");
+            }
+            for ((key, _val, _time), _diff) in batch_to_tuples(&ref_trace) {
+                println!("ref_trace: key={key:?}");
+            }
+            println!("...after");
+
+            println!("{}:{}", file!(), line!());
+            assert_trace_eq(&trace2, &ref_trace);
+            assert_trace_eq(&trace1, &ref_trace);
+
+            println!("{}:{}", file!(), line!());
+            bound = max(bound, val_bound);
+            trace1.retain_values(Box::new(move |val| *val >= bound));
+            trace2.retain_values(Box::new(move |val| *val >= bound));
+            ref_trace.retain_values(Box::new(move |val| *val >= bound));
+
+            assert_trace_eq(&trace1, &ref_trace);
+            assert_trace_eq(&trace2, &ref_trace);
+            assert_batch_cursors_eq(trace1.cursor(), &ref_trace, seed);
+            assert_batch_cursors_eq(trace2.cursor(), &ref_trace, seed);
+        }
+    }
+
+    #[test]
+    fn test_indexed_zset_trace_spine2() {
+        let seed = 0;
+        let batches = vec![
+            (vec![((0, 1), -1), ((0, 2), -1)], 0, 0),
+            (vec![((0, 0), -1)], 1, 0),
+            (vec![((0, 0), -1), ((0, 1), -1)], 0, 0),
+        ];
+        // `trace1` uses `truncate_keys_below`.
+        // `trace2` uses `retain_keys`.
+        let mut trace1: Spine<OrdValBatch<i32, i32, u32, i32>> = Spine::new(None);
+        let mut trace2: Spine<OrdValBatch<i32, i32, u32, i32>> = Spine::new(None);
+        let mut ref_trace: TestBatch<i32, i32, u32, i32> = TestBatch::new(None);
+
+        let mut bound = 0;
+        let mut kbound = 0;
+        println!("batches={batches:?}");
+        for (time, (tuples, key_bound, val_bound)) in batches.into_iter().enumerate() {
+            println!();
+            println!("pre-trace1={:?}", trace_to_tuples(&trace1));
+            println!("pre-trace2={:?}", trace_to_tuples(&trace2));
+            println!("pre-ref_trace={:?}", trace_to_tuples(&ref_trace));
+            assert_trace_eq(&trace1, &ref_trace);
+            assert_trace_eq(&trace2, &ref_trace);
+            
+            let batch = OrdValBatch::from_tuples(time as u32, tuples.clone());
+            let ref_batch = TestBatch::from_tuples(time as u32, tuples);
+
+            assert_batch_eq(&batch, &ref_batch);
+            assert_batch_cursors_eq(batch.cursor(), &ref_batch, seed);
+
+            ref_trace.insert(ref_batch);
+            assert_batch_cursors_eq(
+                CursorPair::new(&mut trace1.cursor(), &mut batch.cursor()),
+                &ref_trace,
+                seed,
+            );
+            assert_batch_cursors_eq(
+                CursorPair::new(&mut trace2.cursor(), &mut batch.cursor()),
+                &ref_trace,
+                seed,
+            );
+
+            println!("inserting batch={:?}", batch_to_tuples(&batch));
+            println!("{}:{}", file!(), line!());
+            trace1.insert(batch.clone());
+            println!("{}:{}", file!(), line!());
+            trace2.insert(batch);
+            println!("{}:{}", file!(), line!());
+            println!("trace1={:?}", trace_to_tuples(&trace1));
+            println!("trace2={:?}", trace_to_tuples(&trace2));
+            println!("ref_trace={:?}", trace_to_tuples(&ref_trace));
+
+            assert_trace_eq(&trace1, &ref_trace);
+            assert_trace_eq(&trace2, &ref_trace);
+            assert_batch_cursors_eq(trace1.cursor(), &ref_trace, seed);
+            assert_batch_cursors_eq(trace2.cursor(), &ref_trace, seed);
+
+            kbound = max(kbound, key_bound);
+            trace1.truncate_keys_below(&key_bound);
+            trace2.retain_keys(Box::new(move |key| *key >= kbound));
+            ref_trace.truncate_keys_below(&key_bound);
+
+            bound = max(bound, val_bound);
+            trace1.retain_values(Box::new(move |val| *val >= bound));
+            trace2.retain_values(Box::new(move |val| *val >= bound));
+            ref_trace.retain_values(Box::new(move |val| *val >= bound));
+
+            assert_trace_eq(&trace1, &ref_trace);
+            assert_trace_eq(&trace2, &ref_trace);
+            assert_batch_cursors_eq(trace1.cursor(), &ref_trace, seed);
+            assert_batch_cursors_eq(trace2.cursor(), &ref_trace, seed);
+        }
+    }
     proptest! {
         #[test]
         fn test_truncate_key_bounded_memory(batches in kvr_batches_monotone_keys(100, 20, 50, 20, 500)) {
@@ -1702,6 +1859,7 @@ mod test {
 
             let mut bound = 0;
             let mut kbound = 0;
+            println!("batches={batches:?}");
             for (time, (tuples, key_bound, val_bound)) in batches.into_iter().enumerate() {
                 let batch = OrdValBatch::from_tuples(time as u32, tuples.clone());
                 let ref_batch = TestBatch::from_tuples(time as u32, tuples);
