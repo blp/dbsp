@@ -20,7 +20,8 @@ use crate::{
     time::Timestamp,
     trace::{
         cursor::{Cursor, CursorGroup},
-        Batch, BatchReader, Builder, Spine,
+        ord::SpillableBatch,
+        Batch, BatchReader, Builder,
     },
     DBData, DBTimestamp, DBWeight, OrdIndexedZSet, OrdZSet,
 };
@@ -176,7 +177,7 @@ where
         aggregator: A,
     ) -> Stream<C, OrdIndexedZSet<Z::Key, A::Output, Z::R>>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         A: Aggregator<Z::Val, (), Z::R>,
         Z::R: ZRingValue,
     {
@@ -186,7 +187,7 @@ where
     /// Like [`Self::stream_aggregate`], but can return any batch type.
     pub fn stream_aggregate_generic<A, O>(&self, aggregator: A) -> Stream<C, O>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         A: Aggregator<Z::Val, (), Z::R>,
         O: IndexedZSet<Key = Z::Key, Val = A::Output>,
         O::R: ZRingValue,
@@ -239,7 +240,7 @@ where
     #[allow(clippy::type_complexity)]
     pub fn aggregate<A>(&self, aggregator: A) -> Stream<C, OrdIndexedZSet<Z::Key, A::Output, Z::R>>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         A: Aggregator<Z::Val, <C as WithClock>::Time, Z::R>,
         Z::R: ZRingValue,
     {
@@ -249,7 +250,7 @@ where
     /// Like [`Self::aggregate`], but can return any batch type.
     pub fn aggregate_generic<A, O>(&self, aggregator: A) -> Stream<C, O>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         A: Aggregator<Z::Val, <C as WithClock>::Time, Z::R>,
         O: Batch<Key = Z::Key, Val = A::Output, Time = ()>,
         O::R: ZRingValue,
@@ -273,7 +274,7 @@ where
             .add_binary_operator(
                 AggregateIncremental::new(aggregator, circuit.clone()),
                 &stream,
-                &stream.trace::<Spine<<<C as WithClock>::Time as Timestamp>::OrdValBatch<Z::Key, Z::Val, Z::R>>>(),
+                &stream.trace(),
             )
             .upsert::<O>()
             .mark_sharded()

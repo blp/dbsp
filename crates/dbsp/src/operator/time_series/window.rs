@@ -7,14 +7,14 @@ use crate::{
         Circuit, OwnershipPreference, Scope, Stream,
     },
     operator::trace::TraceBound,
-    trace::{cursor::Cursor, BatchReader, Spine},
+    trace::{cursor::Cursor, ord::SpillableBatch, Batch, BatchReader, Spine},
 };
 use std::{borrow::Cow, cmp::max, marker::PhantomData};
 
 impl<C, B> Stream<C, B>
 where
     C: Circuit,
-    B: IndexedZSet,
+    B: IndexedZSet + SpillableBatch,
     B::R: NegByRef,
 {
     /// Extract a subset of values that fall within a moving window from a
@@ -72,7 +72,10 @@ where
     ///                      │            trace            │
     ///                      └─────────────────────────────┘
     /// ```
-    pub fn window(&self, bounds: &Stream<C, (B::Key, B::Key)>) -> Stream<C, B> {
+    pub fn window(
+        &self,
+        bounds: &Stream<C, (B::Key, B::Key)>,
+    ) -> Stream<C, <B as SpillableBatch>::Spilled> {
         let bound = TraceBound::new();
         let bound_clone = bound.clone();
         bounds.apply(move |(lower, _upper)| {
@@ -127,9 +130,15 @@ where
     }
 }
 
-impl<B> TernaryOperator<Spine<B>, B, (B::Key, B::Key), B> for Window<B>
+impl<B>
+    TernaryOperator<
+        Spine<<B as SpillableBatch>::Spilled>,
+        B,
+        (B::Key, B::Key),
+        <B as SpillableBatch>::Spilled,
+    > for Window<B>
 where
-    B: IndexedZSet,
+    B: IndexedZSet + SpillableBatch,
     B::R: NegByRef,
 {
     /// * `batch` - input stream containing new time series data points indexed
@@ -143,10 +152,10 @@ where
     // in region3.
     fn eval(
         &mut self,
-        trace: Cow<'_, Spine<B>>,
+        trace: Cow<'_, Spine<<B as SpillableBatch>::Spilled>>,
         batch: Cow<'_, B>,
         bounds: Cow<'_, (B::Key, B::Key)>,
-    ) -> B {
+    ) -> <B as SpillableBatch>::Spilled {
         //           ┌────────────────────────────────────────┐
         //           │       previous window                  │
         //           │                                        │             e1
@@ -169,6 +178,12 @@ where
         let mut trace_cursor = trace.cursor();
         let mut batch_cursor = batch.cursor();
 
+        // Defining this closure avoids repeating the awful type expression more
+        // times than necessary.
+        let make_item = |key: &B::Key, val: &B::Val| {
+            <B as SpillableBatch>::Spilled::item_from(key.clone(), val.clone())
+        };
+
         if let Some((start0, end0)) = &self.window {
             // Retract tuples in `trace` that slid out of the window (region 1).
             trace_cursor.seek_key(start0);
@@ -178,7 +193,7 @@ where
             {
                 let key = trace_cursor.key().clone();
                 trace_cursor.map_values(|val, weight| {
-                    tuples.push((B::item_from(key.clone(), val.clone()), weight.neg_by_ref()))
+                    tuples.push((make_item(&key, &val), weight.neg_by_ref()))
                 });
                 trace_cursor.step_key();
             }
@@ -190,7 +205,7 @@ where
                 while trace_cursor.key_valid() && trace_cursor.key() < end0 {
                     let key = trace_cursor.key().clone();
                     trace_cursor.map_values(|val, weight| {
-                        tuples.push((B::item_from(key.clone(), val.clone()), weight.neg_by_ref()))
+                        tuples.push((make_item(&key, &val), weight.neg_by_ref()))
                     });
                     trace_cursor.step_key();
                 }
@@ -200,9 +215,8 @@ where
             trace_cursor.seek_key(max(end0, &start1));
             while trace_cursor.key_valid() && trace_cursor.key() < &end1 {
                 let key = trace_cursor.key().clone();
-                trace_cursor.map_values(|val, weight| {
-                    tuples.push((B::item_from(key.clone(), val.clone()), weight.clone()))
-                });
+                trace_cursor
+                    .map_values(|val, weight| tuples.push((make_item(&key, &val), weight.clone())));
                 trace_cursor.step_key();
             }
         };
@@ -211,14 +225,13 @@ where
         batch_cursor.seek_key(&start1);
         while batch_cursor.key_valid() && batch_cursor.key() < &end1 {
             let key = batch_cursor.key().clone();
-            batch_cursor.map_values(|val, weight| {
-                tuples.push((B::item_from(key.clone(), val.clone()), weight.clone()))
-            });
+            batch_cursor
+                .map_values(|val, weight| tuples.push((make_item(&key, &val), weight.clone())));
             batch_cursor.step_key();
         }
 
         self.window = Some((start1, end1));
-        B::from_tuples((), tuples)
+        <B as SpillableBatch>::Spilled::from_tuples((), tuples)
     }
 
     fn input_preference(

@@ -256,7 +256,7 @@ impl RootCircuit {
     ///
     /// # Data retention
     ///
-    /// Applying [`Stream::integrate_trace_retain_keys`], and
+    /// Applying [`Stream::integrate_trace_retain_keys_in_memory`], and
     /// [`Stream::integrate_trace_with_bound`] methods to the stream has the
     /// additional effect of filtering out all values that don't satisfy the
     /// retention policy configured by these methods from the stream.
@@ -1355,7 +1355,8 @@ mod test {
     fn set_test_circuit(circuit: &RootCircuit) -> AnyResult<UpsertHandle<u64, bool>> {
         let (stream, handle) = circuit.add_input_set::<u64, i64>();
         let watermark = stream.waterline(|| 0, |k, ()| *k, |k1, k2| max(*k1, *k2));
-        stream.integrate_trace_retain_keys(&watermark, |k, ts| *k >= ts.saturating_sub(10));
+        stream
+            .integrate_trace_retain_keys_in_memory(&watermark, |k, ts| *k >= ts.saturating_sub(10));
 
         let mut expected_batches = output_set_updates().into_iter();
 
@@ -1572,7 +1573,9 @@ mod test {
             |k, v| (*k, *v),
             |ts1, ts2| (max(ts1.0, ts2.0), max(ts1.1, ts2.1)),
         );
-        stream.integrate_trace_retain_values(&watermark, |v, ts| *v >= ts.1.saturating_sub(10));
+        stream.integrate_trace_retain_values_in_memory(&watermark, |v, ts| {
+            *v >= ts.1.saturating_sub(10)
+        });
 
         let mut expected_batches = expected_outputs().into_iter();
 

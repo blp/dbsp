@@ -8,7 +8,7 @@ use crate::{
     circuit::GlobalNodeId,
     circuit_cache_key, default_hash,
     operator::communication::exchange::new_exchange_operators,
-    trace::{cursor::Cursor, Batch, BatchReader, Builder, Trace},
+    trace::{cursor::Cursor, ord::SpillableBatch, Batch, BatchReader, Builder, Trace},
     Circuit, Runtime, Stream,
 };
 // Import `spine_fueled::Spine` here instead of `trace::Spine` because it is
@@ -30,7 +30,7 @@ fn sharding_policy<C>(_circuit: &C) -> ShardingPolicy {
 impl<C, IB> Stream<C, IB>
 where
     C: Circuit,
-    IB: BatchReader<Time = ()> + Clone,
+    IB: BatchReader<Time = ()> + SpillableBatch + Clone,
     IB::Key: Ord + Clone + Hash,
     IB::Val: Ord + Clone,
 {

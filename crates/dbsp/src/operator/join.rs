@@ -1,6 +1,7 @@
 //! Relational join operator.
 
 use crate::circuit::metadata::{NUM_ENTRIES_LABEL, SHARED_BYTES_LABEL, USED_BYTES_LABEL};
+use crate::trace::ord::SpillableBatch;
 use crate::{
     algebra::{IndexedZSet, Lattice, MulByRef, PartialOrder, ZRingValue, ZSet},
     circuit::{
@@ -11,7 +12,7 @@ use crate::{
     circuit_cache_key,
     operator::FilterMap,
     time::Timestamp,
-    trace::{cursor::Cursor as TraceCursor, Batch, BatchReader, Batcher, Builder, Spine, Trace},
+    trace::{cursor::Cursor as TraceCursor, Batch, BatchReader, Batcher, Builder, Trace},
     DBData, DBTimestamp, OrdIndexedZSet, OrdZSet,
 };
 use size_of::{Context, SizeOf};
@@ -56,8 +57,8 @@ where
         join: F,
     ) -> Stream<C, OrdZSet<V, <I1::R as MulByRef<I2::R>>::Output>>
     where
-        I1: Batch<Time = ()> + Send,
-        I2: Batch<Key = I1::Key, Time = ()> + Send,
+        I1: Batch<Time = ()> + SpillableBatch + Send,
+        I2: Batch<Key = I1::Key, Time = ()> + SpillableBatch + Send,
         I1::R: MulByRef<I2::R>,
         <I1::R as MulByRef<I2::R>>::Output: DBData + ZRingValue,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> V + 'static,
@@ -71,8 +72,8 @@ where
     #[track_caller]
     pub fn stream_join_generic<F, I2, Z>(&self, other: &Stream<C, I2>, join: F) -> Stream<C, Z>
     where
-        I1: Batch<Time = ()> + Send,
-        I2: Batch<Key = I1::Key, Time = ()> + Send,
+        I1: Batch<Time = ()> + SpillableBatch + Send,
+        I2: Batch<Key = I1::Key, Time = ()> + SpillableBatch + Send,
         Z: ZSet,
         I1::R: MulByRef<I2::R, Output = Z::R>,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> Z::Key + 'static,
@@ -93,8 +94,8 @@ where
     #[track_caller]
     pub fn monotonic_stream_join<F, I2, Z>(&self, other: &Stream<C, I2>, join: F) -> Stream<C, Z>
     where
-        I1: Batch<Time = ()> + Send,
-        I2: Batch<Key = I1::Key, Time = ()> + Send,
+        I1: Batch<Time = ()> + SpillableBatch + Send,
+        I2: Batch<Key = I1::Key, Time = ()> + SpillableBatch + Send,
         Z: ZSet,
         I1::R: MulByRef<I2::R, Output = Z::R>,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> Z::Key + 'static,
@@ -147,8 +148,8 @@ impl<I1> Stream<RootCircuit, I1> {
         join_func: F,
     ) -> Stream<RootCircuit, Z>
     where
-        I1: IndexedZSet + Send,
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I1: IndexedZSet + SpillableBatch + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + SpillableBatch + Send,
         F: Clone + Fn(&I1::Key, &I1::Val, &I2::Val) -> Z::Key + 'static,
         Z: ZSet<R = I1::R>,
         Z::R: ZRingValue,
@@ -167,7 +168,7 @@ impl<C, I1> Stream<C, I1>
 where
     C: Circuit,
     <C as WithClock>::Time: DBTimestamp,
-    I1: IndexedZSet + Send,
+    I1: IndexedZSet + SpillableBatch + Send,
     I1::R: ZRingValue,
 {
     // TODO: Derive `TS` type from circuit.
@@ -191,7 +192,7 @@ where
         join_func: F,
     ) -> Stream<C, OrdZSet<V, I1::R>>
     where
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + SpillableBatch + Send,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> V + Clone + 'static,
         V: DBData,
     {
@@ -211,7 +212,7 @@ where
         join_func: F,
     ) -> Stream<C, OrdIndexedZSet<K, V, I1::R>>
     where
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + SpillableBatch + Send,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> It + Clone + 'static,
         K: DBData,
         V: DBData,
@@ -224,7 +225,7 @@ where
     #[track_caller]
     pub fn join_generic<I2, F, Z, It>(&self, other: &Stream<C, I2>, join_func: F) -> Stream<C, Z>
     where
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + SpillableBatch + Send,
         Z: IndexedZSet<R = I1::R>,
         Z::R: MulByRef<Output = Z::R>,
         F: Fn(&I1::Key, &I1::Val, &I2::Val) -> It + Clone + 'static,
@@ -273,8 +274,8 @@ where
         let left = self.shard();
         let right = other.shard();
 
-        let left_trace = left.trace::<Spine<<<C as WithClock>::Time as Timestamp>::OrdValBatch<I1::Key, I1::Val, I1::R>>>();
-        let right_trace = right.trace::<Spine<<<C as WithClock>::Time as Timestamp>::OrdValBatch<I1::Key, I2::Val, I1::R>>>();
+        let left_trace = left.trace();
+        let right_trace = right.trace();
 
         let left = self.circuit().add_binary_operator(
             JoinTrace::new(
@@ -305,7 +306,7 @@ where
     /// excluding keys that are present in `other`.
     pub fn antijoin<I2>(&self, other: &Stream<C, I2>) -> Stream<C, I1>
     where
-        I2: IndexedZSet<Key = I1::Key, R = I1::R> + Send,
+        I2: IndexedZSet<Key = I1::Key, R = I1::R> + SpillableBatch + Send,
     {
         self.circuit()
             .cache_get_or_insert_with(
@@ -352,7 +353,8 @@ where
     ) -> Stream<C, OrdZSet<O, Z::R>>
     where
         Self: FilterMap<C, R = Z::R>,
-        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + Send,
+        Z: SpillableBatch,
+        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + SpillableBatch + Send,
         Z2::Val: Default,
         Stream<C, Z2>: FilterMap<C, R = Z::R>,
         O: DBData + Default,
@@ -377,7 +379,8 @@ where
     ) -> Stream<C, OrdZSet<O, Z::R>>
     where
         Self: for<'a> FilterMap<C, R = Z::R, ItemRef<'a> = (&'a Z::Key, &'a Z::Val)>,
-        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + Send,
+        Z: SpillableBatch,
+        Z2: IndexedZSet<Key = Z::Key, R = Z::R> + SpillableBatch + Send,
         Z2::Val: Default,
         Stream<C, Z2>: for<'a> FilterMap<C, R = Z::R, ItemRef<'a> = (&'a Z2::Key, &'a Z2::Val)>,
         O: DBData + Default,
@@ -1202,7 +1205,7 @@ mod test {
                     |_from, label, to| Label(*to, *label),
                 ));
 
-                Ok(result.integrate_trace().export())
+                Ok(result.integrate_trace_in_memory().export())
             })
             .unwrap();
 
@@ -1340,7 +1343,7 @@ mod test {
                     //println!("counter: {}", *counter);
                     Ok(*counter == 2)
                 },
-                result.integrate_trace().export()))
+                result.integrate_trace_in_memory().export()))
             }).unwrap();
 
             result.consolidate().inspect(move |res: &OrdZSet<Label, i64>| {
