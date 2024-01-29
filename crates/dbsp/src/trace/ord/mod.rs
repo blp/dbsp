@@ -34,3 +34,32 @@ pub use VecIndexedZSet as OrdIndexedZSet;
 pub use VecKeyBatch as OrdKeyBatch;
 pub use VecValBatch as OrdValBatch;
 pub use VecZSet as OrdZSet;
+
+use crate::DBData;
+use crate::DBWeight;
+
+use super::layers::OrdOffset;
+use super::Batch;
+use super::BatchReader;
+
+pub trait SpillableBatch: BatchReader<Time = ()> {
+    type Spilled: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()>;
+}
+
+impl<K, V, R, O> SpillableBatch for VecIndexedZSet<K, V, R, O>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+    O: OrdOffset + 'static,
+{
+    type Spilled = FileIndexedZSet<K, V, R>;
+}
+
+impl<K, R> SpillableBatch for VecZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type Spilled = FileZSet<K, R>;
+}

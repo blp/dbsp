@@ -66,10 +66,10 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
     trace::{
-        ord::{OrdKeyBatch, OrdValBatch},
+        ord::{FileIndexedZSet, FileValBatch, OrdKeyBatch, VecIndexedZSet, VecValBatch},
         Batch,
     },
-    DBData, DBWeight, OrdIndexedZSet, OrdZSet,
+    DBData, DBWeight, OrdZSet,
 };
 use rkyv::{Archive, Deserialize, Serialize};
 use size_of::SizeOf;
@@ -105,6 +105,8 @@ pub trait Timestamp:
     /// `trait Timestamp` -- not a very elegant solution, but I couldn't
     /// think of a better one.
     type OrdValBatch<K: DBData, V: DBData, R: DBWeight>: Batch<Key = K, Val = V, Time = Self, R = R>
+        + SizeOf;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight>: Batch<Key = K, Val = V, Time = Self, R = R>
         + SizeOf;
 
     type OrdKeyBatch<K: DBData, R: DBWeight>: Batch<Key = K, Val = (), Time = Self, R = R> + SizeOf;
@@ -217,7 +219,8 @@ impl Lattice for UnitTimestamp {
 impl Timestamp for UnitTimestamp {
     type Nested = ();
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdValBatch<K, V, Self, R>;
+    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = FileValBatch<K, V, Self, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecValBatch<K, V, Self, R>;
     type OrdKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
@@ -243,7 +246,8 @@ impl Timestamp for UnitTimestamp {
 impl Timestamp for () {
     type Nested = NestedTimestamp32;
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdIndexedZSet<K, V, R>;
+    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = FileIndexedZSet<K, V, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecIndexedZSet<K, V, R>;
     type OrdKeyBatch<K: DBData, R: DBWeight> = OrdZSet<K, R>;
 
     fn minimum() -> Self {}
@@ -259,7 +263,8 @@ impl Timestamp for () {
 impl Timestamp for u32 {
     type Nested = NestedTimestamp32;
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdValBatch<K, V, Self, R>;
+    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = FileValBatch<K, V, Self, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecValBatch<K, V, Self, R>;
     type OrdKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {

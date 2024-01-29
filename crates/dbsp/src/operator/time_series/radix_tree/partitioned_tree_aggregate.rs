@@ -13,7 +13,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{cursor::CursorEmpty, Builder, Cursor, Spine},
+    trace::{cursor::CursorEmpty, ord::SpillableBatch, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, OrdIndexedZSet, RootCircuit, Stream,
 };
@@ -122,7 +122,7 @@ where
         aggregator: Agg,
     ) -> OrdPartitionedRadixTreeStream<Z::Key, TS, Agg::Accumulator, i64>
     where
-        Z: PartitionedIndexedZSet<TS, V> + SizeOf,
+        Z: PartitionedIndexedZSet<TS, V> + SpillableBatch + SizeOf,
         TS: DBData + PrimInt,
         V: DBData,
         Agg: Aggregator<V, (), Z::R>,
@@ -143,7 +143,7 @@ where
         aggregator: Agg,
     ) -> Stream<RootCircuit, O>
     where
-        Z: PartitionedIndexedZSet<TS, V> + SizeOf,
+        Z: PartitionedIndexedZSet<TS, V> + SpillableBatch + SizeOf,
         TS: DBData + PrimInt,
         V: DBData,
         Agg: Aggregator<V, (), Z::R>,

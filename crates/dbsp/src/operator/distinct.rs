@@ -1,6 +1,7 @@
 //! Distinct operator.
 
 use crate::circuit::metadata::{SHARED_BYTES_LABEL, USED_BYTES_LABEL};
+use crate::trace::ord::SpillableBatch;
 use crate::{
     algebra::{AddByRef, HasOne, HasZero, IndexedZSet, Lattice, PartialOrder, Present, ZRingValue},
     circuit::{
@@ -9,7 +10,7 @@ use crate::{
         Circuit, GlobalNodeId, Scope, Stream, WithClock,
     },
     circuit_cache_key,
-    trace::{spine_fueled::Spine, Batch, BatchReader, Builder, Cursor as TraceCursor, Trace},
+    trace::{Batch, BatchReader, Builder, Cursor as TraceCursor, Trace},
     DBTimestamp, OrdIndexedZSet, Timestamp,
 };
 use size_of::SizeOf;
@@ -87,7 +88,7 @@ where
     /// by eliminating duplicates.
     pub fn stream_distinct(&self) -> Stream<C, Z>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         Z::R: ZRingValue,
     {
         self.circuit()
@@ -111,7 +112,7 @@ where
     /// by eliminating duplicates.
     pub fn distinct(&self) -> Stream<C, Z>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         Z::R: ZRingValue,
         <C as WithClock>::Time: DBTimestamp,
     {
@@ -142,13 +143,7 @@ where
                             circuit.add_binary_operator(
                                 DistinctIncremental::new(circuit.clone()),
                                 &stream,
-                                &stream.trace::<Spine<
-                                    <<C as WithClock>::Time as Timestamp>::OrdValBatch<
-                                        Z::Key,
-                                        Z::Val,
-                                        Z::R,
-                                    >,
-                                >>(),
+                                &stream.trace(),
                             )
                         }
                         .mark_sharded()

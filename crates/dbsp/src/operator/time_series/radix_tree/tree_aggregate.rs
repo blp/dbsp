@@ -10,7 +10,7 @@ use crate::{
         trace::{TraceBounds, TraceFeedback},
         Aggregator,
     },
-    trace::{Batch, BatchReader, Builder, Spine},
+    trace::{ord::SpillableBatch, Batch, BatchReader, Builder, Spine},
     Circuit, DBData, NumEntries, OrdIndexedZSet, Stream,
 };
 use num::PrimInt;
@@ -59,7 +59,7 @@ where
         aggregator: Agg,
     ) -> Stream<C, OrdRadixTree<Z::Key, Agg::Accumulator, i64>>
     where
-        Z: IndexedZSet + SizeOf + NumEntries + Send,
+        Z: IndexedZSet + SpillableBatch + SizeOf + NumEntries + Send,
         Z::Key: PrimInt,
         Agg: Aggregator<Z::Val, (), Z::R>,
         Agg::Accumulator: Default + DBData,
@@ -70,7 +70,7 @@ where
     /// Like [`Self::tree_aggregate`], but can return any batch type.
     pub fn tree_aggregate_generic<Agg, O>(&self, aggregator: Agg) -> Stream<C, O>
     where
-        Z: IndexedZSet + SizeOf + NumEntries + Send,
+        Z: IndexedZSet + SpillableBatch + SizeOf + NumEntries + Send,
         Z::Key: PrimInt,
         Agg: Aggregator<Z::Val, (), Z::R>,
         Agg::Accumulator: Default + DBData,

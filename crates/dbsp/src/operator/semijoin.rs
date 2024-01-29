@@ -6,7 +6,7 @@ use crate::{
     },
     circuit::{GlobalNodeId, OwnershipPreference},
     circuit_cache_key,
-    trace::{Batch, BatchReader, Builder, Consumer, Cursor, ValueConsumer},
+    trace::{ord::SpillableBatch, Batch, BatchReader, Builder, Consumer, Cursor, ValueConsumer},
     Circuit, Stream,
 };
 use std::{
@@ -39,8 +39,8 @@ where
     where
         // TODO: Associated type bounds (rust/#52662) really simplify things
         // TODO: Allow non-unit timestamps
-        Pairs: Batch<Time = ()> + Send,
-        Keys: Batch<Key = Pairs::Key, Val = (), Time = ()> + Send,
+        Pairs: Batch<Time = ()> + SpillableBatch + Send,
+        Keys: Batch<Key = Pairs::Key, Val = (), Time = ()> + SpillableBatch + Send,
         // TODO: Should this be `IndexedZSet<Key = Pairs::Key, Val = Pairs::Val>`?
         Out: ZSet<Key = (Pairs::Key, Pairs::Val)>,
         Pairs::R: MulByRef<Keys::R, Output = Out::R>,

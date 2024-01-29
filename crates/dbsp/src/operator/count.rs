@@ -3,7 +3,7 @@
 use crate::{
     algebra::{HasOne, IndexedZSet, ZRingValue},
     circuit::{Circuit, Stream, WithClock},
-    trace::Batch,
+    trace::{ord::SpillableBatch, Batch},
     DBTimestamp, OrdIndexedZSet,
 };
 
@@ -11,7 +11,7 @@ impl<C, Z> Stream<C, Z>
 where
     C: Circuit,
     <C as WithClock>::Time: DBTimestamp,
-    Z: IndexedZSet,
+    Z: IndexedZSet + SpillableBatch,
     Z::R: ZRingValue,
 {
     /// Incrementally sums the weights for each key `self` into an indexed Z-set
@@ -37,7 +37,7 @@ where
     #[allow(clippy::type_complexity)]
     pub fn distinct_count(&self) -> Stream<C, OrdIndexedZSet<Z::Key, Z::R, Z::R>>
     where
-        Z: Send,
+        Z: SpillableBatch + Send,
     {
         self.distinct_count_generic()
     }
@@ -46,7 +46,7 @@ where
     pub fn distinct_count_generic<O>(&self) -> Stream<C, O>
     where
         O: Batch<Key = Z::Key, Val = Z::R, R = Z::R, Time = ()>,
-        Z: Send,
+        Z: SpillableBatch + Send,
     {
         self.distinct().weighted_count_generic()
     }
@@ -86,7 +86,7 @@ where
     /// Like [`Self::distinct_count`], but can return any batch type.
     pub fn stream_distinct_count_generic<O>(&self) -> Stream<C, O>
     where
-        O: IndexedZSet<Key = Z::Key, Val = Z::R, R = Z::R, Time = ()>,
+        O: IndexedZSet<Key = Z::Key, Val = Z::R, R = Z::R, Time = ()> + SpillableBatch,
         Z: Send,
     {
         self.stream_distinct().stream_weighted_count_generic()

@@ -2,7 +2,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
     time::Timestamp,
-    trace::ord::{OrdKeyBatch, OrdValBatch},
+    trace::ord::{FileValBatch, OrdKeyBatch, VecValBatch},
     DBData, DBTimestamp, DBWeight,
 };
 use rkyv::{Archive, Deserialize, Serialize};
@@ -88,7 +88,8 @@ where
 {
     type Nested = Product<Self, u32>;
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdValBatch<K, V, Self, R>;
+    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = FileValBatch<K, V, Self, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecValBatch<K, V, Self, R>;
     type OrdKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
