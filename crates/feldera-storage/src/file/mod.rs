@@ -193,7 +193,7 @@ mod test {
         after: &K,
         aux: A,
     ) where
-        S: StorageRead + StorageExecutor,
+        S: StorageRead + StorageControl + StorageExecutor,
         K: Rkyv + Debug + Ord + Eq + Clone,
         A: Rkyv + Debug + Eq + Clone,
         T: ColumnSpec,
@@ -233,7 +233,7 @@ mod test {
 
     fn test_out_of_range<S, K, A, N, T>(row_group: &RowGroup<S, K, A, N, T>, before: &K, after: &K)
     where
-        S: StorageRead + StorageExecutor,
+        S: StorageRead + StorageControl + StorageExecutor,
         K: Rkyv + Debug + Ord + Eq + Clone,
         A: Rkyv + Debug + Eq + Clone,
         T: ColumnSpec,
@@ -262,7 +262,7 @@ mod test {
         n: usize,
         expected: impl Fn(usize) -> (K, K, K, A),
     ) where
-        S: StorageRead + StorageExecutor,
+        S: StorageRead + StorageControl + StorageExecutor,
         K: Rkyv + Debug + Ord + Eq + Clone,
         A: Rkyv + Debug + Eq + Clone,
         T: ColumnSpec,
@@ -333,7 +333,7 @@ mod test {
         n: usize,
         expected: impl Fn(usize) -> (K, K, K, A),
     ) where
-        S: StorageRead + StorageExecutor,
+        S: StorageRead + StorageControl + StorageExecutor,
         K: Rkyv + Debug + Ord + Eq + Clone,
         A: Rkyv + Debug + Eq + Clone,
         T: ColumnSpec,
