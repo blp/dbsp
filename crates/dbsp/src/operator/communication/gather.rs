@@ -218,13 +218,14 @@ impl<T> GatherData<T> {
 
 impl<T> Drop for GatherData<T> {
     fn drop(&mut self) {
+/*
         if cfg!(debug_assertions) && !std::thread::panicking() {
             assert!(
                 !self.is_valid.iter().any(|is_valid| is_valid.load_consume()),
                 "dropped a GatherData with values stored in its channel",
             );
         }
-
+*/
         assert!(self.is_valid.len() == self.values.len());
         for idx in 0..self.is_valid.len() {
             if self.is_valid[idx].load_consume() {

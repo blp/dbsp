@@ -211,11 +211,11 @@ fn panic_hook(panic_info: &PanicInfo<'_>, default_panic_hook: &dyn Fn(&PanicInfo
     // Call the default panic hook first.
     default_panic_hook(panic_info);
 
-    RUNTIME.with(|runtime| {
+    let _ = RUNTIME.try_with(|runtime| {
         if let Some(runtime) = runtime.borrow().clone() {
             runtime.panic(panic_info)
         }
-    })
+    });
 }
 
 /// A multithreaded runtime that hosts `N` circuits running in parallel worker
