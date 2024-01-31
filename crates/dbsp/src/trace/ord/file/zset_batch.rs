@@ -28,7 +28,7 @@ use std::{
 ///
 /// Each tuple in `FileZSet<K, R>` has key type `K`, value type `()`, weight
 /// type `R`, and time type `()`.
-#[derive(Debug, Clone, Eq, PartialEq, SizeOf, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, SizeOf, Archive, Serialize, Deserialize)]
 pub struct FileZSet<K, R>
 where
     K: DBData,
@@ -71,6 +71,26 @@ where
             }
             cursor.step_key();
         }
+    }
+}
+
+impl<Other, K, R> PartialEq<Other> for FileZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+    Other: BatchReader<Key = K, Val = (), R = R, Time = ()>,
+{
+    fn eq(&self, other: &Other) -> bool {
+        let mut c1 = self.cursor();
+        let mut c2 = other.cursor();
+        while c1.key_valid() && c2.key_valid() {
+            if c1.key() != c2.key() || c1.weight() != c2.weight() {
+                return false;
+            }
+            c1.step_key();
+            c2.step_key();
+        }
+        !c1.key_valid() && !c2.key_valid()
     }
 }
 
