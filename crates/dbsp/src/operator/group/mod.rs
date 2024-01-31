@@ -10,6 +10,7 @@ use crate::{
     operator::trace::{TraceBounds, TraceFeedback},
     trace::{
         cursor::{CursorEmpty, CursorGroup, CursorPair},
+        ord::SpillableBatch,
         Builder, Cursor, Spine, Trace,
     },
     Circuit, DBData, DBWeight, IndexedZSet, OrdIndexedZSet, RootCircuit, Stream,
@@ -279,6 +280,7 @@ where
         transformer: GT,
     ) -> Stream<RootCircuit, OrdIndexedZSet<B::Key, OV, B::R>>
     where
+        B: SpillableBatch,
         GT: GroupTransformer<B::Val, OV, B::R>,
         OV: DBData,
         B::R: ZRingValue,
@@ -290,6 +292,7 @@ where
     /// indexed Z-set, not just [`OrdIndexedZSet`]
     fn group_transform_generic<GT, OB>(&self, transform: GT) -> Stream<RootCircuit, OB>
     where
+        B: SpillableBatch,
         OB: IndexedZSet<Key = B::Key, R = B::R>,
         OB::Item: Ord,
         GT: GroupTransformer<B::Val, OB::Val, B::R>,

@@ -1,6 +1,7 @@
 //! Distinct operator.
 
 use crate::circuit::metadata::{SHARED_BYTES_LABEL, USED_BYTES_LABEL};
+use crate::trace::ord::SpillableBatch;
 use crate::{
     algebra::{AddByRef, HasOne, HasZero, IndexedZSet, Lattice, PartialOrder, Present, ZRingValue},
     circuit::{
@@ -87,7 +88,7 @@ where
     /// by eliminating duplicates.
     pub fn stream_distinct(&self) -> Stream<C, Z>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         Z::R: ZRingValue,
     {
         self.circuit()
@@ -111,7 +112,7 @@ where
     /// by eliminating duplicates.
     pub fn distinct(&self) -> Stream<C, Z>
     where
-        Z: IndexedZSet + Send,
+        Z: IndexedZSet + SpillableBatch + Send,
         Z::R: ZRingValue,
         <C as WithClock>::Time: DBTimestamp,
     {

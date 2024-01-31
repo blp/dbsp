@@ -34,3 +34,39 @@ pub use VecIndexedZSet as OrdIndexedZSet;
 pub use VecKeyBatch as OrdKeyBatch;
 pub use VecValBatch as OrdValBatch;
 pub use VecZSet as OrdZSet;
+
+use crate::DBData;
+use crate::DBWeight;
+
+use super::layers::OrdOffset;
+use super::Batch;
+use super::BatchReader;
+
+/// A batch that can be written to storage, by being transformed into an
+/// on-storage batch.
+///
+/// Stream operator
+/// [`Stream::spill`](crate::circuit::circuit_builder::Stream::spill) spills the
+/// batch to storage.
+pub trait SpillableBatch: BatchReader<Time = ()> {
+    /// The type that the batch is transformed into for storage.
+    type Spilled: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()>;
+}
+
+impl<K, V, R, O> SpillableBatch for VecIndexedZSet<K, V, R, O>
+where
+    K: DBData,
+    V: DBData,
+    R: DBWeight,
+    O: OrdOffset + 'static,
+{
+    type Spilled = FileIndexedZSet<K, V, R>;
+}
+
+impl<K, R> SpillableBatch for VecZSet<K, R>
+where
+    K: DBData,
+    R: DBWeight,
+{
+    type Spilled = FileZSet<K, R>;
+}

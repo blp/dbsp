@@ -4,12 +4,14 @@ use crate::{
         operator_traits::{BinaryOperator, Operator},
         OwnershipPreference, Scope, WithClock,
     },
-    operator::trace::{DelayedTraceId, TraceBounds, TraceId, Z1Trace, KeySpine, TraceAppend, ValSpine},
+    operator::trace::{DelayedTraceId, TraceBounds, TraceId, Z1Trace},
     trace::{consolidation::consolidate, cursor::Cursor, Batch, BatchReader, Builder, Trace},
     utils::VecExt,
     Circuit, DBData, DBTimestamp, Stream, Timestamp,
 };
 use std::{borrow::Cow, marker::PhantomData, ops::Neg};
+
+use super::trace::{FileValSpine, MemKeySpine, TraceAppend};
 
 impl<C, K> Stream<C, Vec<(K, Option<()>)>>
 where
@@ -65,7 +67,7 @@ where
 
             let delta = circuit
                 .add_binary_operator(
-                    <Upsert<KeySpine<B, C>, B>>::new(bounds.clone()),
+                    <Upsert<MemKeySpine<B, C>, B>>::new(bounds.clone()),
                     &local,
                     &self.try_sharded_version(),
                 )
@@ -73,7 +75,7 @@ where
             delta.mark_sharded_if(self);
 
             let trace = circuit.add_binary_operator_with_preference(
-                <TraceAppend<KeySpine<B, C>, B, C>>::new(circuit.clone()),
+                <TraceAppend<MemKeySpine<B, C>, B, C>>::new(circuit.clone()),
                 (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
                 (
                     &delta.try_sharded_version(),
@@ -151,7 +153,7 @@ where
 
             let delta = circuit
                 .add_binary_operator(
-                    <Upsert<ValSpine<B, C>, B>>::new(bounds.clone()),
+                    <Upsert<FileValSpine<B, C>, B>>::new(bounds.clone()),
                     &local,
                     &self.try_sharded_version(),
                 )
@@ -159,7 +161,7 @@ where
             delta.mark_sharded_if(self);
 
             let trace = circuit.add_binary_operator_with_preference(
-                <TraceAppend<ValSpine<B, C>, B, C>>::new(circuit.clone()),
+                <TraceAppend<FileValSpine<B, C>, B, C>>::new(circuit.clone()),
                 (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
                 (
                     &delta.try_sharded_version(),

@@ -14,7 +14,7 @@ use crate::{
         trace::{TraceBound, TraceBounds, TraceFeedback},
         Aggregator, Avg, FilterMap,
     },
-    trace::{BatchReader, Builder, Cursor, Spine},
+    trace::{ord::SpillableBatch, BatchReader, Builder, Cursor, Spine},
     utils::Tup2,
     Circuit, DBData, DBWeight, RootCircuit, Stream,
 };
@@ -163,7 +163,9 @@ where
         range: RelRange<TS>,
     ) -> OrdPartitionedOverStream<PK, TS, Agg::Output, B::R>
     where
-        B: IndexedZSet<Key = TS>,
+        B: IndexedZSet<Key = TS> + SpillableBatch,
+        Stream<RootCircuit, <B as SpillableBatch>::Spilled>:
+            for<'a> FilterMap<RootCircuit, ItemRef<'a> = (&'a B::Key, &'a B::Val), R = B::R>,
         Self: for<'a> FilterMap<RootCircuit, ItemRef<'a> = (&'a B::Key, &'a B::Val), R = B::R>,
         B::R: ZRingValue,
         PK: DBData,
@@ -246,7 +248,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> OrdPartitionedOverStream<B::Key, TS, Agg::Output, B::R>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue,
         Agg: Aggregator<V, (), B::R>,
         Agg::Accumulator: Default,
@@ -264,7 +266,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> Stream<RootCircuit, O>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue,
         Agg: Aggregator<V, (), B::R>,
         Agg::Accumulator: Default,
@@ -300,7 +302,7 @@ impl<B> Stream<RootCircuit, B> {
         bound: TraceBound<Tup2<TS, Option<Agg::Output>>>,
     ) -> Stream<RootCircuit, O>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue,
         Agg: Aggregator<V, (), B::R>,
         Agg::Accumulator: Default,
@@ -366,7 +368,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> OrdPartitionedOverStream<B::Key, TS, O, B::R>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue,
         A: DBData + MulByRef<B::R, Output = A> + GroupValue + Default,
         F: Fn(&V) -> A + Clone + 'static,
@@ -390,7 +392,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> Stream<RootCircuit, Out>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue,
         A: DBData + MulByRef<B::R, Output = A> + GroupValue + Default,
         F: Fn(&V) -> A + Clone + 'static,
@@ -413,7 +415,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> OrdPartitionedOverStream<B::Key, TS, V, B::R>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue + Default,
         TS: DBData + PrimInt,
         V: DBData + From<B::R> + GroupValue + Default + MulByRef<Output = V> + Div<Output = V>,
@@ -428,7 +430,7 @@ impl<B> Stream<RootCircuit, B> {
         range: RelRange<TS>,
     ) -> Stream<RootCircuit, Out>
     where
-        B: PartitionedIndexedZSet<TS, V>,
+        B: PartitionedIndexedZSet<TS, V> + SpillableBatch,
         B::R: ZRingValue + Default,
         TS: DBData + PrimInt,
         V: DBData + From<B::R> + GroupValue + Default + MulByRef<Output = V> + Div<Output = V>,

@@ -3,6 +3,7 @@ use crate::{
     algebra::{HasZero, ZRingValue},
     trace::{
         cursor::{CursorPair, ReverseKeyCursor},
+        ord::SpillableBatch,
         Cursor,
     },
     utils::Tup2,
@@ -14,7 +15,7 @@ const MAX_RETRACTIONS_CAPACITY: usize = 100_000usize;
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + SpillableBatch + Send,
 {
     /// Lag operator matches each row in a group with a previous row in the
     /// same group.

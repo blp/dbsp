@@ -1,6 +1,7 @@
 use crate::circuit::metadata::{
     ALLOCATED_BYTES_LABEL, NUM_ENTRIES_LABEL, SHARED_BYTES_LABEL, USED_BYTES_LABEL,
 };
+use crate::trace::ord::SpillableBatch;
 use crate::{
     circuit::{
         metadata::{MetaItem, OperatorMeta},
@@ -18,6 +19,7 @@ use std::{borrow::Cow, cell::RefCell, marker::PhantomData, ops::DerefMut, rc::Rc
 
 circuit_cache_key!(TraceId<B, D, K, V>(GlobalNodeId => (Stream<B, D>, TraceBounds<K, V>)));
 circuit_cache_key!(DelayedTraceId<B, D>(GlobalNodeId => Stream<B, D>));
+circuit_cache_key!(SpillId<C, D>(GlobalNodeId => Stream<C, D>));
 
 /// Lower bound on keys or values in a trace.
 ///
@@ -208,19 +210,29 @@ where
     builder.done()
 }
 
-/// A key-only [`Spine`] of `C`'s default batch type, with key and weight types
-/// taken from `B`.
-pub type KeySpine<B, C> = Spine<
-    <<C as WithClock>::Time as Timestamp>::OrdKeyBatch<
+/// A key-only [`Spine`] of `C`'s default type of in-memory batches, with key
+/// and weight types taken from `B`.
+pub type MemKeySpine<B, C> = Spine<
+    <<C as WithClock>::Time as Timestamp>::MemKeyBatch<
         <B as BatchReader>::Key,
         <B as BatchReader>::R,
     >,
 >;
 
-/// A [`Spine`] of `C`'s default batch type, with key, value, and weight types
-/// taken from `B`.
-pub type ValSpine<B, C> = Spine<
-    <<C as WithClock>::Time as Timestamp>::OrdValBatch<
+/// A [`Spine`] of `C`'s default type of on-storage batches, with key, value,
+/// and weight types taken from `B`.
+pub type FileValSpine<B, C> = Spine<
+    <<C as WithClock>::Time as Timestamp>::FileValBatch<
+        <B as BatchReader>::Key,
+        <B as BatchReader>::Val,
+        <B as BatchReader>::R,
+    >,
+>;
+
+/// A [`Spine`] of `C`'s default type of in-memory batches, with key, value,
+/// and weight types taken from `B`.
+pub type MemValSpine<B, C> = Spine<
+    <<C as WithClock>::Time as Timestamp>::MemValBatch<
         <B as BatchReader>::Key,
         <B as BatchReader>::Val,
         <B as BatchReader>::R,
@@ -234,11 +246,23 @@ where
 {
     // TODO: derive timestamp type from the parent circuit.
 
+    /// Spills the in-memory batches in `self` to storage.
+    pub fn spill(&self) -> Stream<C, <B as SpillableBatch>::Spilled>
+    where
+        B: SpillableBatch,
+    {
+        self.circuit()
+            .cache_get_or_insert_with(SpillId::new(self.origin_node_id().clone()), || {
+                self.apply(|batch| batch_add_time(batch, &()))
+            })
+            .clone()
+    }
+
     /// Record batches in `self` in a trace.
     ///
     /// This operator labels each untimed batch in the stream with the current
     /// timestamp and adds it to a trace.
-    pub fn trace(&self) -> Stream<C, ValSpine<B, C>>
+    pub fn trace(&self) -> Stream<C, FileValSpine<B, C>>
     where
         B: IndexedZSet,
         <C as WithClock>::Time: DBTimestamp,
@@ -263,7 +287,7 @@ where
         &self,
         lower_key_bound: TraceBound<B::Key>,
         lower_val_bound: TraceBound<B::Val>,
-    ) -> Stream<C, ValSpine<B, C>>
+    ) -> Stream<C, FileValSpine<B, C>>
     where
         B: IndexedZSet,
         <C as WithClock>::Time: DBTimestamp,
@@ -281,7 +305,7 @@ where
                         bounds.clone(),
                     ));
                     let trace = circuit.add_binary_operator_with_preference(
-                        <TraceAppend<ValSpine<B, C>, B, C>>::new(circuit.clone()),
+                        <TraceAppend<FileValSpine<B, C>, B, C>>::new(circuit.clone()),
                         (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
                         (
                             &self.try_sharded_version(),
@@ -414,26 +438,15 @@ where
         &self,
         bounds_stream: &Stream<C, TS>,
         retain_key_func: RK,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, Spine<<B as SpillableBatch>::Spilled>>
     where
-        B: Batch<Time = ()> + Send,
+        B: Batch<Time = ()> + SpillableBatch + Send,
         TS: DBData,
         RK: Fn(&B::Key, &TS) -> bool + Clone + 'static,
     {
-        // The following `shard` is important.  It makes sure that the
-        // bound is applied to the sharded version of the stream, which is what
-        // all operators that come with a retainment policy use today.
-        // If this changes in the future, we may need two versions of the operator,
-        // with and without sharding.
-        let (trace, bounds) = self.shard().integrate_trace_inner();
-
-        bounds_stream.inspect(move |ts| {
-            let ts = ts.clone();
-            let retain_key_func = retain_key_func.clone();
-            bounds.set_key_filter(Box::new(move |key| retain_key_func(key, &ts)));
-        });
-
-        trace
+        self.shard()
+            .spill()
+            .integrate_trace_retain_keys_in_memory(bounds_stream, retain_key_func)
     }
 
     /// Similar to
@@ -444,18 +457,58 @@ where
         &self,
         bounds_stream: &Stream<C, TS>,
         retain_value: RV,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, Spine<<B as SpillableBatch>::Spilled>>
     where
-        B: Batch<Time = ()> + Send,
+        B: Batch<Time = ()> + SpillableBatch + Send,
         TS: DBData,
         RV: Fn(&B::Val, &TS) -> bool + Clone + 'static,
     {
-        // The following `shard` is important.  It makes sure that the
-        // bound is applied to the sharded version of the stream, which is what
-        // all operators that come with a retainment policy use today.
-        // If this changes in the future, we may need two versions of the operator,
-        // with and without sharding.
-        let (trace, bounds) = self.shard().integrate_trace_inner();
+        self.shard()
+            .spill()
+            .integrate_trace_retain_values_in_memory(bounds_stream, retain_value)
+    }
+
+    /// Like [`integrate_trace_retain_keys`](Self::integrate_trace_retain_keys),
+    /// but keeps the trace in memory rather than spilling it to storage.  This
+    /// is appropriate for traces that are known to remain small.
+    #[track_caller]
+    pub fn integrate_trace_retain_keys_in_memory<TS, RK>(
+        &self,
+        bounds_stream: &Stream<C, TS>,
+        retain_key_func: RK,
+    ) -> Stream<C, Spine<B>>
+    where
+        B: Batch<Time = ()>,
+        TS: DBData,
+        RK: Fn(&B::Key, &TS) -> bool + Clone + 'static,
+    {
+        let (trace, bounds) = self.integrate_trace_inner();
+
+        bounds_stream.inspect(move |ts| {
+            let ts = ts.clone();
+            let retain_key_func = retain_key_func.clone();
+            bounds.set_key_filter(Box::new(move |key| retain_key_func(key, &ts)));
+        });
+
+        trace
+    }
+
+    /// Like
+    /// [`integrate_trace_retain_values`](Self::integrate_trace_retain_values),
+    /// but keeps the trace in memory rather than spilling it to storage.  This
+    /// is appropriate for traces that are known to remain small.
+    #[track_caller]
+    pub fn integrate_trace_retain_values_in_memory<TS, RV>(
+        &self,
+        bounds_stream: &Stream<C, TS>,
+        retain_value: RV,
+    ) -> Stream<C, Spine<B>>
+    where
+        B: Batch<Time = ()>,
+        TS: DBData,
+        RV: Fn(&B::Val, &TS) -> bool + Clone + 'static,
+    {
+        let (trace, bounds) = self.integrate_trace_inner();
 
         bounds_stream.inspect(move |ts| {
             let ts = ts.clone();
@@ -466,17 +519,28 @@ where
         trace
     }
 
-    // TODO: this method should replace `Stream::integrate()`.
+    /// Like [`integrate_trace`](Self::integrate_trace), but keeps the trace in
+    /// memory rather than spilling it to storage.  This is appropriate for
+    /// traces that are known to remain small.
     #[track_caller]
-    pub fn integrate_trace(&self) -> Stream<C, Spine<B>>
+    pub fn integrate_trace_in_memory(&self) -> Stream<C, Spine<B>>
     where
         B: Batch<Time = ()>,
         Spine<B>: SizeOf,
     {
-        self.integrate_trace_with_bound(TraceBound::new(), TraceBound::new())
+        self.integrate_trace_with_bound_in_memory(TraceBound::new(), TraceBound::new())
     }
 
-    pub fn integrate_trace_with_bound(
+    #[track_caller]
+    pub fn integrate_trace(&self) -> Stream<C, Spine<<B as SpillableBatch>::Spilled>>
+    where
+        B: Batch<Time = ()> + SpillableBatch,
+        Spine<<B as SpillableBatch>::Spilled>: SizeOf,
+    {
+        self.spill().integrate_trace_in_memory()
+    }
+
+    pub fn integrate_trace_with_bound_in_memory(
         &self,
         lower_key_bound: TraceBound<B::Key>,
         lower_val_bound: TraceBound<B::Val>,
@@ -491,6 +555,19 @@ where
         bounds.add_val_bound(lower_val_bound);
 
         trace
+    }
+
+    pub fn integrate_trace_with_bound(
+        &self,
+        lower_key_bound: TraceBound<B::Key>,
+        lower_val_bound: TraceBound<B::Val>,
+    ) -> Stream<C, Spine<<B as SpillableBatch>::Spilled>>
+    where
+        B: Batch<Time = ()> + SpillableBatch,
+        Spine<B>: SizeOf,
+    {
+        self.spill()
+            .integrate_trace_with_bound_in_memory(lower_key_bound, lower_val_bound)
     }
 
     #[allow(clippy::type_complexity)]

@@ -66,10 +66,10 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     circuit::Scope,
     trace::{
-        ord::{OrdKeyBatch, OrdValBatch},
+        ord::{FileIndexedZSet, FileValBatch, OrdKeyBatch, VecIndexedZSet, VecValBatch},
         Batch,
     },
-    DBData, DBWeight, OrdIndexedZSet, OrdZSet,
+    DBData, DBWeight, OrdZSet,
 };
 use rkyv::{Archive, Deserialize, Serialize};
 use size_of::SizeOf;
@@ -90,7 +90,7 @@ pub trait Timestamp:
 {
     type Nested: Timestamp;
 
-    /// A default `Batch` type for batches using this timestamp.
+    /// A default `Batch` type for batches using this timestamp, in storage.
     ///
     /// We sometimes need to instantiate a batch with the given key, value,
     /// timestamp, and weight types to store the intermediate result of a
@@ -104,10 +104,16 @@ pub trait Timestamp:
     /// We automate this choice by making it an associated type of
     /// `trait Timestamp` -- not a very elegant solution, but I couldn't
     /// think of a better one.
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight>: Batch<Key = K, Val = V, Time = Self, R = R>
+    type FileValBatch<K: DBData, V: DBData, R: DBWeight>: Batch<Key = K, Val = V, Time = Self, R = R>
         + SizeOf;
 
-    type OrdKeyBatch<K: DBData, R: DBWeight>: Batch<Key = K, Val = (), Time = Self, R = R> + SizeOf;
+    /// A default `Batch` type for batches using this timestamp, in memory.
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight>: Batch<Key = K, Val = V, Time = Self, R = R>
+        + SizeOf;
+
+    /// A default `Batch` type for key-only batches using this timestamp, in
+    /// memory.
+    type MemKeyBatch<K: DBData, R: DBWeight>: Batch<Key = K, Val = (), Time = Self, R = R> + SizeOf;
 
     fn minimum() -> Self;
 
@@ -217,8 +223,9 @@ impl Lattice for UnitTimestamp {
 impl Timestamp for UnitTimestamp {
     type Nested = ();
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdValBatch<K, V, Self, R>;
-    type OrdKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
+    type FileValBatch<K: DBData, V: DBData, R: DBWeight> = FileValBatch<K, V, Self, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecValBatch<K, V, Self, R>;
+    type MemKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
         UnitTimestamp
@@ -243,8 +250,9 @@ impl Timestamp for UnitTimestamp {
 impl Timestamp for () {
     type Nested = NestedTimestamp32;
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdIndexedZSet<K, V, R>;
-    type OrdKeyBatch<K: DBData, R: DBWeight> = OrdZSet<K, R>;
+    type FileValBatch<K: DBData, V: DBData, R: DBWeight> = FileIndexedZSet<K, V, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecIndexedZSet<K, V, R>;
+    type MemKeyBatch<K: DBData, R: DBWeight> = OrdZSet<K, R>;
 
     fn minimum() -> Self {}
     fn advance(&self, _scope: Scope) -> Self {}
@@ -259,8 +267,9 @@ impl Timestamp for () {
 impl Timestamp for u32 {
     type Nested = NestedTimestamp32;
 
-    type OrdValBatch<K: DBData, V: DBData, R: DBWeight> = OrdValBatch<K, V, Self, R>;
-    type OrdKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
+    type FileValBatch<K: DBData, V: DBData, R: DBWeight> = FileValBatch<K, V, Self, R>;
+    type MemValBatch<K: DBData, V: DBData, R: DBWeight> = VecValBatch<K, V, Self, R>;
+    type MemKeyBatch<K: DBData, R: DBWeight> = OrdKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
         0

@@ -4,7 +4,7 @@ use crate::{
     algebra::{IndexedZSet, ZRingValue},
     circuit::{schedule::Error as SchedulerError, ChildCircuit, Circuit, Stream, WithClock},
     operator::DelayedFeedback,
-    trace::Spine,
+    trace::{ord::SpillableBatch, Spine},
     DBTimestamp,
 };
 use impl_trait_for_tuples::impl_for_tuples;
@@ -53,7 +53,7 @@ where
     C: Circuit,
     C::Parent: Circuit,
     <C as WithClock>::Time: DBTimestamp,
-    B: IndexedZSet + Send,
+    B: IndexedZSet + SpillableBatch + Send,
     B::R: ZRingValue,
     Spine<B>: SizeOf,
 {
@@ -76,7 +76,7 @@ where
     }
 
     fn export(self) -> Self::Export {
-        self.integrate_trace().export()
+        self.integrate_trace_in_memory().export()
     }
 
     fn consolidate(exports: Self::Export) -> Self::Output {
