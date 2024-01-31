@@ -4,7 +4,7 @@ use crate::{
         operator_traits::{BinaryOperator, Operator},
         OwnershipPreference, Scope, WithClock,
     },
-    operator::trace::{DelayedTraceId, TraceAppend, TraceBounds, TraceId, ValSpine, Z1Trace},
+    operator::trace::{DelayedTraceId, MemValSpine, TraceAppend, TraceBounds, TraceId, Z1Trace},
     trace::{
         consolidation::consolidate, cursor::Cursor, Batch, BatchReader, Builder, Filter, Trace,
     },
@@ -106,7 +106,7 @@ where
 
             let delta = circuit
                 .add_binary_operator(
-                    <InputUpsert<ValSpine<B, C>, U, B>>::new(bounds.clone(), patch_func),
+                    <InputUpsert<MemValSpine<B, C>, U, B>>::new(bounds.clone(), patch_func),
                     &local,
                     &self.try_sharded_version(),
                 )
@@ -114,7 +114,7 @@ where
             delta.mark_sharded_if(self);
 
             let trace = circuit.add_binary_operator_with_preference(
-                <TraceAppend<ValSpine<B, C>, B, C>>::new(circuit.clone()),
+                <TraceAppend<MemValSpine<B, C>, B, C>>::new(circuit.clone()),
                 (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
                 (
                     &delta.try_sharded_version(),

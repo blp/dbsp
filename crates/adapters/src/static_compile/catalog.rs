@@ -6,6 +6,7 @@ use crate::{
 use dbsp::{
     algebra::ZRingValue,
     operator::{DelayedFeedback, FilterMap, NeighborhoodDescr, Update},
+    trace::ord::SpillableBatch,
     utils::Tup2,
     CollectionHandle, DBData, DBWeight, OrdIndexedZSet, RootCircuit, Stream, UpsertHandle, ZSet,
 };
@@ -32,7 +33,7 @@ impl Catalog {
             + Debug
             + Send
             + 'static,
-        Z: ZSet + Debug + Send + Sync,
+        Z: ZSet + SpillableBatch + Debug + Send + Sync,
         Z::R: ZRingValue + Into<i64> + Sync,
         Z::Key: Sync + From<D>,
     {
@@ -60,7 +61,7 @@ impl Catalog {
             + Clone
             + Send
             + 'static,
-        Z: ZSet + Debug + Send + Sync,
+        Z: ZSet + SpillableBatch + Debug + Send + Sync,
         Z::R: ZRingValue + Into<i64> + Sync,
         Z::Key: Sync + From<D>,
     {
@@ -141,7 +142,7 @@ impl Catalog {
             + Clone
             + Send
             + 'static,
-        Z: ZSet + Debug + Send + Sync,
+        Z: ZSet + SpillableBatch + Debug + Send + Sync,
         Z::R: ZRingValue + Into<i64> + Sync,
         Z::Key: Sync + From<D>,
     {

@@ -1,3 +1,4 @@
+use crate::trace::ord::{SpillableBatch, VecIndexedZSet};
 use crate::trace::Spine;
 use crate::{
     algebra::{HasZero, ZRingValue},
@@ -111,7 +112,7 @@ impl<K, V> NeighborhoodDescr<K, V> {
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + SpillableBatch + Send,
     B::R: ZRingValue,
 {
     /// Returns a small contiguous range of rows ([`Neighborhood`]) of the input
@@ -184,8 +185,8 @@ where
             #[allow(clippy::type_complexity)]
             let output: Stream<RootCircuit, Neighborhood<B::Key, B::Val, B::R>> =
                 self.circuit().add_binary_operator(
-                    NeighborhoodNumbered::<Spine<OrdIndexedZSet<B::Key, B::Val, B::R>>>::new(),
-                    &local_output.gather(0).integrate_trace(),
+                    NeighborhoodNumbered::<Spine<VecIndexedZSet<B::Key, B::Val, B::R>>>::new(),
+                    &local_output.gather(0).integrate_trace_in_memory(),
                     neighborhood_descr,
                 );
 

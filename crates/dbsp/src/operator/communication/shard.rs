@@ -8,7 +8,7 @@ use crate::{
     circuit::GlobalNodeId,
     circuit_cache_key, default_hash,
     operator::communication::exchange::new_exchange_operators,
-    trace::{cursor::Cursor, merge_batches, Batch, BatchReader, Builder},
+    trace::{cursor::Cursor, merge_batches, ord::SpillableBatch, Batch, BatchReader, Builder},
     Circuit, Runtime, Stream,
 };
 use std::{hash::Hash, panic::Location};
@@ -27,7 +27,7 @@ fn sharding_policy<C>(_circuit: &C) -> ShardingPolicy {
 impl<C, IB> Stream<C, IB>
 where
     C: Circuit,
-    IB: BatchReader<Time = ()> + Clone,
+    IB: BatchReader<Time = ()> + SpillableBatch + Clone,
     IB::Key: Ord + Clone + Hash,
     IB::Val: Ord + Clone,
 {
