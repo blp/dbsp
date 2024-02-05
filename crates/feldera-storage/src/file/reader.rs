@@ -371,33 +371,15 @@ impl ValueMapReader {
     }
 }
 
-struct DataBlock<K, A> {
+struct InnerDataBlock {
     location: BlockLocation,
     raw: Arc<FBuf>,
     value_map: ValueMapReader,
     row_groups: Option<VarintReader>,
     first_row: u64,
-    _phantom: PhantomData<(K, A)>,
 }
 
-impl<K, A> Clone for DataBlock<K, A> {
-    fn clone(&self) -> Self {
-        Self {
-            location: self.location,
-            raw: self.raw.clone(),
-            value_map: self.value_map.clone(),
-            row_groups: self.row_groups.clone(),
-            first_row: self.first_row,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<K, A> DataBlock<K, A>
-where
-    K: Rkyv,
-    A: Rkyv,
-{
+impl InnerDataBlock {
     fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
@@ -431,7 +413,6 @@ where
             )?,
             raw,
             first_row: node.rows.start,
-            _phantom: PhantomData,
         })
     }
     fn n_values(&self) -> usize {
@@ -458,8 +439,50 @@ where
             .into())
         }
     }
+}
+
+struct DataBlock<K, A> {
+    inner: Rc<InnerDataBlock>,
+    _phantom: PhantomData<(K, A)>,
+}
+
+impl<K, A> Clone for DataBlock<K, A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<K, A> DataBlock<K, A>
+where
+    K: Rkyv,
+    A: Rkyv,
+{
+    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+    {
+        Ok(Self {
+            inner: Rc::new(InnerDataBlock::new(file, node)?),
+            _phantom: PhantomData,
+        })
+    }
+    fn n_values(&self) -> usize {
+        self.inner.n_values()
+    }
+    fn rows(&self) -> Range<u64> {
+        self.inner.rows()
+    }
+    fn row_group(&self, row: u64) -> Result<Range<u64>, Error> {
+        self.inner.row_group(row)
+    }
     unsafe fn archived_item(&self, index: usize) -> &ArchivedItem<K, A> {
-        archived_value::<Item<K, A>>(&self.raw, self.value_map.get(&self.raw, index))
+        archived_value::<Item<K, A>>(
+            &self.inner.raw,
+            self.inner.value_map.get(&self.inner.raw, index),
+        )
     }
     unsafe fn item(&self, index: usize) -> (K, A) {
         let item = self.archived_item(index);
@@ -468,7 +491,7 @@ where
         (key, aux)
     }
     unsafe fn item_for_row(&self, row: u64) -> (K, A) {
-        let index = (row - self.first_row) as usize;
+        let index = (row - self.inner.first_row) as usize;
         self.item(index)
     }
     unsafe fn key(&self, index: usize) -> K {
@@ -480,11 +503,11 @@ where
         item.1.deserialize(&mut Infallible).unwrap()
     }
     unsafe fn key_for_row(&self, row: u64) -> K {
-        let index = (row - self.first_row) as usize;
+        let index = (row - self.inner.first_row) as usize;
         self.key(index)
     }
     unsafe fn aux_for_row(&self, row: u64) -> A {
-        let index = (row - self.first_row) as usize;
+        let index = (row - self.inner.first_row) as usize;
         self.aux(index)
     }
 
@@ -502,7 +525,7 @@ where
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.first_row + mid as u64;
+            let row = self.inner.first_row + mid as u64;
             let cmp = range_compare(target_rows, row);
             match cmp {
                 Equal => {
@@ -587,7 +610,7 @@ where
     }
 }
 
-struct IndexBlock<K> {
+struct InnerIndexBlock {
     location: BlockLocation,
     raw: Arc<FBuf>,
     child_type: NodeType,
@@ -596,29 +619,9 @@ struct IndexBlock<K> {
     child_pointers: VarintReader,
     depth: usize,
     first_row: u64,
-    _phantom: PhantomData<K>,
 }
 
-impl<K> Clone for IndexBlock<K> {
-    fn clone(&self) -> Self {
-        Self {
-            location: self.location,
-            raw: self.raw.clone(),
-            child_type: self.child_type,
-            bounds: self.bounds.clone(),
-            row_totals: self.row_totals.clone(),
-            child_pointers: self.child_pointers.clone(),
-            depth: self.depth,
-            first_row: self.first_row,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<K> IndexBlock<K>
-where
-    K: Rkyv,
-{
+impl InnerIndexBlock {
     fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
@@ -693,7 +696,6 @@ where
             raw,
             depth: node.depth,
             first_row: node.rows.start,
-            _phantom: PhantomData,
         })
     }
 
@@ -763,9 +765,66 @@ where
         None
     }
 
+    fn n_children(&self) -> usize {
+        self.child_pointers.count
+    }
+}
+
+struct IndexBlock<K> {
+    inner: Rc<InnerIndexBlock>,
+    _phantom: PhantomData<K>,
+}
+
+impl<K> Clone for IndexBlock<K> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<K> IndexBlock<K>
+where
+    K: Rkyv,
+{
+    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+    {
+        Ok(Self {
+            inner: Rc::new(InnerIndexBlock::new(file, node)?),
+            _phantom: PhantomData,
+        })
+    }
+
+    fn get_child_location(&self, index: usize) -> Result<BlockLocation, Error> {
+        self.inner.get_child_location(index)
+    }
+
+    fn get_child(&self, index: usize) -> Result<TreeNode, Error> {
+        self.inner.get_child(index)
+    }
+
+    fn get_child_by_row(&self, row: u64) -> Result<Option<TreeNode>, Error> {
+        self.inner.get_child_by_row(row)
+    }
+
+    fn get_rows(&self, index: usize) -> Range<u64> {
+        self.inner.get_rows(index)
+    }
+
+    fn get_row_bound(&self, index: usize) -> u64 {
+        self.inner.get_row_bound(index)
+    }
+
+    fn find_row(&self, row: u64) -> Option<usize> {
+        self.inner.find_row(row)
+    }
+
     unsafe fn get_bound(&self, index: usize) -> K {
-        let offset = self.bounds.get(&self.raw, index) as usize;
-        let archived = archived_value::<K>(&self.raw, offset);
+        let offset = self.inner.bounds.get(&self.inner.raw, index) as usize;
+        let archived = archived_value::<K>(&self.inner.raw, offset);
         archived.deserialize(&mut Infallible).unwrap()
     }
 
@@ -783,7 +842,7 @@ where
         let mut best = None;
         while start < end {
             let mid = (start + end) / 2;
-            let row = self.get_row_bound(mid) + self.first_row;
+            let row = self.get_row_bound(mid) + self.inner.first_row;
             let cmp = match range_compare(target_rows, row) {
                 Equal => {
                     let bound = self.get_bound(mid);
@@ -808,7 +867,7 @@ where
     }
 
     fn n_children(&self) -> usize {
-        self.child_pointers.count
+        self.inner.n_children()
     }
 }
 
@@ -820,7 +879,7 @@ where
         write!(
             f,
             "IndexBlock {{ depth: {}, first_row: {}, child_type: {:?}, children = {{",
-            self.depth, self.first_row, self.child_type
+            self.inner.depth, self.inner.first_row, self.inner.child_type
         )?;
         for i in 0..self.n_children() {
             if i > 0 {
@@ -1788,7 +1847,7 @@ where
                     return Ok(data_block
                         .find_best_match(&row_group.rows, compare, bias)
                         .map(|child_idx| Self {
-                            row: data_block.first_row + child_idx as u64,
+                            row: data_block.inner.first_row + child_idx as u64,
                             indexes,
                             data: data_block,
                         }))
@@ -1828,7 +1887,7 @@ where
         write!(
             f,
             ", data: [row {} of {}] }}",
-            self.row - self.data.first_row,
+            self.row - self.data.inner.first_row,
             self.data.n_values()
         )
     }
