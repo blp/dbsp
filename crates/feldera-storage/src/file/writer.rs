@@ -15,6 +15,7 @@ use binrw::{
     io::{Cursor, NoSeek},
     BinWrite,
 };
+use crc32c::crc32c;
 use rkyv::{archived_value, Archive, Deserialize, Infallible, Serialize};
 
 use crate::{
@@ -848,7 +849,7 @@ where
 
     fn write_block(&mut self, mut block: FBuf) -> Result<BlockLocation, StorageError> {
         block.resize(block.len().max(4096).next_power_of_two(), 0);
-        let checksum = 0u32.to_le_bytes();
+        let checksum = crc32c(&block[4..]).to_le_bytes();
         block[..4].copy_from_slice(checksum.as_slice());
 
         let location = BlockLocation::new(self.offset, block.len()).unwrap();

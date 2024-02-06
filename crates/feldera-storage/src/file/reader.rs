@@ -17,6 +17,7 @@ use binrw::{
     io::{self, Error as IoError},
     BinRead, Error as BinError,
 };
+use crc32c::crc32c;
 use rkyv::{archived_value, Deserialize, Infallible};
 use thiserror::Error as ThisError;
 
@@ -1037,7 +1038,7 @@ where
         location.offset,
         location.size,
     ))?;
-    let computed_checksum = 0;
+    let computed_checksum = crc32c(&block[4..]);
     let checksum = u32::from_le_bytes(block[..4].try_into().unwrap());
     if checksum != computed_checksum {
         let BlockLocation { size, offset } = location;
