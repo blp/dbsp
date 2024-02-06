@@ -3,7 +3,9 @@
 //! [`Reader`] is the top-level interface for reading layer files.
 
 use std::{
+    cell::RefCell,
     cmp::Ordering::{self, *},
+    collections::{hash_map::Entry, HashMap},
     fmt::{Debug, Formatter, Result as FmtResult},
     marker::PhantomData,
     ops::{Bound, Range, RangeBounds},
@@ -380,11 +382,25 @@ struct InnerDataBlock {
 }
 
 impl InnerDataBlock {
-    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    fn new<S, T>(reader: &Reader<S, T>, column: usize, node: &TreeNode) -> Result<Rc<Self>, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
-        let raw = read_block(file, node.location)?;
+        match reader.0.columns[column]
+            .data_cache
+            .borrow_mut()
+            .entry(node.location.offset)
+        {
+            Entry::Vacant(e) => Ok(e.insert(Rc::new(Self::read(reader, node)?)).clone()),
+            Entry::Occupied(e) => Ok(e.get().clone()),
+        }
+    }
+
+    fn read<S, T>(reader: &Reader<S, T>, node: &TreeNode) -> Result<Self, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+    {
+        let raw = read_block(&reader.0.file, node.location)?;
         let header = DataBlockHeader::read_le(&mut io::Cursor::new(raw.as_slice()))?;
         let expected_rows = node.rows.end - node.rows.start;
         if header.n_values as u64 != expected_rows {
@@ -460,12 +476,12 @@ where
     K: Rkyv,
     A: Rkyv,
 {
-    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    fn new<S, T>(reader: &Reader<S, T>, column: usize, node: &TreeNode) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
         Ok(Self {
-            inner: Rc::new(InnerDataBlock::new(file, node)?),
+            inner: InnerDataBlock::new(reader, column, node)?,
             _phantom: PhantomData,
         })
     }
@@ -570,15 +586,19 @@ struct TreeNode {
 }
 
 impl TreeNode {
-    fn read<S, K, A>(self, file: &ImmutableFileRef<S>) -> Result<TreeBlock<K, A>, Error>
+    fn read<S, T, K, A>(
+        self,
+        reader: &Reader<S, T>,
+        column: usize,
+    ) -> Result<TreeBlock<K, A>, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
         K: Rkyv + Debug,
         A: Rkyv,
     {
         match self.node_type {
-            NodeType::Data => Ok(TreeBlock::Data(DataBlock::new(file, &self)?)),
-            NodeType::Index => Ok(TreeBlock::Index(IndexBlock::new(file, &self)?)),
+            NodeType::Data => Ok(TreeBlock::Data(DataBlock::new(reader, column, &self)?)),
+            NodeType::Index => Ok(TreeBlock::Index(IndexBlock::new(reader, column, &self)?)),
         }
     }
 }
@@ -622,7 +642,21 @@ struct InnerIndexBlock {
 }
 
 impl InnerIndexBlock {
-    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    fn new<S, T>(reader: &Reader<S, T>, column: usize, node: &TreeNode) -> Result<Rc<Self>, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+    {
+        match reader.0.columns[column]
+            .index_cache
+            .borrow_mut()
+            .entry(node.location.offset)
+        {
+            Entry::Vacant(e) => Ok(e.insert(Rc::new(Self::read(reader, node)?)).clone()),
+            Entry::Occupied(e) => Ok(e.get().clone()),
+        }
+    }
+
+    fn read<S, T>(reader: &Reader<S, T>, node: &TreeNode) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
@@ -638,7 +672,7 @@ impl InnerIndexBlock {
             .into());
         }
 
-        let raw = read_block(file, node.location)?;
+        let raw = read_block(&reader.0.file, node.location)?;
         let header = IndexBlockHeader::read_le(&mut io::Cursor::new(raw.as_slice()))?;
         let BlockLocation { size, offset } = node.location;
         if header.n_children == 0 {
@@ -788,12 +822,12 @@ impl<K> IndexBlock<K>
 where
     K: Rkyv,
 {
-    fn new<S>(file: &ImmutableFileRef<S>, node: &TreeNode) -> Result<Self, Error>
+    fn new<S, T>(reader: &Reader<S, T>, column: usize, node: &TreeNode) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
         Ok(Self {
-            inner: Rc::new(InnerIndexBlock::new(file, node)?),
+            inner: InnerIndexBlock::new(reader, column, node)?,
             _phantom: PhantomData,
         })
     }
@@ -900,6 +934,8 @@ where
 
 struct Column {
     root: Option<TreeNode>,
+    index_cache: RefCell<HashMap<u64, Rc<InnerIndexBlock>>>,
+    data_cache: RefCell<HashMap<u64, Rc<InnerDataBlock>>>,
     n_rows: u64,
 }
 
@@ -930,12 +966,19 @@ impl Column {
         } else {
             None
         };
-        Ok(Self { root, n_rows })
+        Ok(Self {
+            root,
+            n_rows,
+            index_cache: RefCell::new(HashMap::new()),
+            data_cache: RefCell::new(HashMap::new()),
+        })
     }
     fn empty() -> Self {
         Self {
             root: None,
             n_rows: 0,
+            index_cache: RefCell::new(HashMap::new()),
+            data_cache: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -1750,6 +1793,7 @@ where
     {
         Self::for_row_from_ancestor(
             row_group.reader,
+            row_group.column,
             Vec::new(),
             row_group.reader.0.columns[row_group.column]
                 .root
@@ -1760,6 +1804,7 @@ where
     }
     fn for_row_from_ancestor<S, T>(
         reader: &Reader<S, T>,
+        column: usize,
         mut indexes: Vec<IndexBlock<K>>,
         mut node: TreeNode,
         row: u64,
@@ -1768,7 +1813,7 @@ where
         S: StorageRead + StorageControl + StorageExecutor,
     {
         loop {
-            let block = node.read(&reader.0.file)?;
+            let block = node.read(reader, column)?;
             let next = block.lookup_row(row)?;
             match block {
                 TreeBlock::Data(data) => return Ok(Self { row, indexes, data }),
@@ -1777,7 +1822,12 @@ where
             node = next.unwrap();
         }
     }
-    fn for_row_from_hint<S, T>(reader: &Reader<S, T>, hint: &Self, row: u64) -> Result<Self, Error>
+    fn for_row_from_hint<S, T>(
+        reader: &Reader<S, T>,
+        column: usize,
+        hint: &Self,
+        row: u64,
+    ) -> Result<Self, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
@@ -1791,6 +1841,7 @@ where
             if let Some(node) = index_block.get_child_by_row(row)? {
                 return Self::for_row_from_ancestor(
                     reader,
+                    column,
                     hint.indexes[0..=idx].to_vec(),
                     node,
                     row,
@@ -1811,11 +1862,16 @@ where
     fn row_group(&self) -> Result<Range<u64>, Error> {
         self.data.row_group(self.row)
     }
-    fn move_to_row<S, T>(&mut self, reader: &Reader<S, T>, row: u64) -> Result<(), Error>
+    fn move_to_row<S, T>(
+        &mut self,
+        reader: &Reader<S, T>,
+        column: usize,
+        row: u64,
+    ) -> Result<(), Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
     {
-        *self = Self::for_row_from_hint(reader, self, row)?;
+        *self = Self::for_row_from_hint(reader, column, self, row)?;
         Ok(())
     }
     unsafe fn best_match<S, N, T, C>(
@@ -1833,7 +1889,7 @@ where
             return Ok(None);
         };
         loop {
-            match node.read(&row_group.reader.0.file)? {
+            match node.read(&row_group.reader, row_group.column)? {
                 TreeBlock::Index(index_block) => {
                     let Some(child_idx) =
                         index_block.find_best_match(&row_group.rows, compare, bias)
@@ -1996,7 +2052,7 @@ where
             Self::Before => (),
             Self::Row(path) => {
                 if path.row > row_group.rows.start {
-                    path.move_to_row(row_group.reader, path.row - 1)?;
+                    path.move_to_row(row_group.reader, row_group.column, path.row - 1)?;
                 } else {
                     *self = Self::Before;
                 }
@@ -2025,7 +2081,7 @@ where
                 Position::Before | Position::After => {
                     *self = Self::Row(Path::for_row(row_group, row)?)
                 }
-                Position::Row(path) => path.move_to_row(row_group.reader, row)?,
+                Position::Row(path) => path.move_to_row(row_group.reader, row_group.column, row)?,
             }
         }
         Ok(())
