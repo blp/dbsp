@@ -82,7 +82,7 @@ pub struct Q9Output(
 
 type Q9Stream = Stream<RootCircuit, OrdZSet<Q9Output, i64>>;
 
-pub fn q9(input: NexmarkStream) -> Q9Stream {
+pub fn q9(_circuit: &mut RootCircuit, input: NexmarkStream) -> Q9Stream {
     // Select auctions and index by auction id.
     let auctions_by_id = input.flat_map_index(|event| match event {
         Event::Auction(a) => Some((
@@ -370,7 +370,7 @@ mod tests {
             ]
             .into_iter();
 
-            let output = q9(stream);
+            let output = q9(circuit, stream);
             output.inspect(move |batch| assert_eq!(batch, &expected_output.next().unwrap()));
 
             Ok(input_handle)
