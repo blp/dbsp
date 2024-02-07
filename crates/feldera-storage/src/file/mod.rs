@@ -74,7 +74,7 @@ use crc32c::crc32c;
 use rkyv::{
     ser::{
         serializers::{
-            AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch, SharedSerializeMap,
+            AllocScratch, CompositeSerializer, SharedSerializeMap,
         },
         Serializer as _,
     },
@@ -149,7 +149,7 @@ where
 /// The particular [`rkyv::ser::Serializer`] that we use.
 pub type Serializer = CompositeSerializer<
     FBufSerializer<FBuf>,
-    FallbackScratch<HeapScratch<1024>, AllocScratch>,
+    AllocScratch,
     SharedSerializeMap,
 >;
 

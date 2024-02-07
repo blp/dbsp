@@ -16,13 +16,23 @@ use dbsp_nexmark::{
     queries::{Query, ALL_QUERIES},
     NexmarkSource,
 };
+use feldera_storage::backend::metrics::{
+    FILES_CREATED, READS_SUCCESS, TOTAL_BYTES_READ, TOTAL_BYTES_WRITTEN, WRITES_SUCCESS,
+};
 use indicatif::{ProgressBar, ProgressStyle};
+use metrics::{Key, SharedString, Unit};
+use metrics_util::{
+    debugging::{DebugValue, DebuggingRecorder, Snapshotter},
+    CompositeKey, MetricKind,
+};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_with::{serde_as, DurationSecondsWithFrac};
 use size_of::HumanBytes;
 use std::{
+    collections::HashMap,
     fs::OpenOptions,
+    ops::Sub,
     path::Path,
     sync::mpsc,
     thread::{self, JoinHandle},
@@ -31,6 +41,8 @@ use std::{
 
 #[global_allocator]
 static ALLOC: MiMalloc = MiMalloc;
+
+type MetricsSnapshot = HashMap<CompositeKey, (Option<Unit>, Option<SharedString>, DebugValue)>;
 
 /// Currently just the elapsed time, but later add CPU and Mem.
 #[serde_as]
@@ -43,6 +55,10 @@ struct NexmarkResult {
     elapsed: Duration,
     before_stats: AllocStats,
     after_stats: AllocStats,
+    #[serde(skip_serializing)]
+    before_metrics: MetricsSnapshot,
+    #[serde(skip_serializing)]
+    after_metrics: MetricsSnapshot,
 }
 
 struct InputStats {
@@ -184,7 +200,7 @@ fn coordinate_input_and_steps(
 
 fn create_ascii_table() -> AsciiTable {
     /// Reported metrics (per query) for the benchmark.
-    const RESULT_COLUMNS: [&str; 13] = [
+    const RESULT_COLUMNS: [&str; 20] = [
         "Query",
         "#Events",
         "Cores",
@@ -198,10 +214,17 @@ fn create_ascii_table() -> AsciiTable {
         "Current Commit",
         "Peak Commit",
         "Page Faults",
+        "# Files",
+        "# Writes",
+        "# Reads",
+        "Avg Write Size",
+        "Avg Read Size",
+        "Total Writes",
+        "Total Reads",
     ];
 
     let mut ascii_table = AsciiTable::default();
-    ascii_table.set_max_width(200);
+    ascii_table.set_max_width(250);
 
     for (idx, column_name) in RESULT_COLUMNS.into_iter().enumerate() {
         ascii_table.column(idx).set_header(column_name);
@@ -210,7 +233,7 @@ fn create_ascii_table() -> AsciiTable {
     ascii_table
 }
 
-fn run_query(config: &NexmarkConfig, query: Query) -> NexmarkResult {
+fn run_query(config: &NexmarkConfig, snapshotter: &Snapshotter, query: Query) -> NexmarkResult {
     let name = format!("{query:?}");
     println!("Starting {name} bench of {} events...", config.max_events);
 
@@ -256,6 +279,7 @@ fn run_query(config: &NexmarkConfig, query: Query) -> NexmarkResult {
 
     ALLOC.reset_stats();
     let before_stats = ALLOC.stats();
+    let before_metrics = snapshotter.snapshot();
     let start = Instant::now();
 
     let input_stats = coordinate_input_and_steps(
@@ -270,6 +294,7 @@ fn run_query(config: &NexmarkConfig, query: Query) -> NexmarkResult {
 
     let elapsed = start.elapsed();
     let after_stats = ALLOC.stats();
+    let after_metrics = snapshotter.snapshot();
 
     // Return the user/system CPU overhead from the generator/input thread.
     NexmarkResult {
@@ -277,12 +302,14 @@ fn run_query(config: &NexmarkConfig, query: Query) -> NexmarkResult {
         num_cores,
         before_stats,
         after_stats,
+        before_metrics: before_metrics.into_hashmap(),
+        after_metrics: after_metrics.into_hashmap(),
         elapsed,
         num_events: input_stats.num_events,
     }
 }
 
-fn run_queries(nexmark_config: &NexmarkConfig) -> Vec<NexmarkResult> {
+fn run_queries(nexmark_config: &NexmarkConfig, snapshotter: &Snapshotter) -> Vec<NexmarkResult> {
     let queries_to_run = if nexmark_config.query.is_empty() {
         ALL_QUERIES.as_slice()
     } else {
@@ -290,7 +317,7 @@ fn run_queries(nexmark_config: &NexmarkConfig) -> Vec<NexmarkResult> {
     };
     let mut results = Vec::new();
     for &query in queries_to_run {
-        let result = run_query(nexmark_config, query);
+        let result = run_query(nexmark_config, &snapshotter, query);
         results.push(result);
     }
     results
@@ -306,15 +333,90 @@ fn run_queries(nexmark_config: &NexmarkConfig) -> Vec<NexmarkResult> {
 // https://github.com/matklad/t-cmd/blob/master/src/main.rs Also CpuMonitor.java
 // in nexmark (binary that uses procfs to get cpu usage ever 100ms?)
 
+fn parse_counter(metrics: &MetricsSnapshot, name: &'static str) -> u64 {
+    if let Some((_, _, DebugValue::Counter(value))) = metrics.get(&CompositeKey::new(
+        MetricKind::Counter,
+        Key::from_static_name(name),
+    )) {
+        *value
+    } else {
+        0
+    }
+}
+
+struct Metrics {
+    files_created: u64,
+    writes_success: u64,
+    reads_success: u64,
+    total_bytes_written: u64,
+    total_bytes_read: u64,
+}
+
+impl From<&MetricsSnapshot> for Metrics {
+    fn from(source: &MetricsSnapshot) -> Self {
+        Self {
+            files_created: parse_counter(source, FILES_CREATED),
+            writes_success: parse_counter(source, WRITES_SUCCESS),
+            reads_success: parse_counter(source, READS_SUCCESS),
+            total_bytes_written: parse_counter(source, TOTAL_BYTES_WRITTEN),
+            total_bytes_read: parse_counter(source, TOTAL_BYTES_READ),
+        }
+    }
+}
+
+fn div(num: u64, denom: u64) -> u64 {
+    num.checked_div(denom).unwrap_or_default()
+}
+
+struct MetricsDiff {
+    n_created: u64,
+    n_writes: u64,
+    n_reads: u64,
+    avg_wblock: u64,
+    avg_rblock: u64,
+    total_bytes_written: u64,
+    total_bytes_read: u64,
+}
+
+impl Sub<&Metrics> for &Metrics {
+    type Output = MetricsDiff;
+
+    fn sub(self, rhs: &Metrics) -> Self::Output {
+        let lhs = self;
+
+        let n_writes = lhs.writes_success - rhs.writes_success;
+        let n_reads = lhs.reads_success - rhs.reads_success;
+        let wbytes_diff = lhs.total_bytes_written - rhs.total_bytes_written;
+        let rbytes_diff = lhs.total_bytes_read - rhs.total_bytes_read;
+
+        MetricsDiff {
+            n_created: lhs.files_created - rhs.files_created,
+            n_writes,
+            n_reads,
+            avg_wblock: div(wbytes_diff, n_writes),
+            avg_rblock: div(rbytes_diff, n_reads),
+            total_bytes_written: lhs.total_bytes_written - rhs.total_bytes_written,
+            total_bytes_read: lhs.total_bytes_read - rhs.total_bytes_read,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let nexmark_config = NexmarkConfig::parse();
     let cpu_cores = nexmark_config.cpu_cores;
 
-    let results = run_queries(&nexmark_config);
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    recorder.install().unwrap();
+    let results = run_queries(&nexmark_config, &snapshotter);
 
     let ascii_table = create_ascii_table();
     ascii_table.print(results.iter().map(|result| {
         let (before, after) = (result.before_stats, result.after_stats);
+
+        let before_metrics: Metrics = (&result.before_metrics).into();
+        let after_metrics: Metrics = (&result.after_metrics).into();
+        let diff = &after_metrics - &before_metrics;
 
         vec![
             result.name.clone(),
@@ -339,6 +441,13 @@ fn main() -> Result<()> {
             format!("{}", HumanBytes::from(after.current_commit)),
             format!("{}", HumanBytes::from(after.peak_commit)),
             format!("{}", after.page_faults - before.page_faults),
+            format!("{}", diff.n_created),
+            format!("{}", diff.n_writes),
+            format!("{}", diff.n_reads),
+            format!("{}", HumanBytes::from(diff.avg_wblock)),
+            format!("{}", HumanBytes::from(diff.avg_rblock)),
+            format!("{}", HumanBytes::from(diff.total_bytes_written)),
+            format!("{}", HumanBytes::from(diff.total_bytes_read)),
         ]
     }));
 

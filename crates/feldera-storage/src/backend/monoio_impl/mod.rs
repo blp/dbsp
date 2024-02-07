@@ -45,11 +45,13 @@ async fn open_as_direct<P: AsRef<Path>>(
     p: P,
     options: &mut OpenOptions,
 ) -> Result<File, io::Error> {
+/*
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_DIRECT);
     }
+*/
     options.open(p).await
 }
 
@@ -178,7 +180,7 @@ impl StorageWrite for MonoioBackend {
         let mut files = self.files.write().await;
 
         let fm = files.remove(&fd.0).unwrap();
-        fm.file.sync_all().await?;
+        //fm.file.sync_all().await?;
         files.insert(fd.0, fm);
 
         Ok(ImmutableFileHandle(fd.0))

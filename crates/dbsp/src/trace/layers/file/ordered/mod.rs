@@ -229,15 +229,20 @@ where
     {
         let key = cursor.current_key();
         if key_filter(key) {
-            let mut value_cursor = cursor.values();
+            let mut value_cursor = cursor.cursor.next_column().unwrap().first().unwrap();
             let mut n = 0;
-            while value_cursor.valid() {
-                let (value, diff) = value_cursor.item();
-                if value_filter(value) {
-                    self.0.write1((value, diff)).unwrap();
-                    n += 1;
+            loop {
+                let batch = unsafe { value_cursor.take_batch(usize::MAX) }.unwrap();
+                if batch.is_empty() {
+                    break;
                 }
-                value_cursor.step();
+
+                for (value, diff) in batch {
+                    if value_filter(&value) {
+                        self.0.write1((&value, &diff)).unwrap();
+                        n += 1;
+                    }
+                }
             }
             if n > 0 {
                 self.0.write0((&key, &())).unwrap();
@@ -327,6 +332,14 @@ where
             match key1.cmp(key2) {
                 Ordering::Less => {
                     self.copy_values_if(&mut cursor1, key_filter, value_filter);
+                    let extra = unsafe {
+                        cursor1
+                            .cursor
+                            .estimate_count_until_first_ge(&|key| key.cmp(key2))
+                    };
+                    for _ in 0..extra {
+                        self.copy_values_if(&mut cursor1, key_filter, value_filter);
+                    }
                 }
                 Ordering::Equal => {
                     if key_filter(key1)
@@ -340,6 +353,14 @@ where
 
                 Ordering::Greater => {
                     self.copy_values_if(&mut cursor2, key_filter, value_filter);
+                    let extra = unsafe {
+                        cursor2
+                            .cursor
+                            .estimate_count_until_first_ge(&|key| key1.cmp(key))
+                    };
+                    for _ in 0..extra {
+                        self.copy_values_if(&mut cursor2, key_filter, value_filter);
+                    }
                 }
             }
         }

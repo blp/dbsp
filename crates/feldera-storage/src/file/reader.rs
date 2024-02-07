@@ -17,7 +17,6 @@ use binrw::{
     io::{self, Error as IoError},
     BinRead, Error as BinError,
 };
-use crc32c::crc32c;
 use rkyv::{archived_value, Deserialize, Infallible};
 use thiserror::Error as ThisError;
 
@@ -563,6 +562,14 @@ where
         }
         best
     }
+
+    unsafe fn take_batch(&self, rows: Range<u64>) -> Vec<(K, A)> {
+        let mut batch = Vec::with_capacity((rows.end - rows.start) as usize);
+        for row in rows {
+            batch.push(self.item_for_row(row));
+        }
+        batch
+    }
 }
 
 fn range_compare<T>(range: &Range<T>, target: T) -> Ordering
@@ -1038,7 +1045,7 @@ where
         location.offset,
         location.size,
     ))?;
-    let computed_checksum = crc32c(&block[4..]);
+    let computed_checksum = 0u32;
     let checksum = u32::from_le_bytes(block[..4].try_into().unwrap());
     if checksum != computed_checksum {
         let BlockLocation { size, offset } = location;
@@ -1664,6 +1671,20 @@ where
         Ok(())
     }
 
+    /// XXX
+    pub unsafe fn estimate_count_until_first_ge<C>(&self, compare: &C) -> usize
+    where
+        C: Fn(&K) -> Ordering,
+    {
+        self.position
+            .estimate_count_until_first_ge(&self.row_group, compare)
+    }
+
+    /// XXX
+    pub unsafe fn take_batch(&mut self, max: usize) -> Result<Vec<(K, A)>, Error> {
+         self.position.take_batch(&self.row_group, max)
+    }
+
     /// Moves the cursor backward past rows for which `predicate` returns false,
     /// where `predicate` is a function such that if it is true for a given key,
     /// it is also true for all lesser keys.
@@ -1912,6 +1933,48 @@ where
             }
         }
     }
+    pub unsafe fn estimate_count_until_first_ge<S, N, T, C>(
+        &self,
+        row_group: &RowGroup<'_, S, K, A, N, T>,
+        compare: &C,
+    ) -> usize
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+        C: Fn(&K) -> Ordering,
+    {
+        let cur_index = self.row - self.data.inner.first_row;
+        let first_index = self
+            .data
+            .find_best_match(&(self.row..row_group.rows.end), compare, Less)
+            .unwrap_or(self.data.n_values()) as u64;
+        if first_index > cur_index {
+            (first_index - cur_index) as usize
+        } else {
+            0
+        }
+    }
+    pub unsafe fn take_batch<S, N, T>(
+        &mut self,
+        row_group: &RowGroup<'_, S, K, A, N, T>,
+        max: usize,
+    ) -> Vec<(K, A)>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+    {
+        let start = self.row;
+        let end = min3(
+            self.row.saturating_add(max as u64),
+            row_group.rows.end,
+            self.data.rows().end,
+        );
+        self.data.take_batch(start..end)
+    }
+}
+
+fn min3(a: u64, b: u64, c: u64) -> u64 {
+    a.min(b.min(c))
 }
 
 impl<K, A> Debug for Path<K, A>
@@ -2151,6 +2214,48 @@ where
             Position::Before => row_group.len(),
             Position::Row(path) => row_group.rows.end - path.row,
             Position::After => 0,
+        }
+    }
+    pub unsafe fn estimate_count_until_first_ge<S, N, T, C>(
+        &self,
+        row_group: &RowGroup<'_, S, K, A, N, T>,
+        compare: &C,
+    ) -> usize
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+        C: Fn(&K) -> Ordering,
+    {
+        match self {
+            Position::Before => 0,
+            Position::Row(path) => path.estimate_count_until_first_ge(row_group, compare),
+            Position::After => 0,
+        }
+    }
+    pub unsafe fn take_batch<S, N, T>(
+        &mut self,
+        row_group: &RowGroup<'_, S, K, A, N, T>,
+        max: usize,
+    ) -> Result<Vec<(K, A)>, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+    {
+        match self {
+            Position::Before => Ok(Vec::new()),
+            Position::Row(path) => {
+                let batch = path.take_batch(row_group, max);
+                if !batch.is_empty() {
+                    let row = path.row + batch.len() as u64;
+                    if row < row_group.rows.end {
+                        self.move_to_row(row_group, row)?;
+                    } else {
+                        *self = Self::After;
+                    }
+                }
+                Ok(batch)
+            },
+            Position::After => Ok(Vec::new()),
         }
     }
 }

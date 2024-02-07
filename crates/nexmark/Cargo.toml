@@ -50,6 +50,13 @@ time = { version = "0.3.14", features = [
     "serde",
     "serde-human-readable",
 ] }
+feldera-storage = { path = "../feldera-storage" }
+# This is a specific commit because metrics-util 0.16.0 requires
+# hashbrown with exactly version 0.13.1 but other dependencies require
+# newer versions.  Once metrics-util 0.16.1 is released, we can switch
+# to a versioned dependency.
+metrics-util = { git = "https://github.com/metrics-rs/metrics.git", rev = "f50f914d0c8f3fc3b5dc76fdc4f2d8c3e644c739" }
+metrics = { git = "https://github.com/metrics-rs/metrics.git", rev = "f50f914d0c8f3fc3b5dc76fdc4f2d8c3e644c739" }
 
 [[bench]]
 name = "nexmark"
