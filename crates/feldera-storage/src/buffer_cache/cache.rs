@@ -17,9 +17,9 @@ use moka::future::Cache;
 use sysinfo::System;
 
 use crate::backend::{
+    metrics::{BUFFER_CACHE_HIT, BUFFER_CACHE_LATENCY, BUFFER_CACHE_MISS, WRITES_FAILED},
     FileHandle, ImmutableFileHandle, StorageControl, StorageError, StorageExecutor, StorageRead,
-    StorageWrite, METRIC_BUFFER_CACHE_HIT, METRIC_BUFFER_CACHE_LATENCY, METRIC_BUFFER_CACHE_MISS,
-    METRIC_WRITES_FAILED,
+    StorageWrite,
 };
 use crate::buffer_cache::FBuf;
 #[cfg(test)]
@@ -221,11 +221,11 @@ impl<B: StorageRead> StorageRead for BufferCache<B> {
     ) -> Result<CachedFBuf, StorageError> {
         let request_start = Instant::now();
         if let Some(buf) = self.get(&(fd.into(), offset, size)).await {
-            counter!(METRIC_BUFFER_CACHE_HIT).increment(1);
-            histogram!(METRIC_BUFFER_CACHE_LATENCY).record(request_start.elapsed().as_secs_f64());
+            counter!(BUFFER_CACHE_HIT).increment(1);
+            histogram!(BUFFER_CACHE_LATENCY).record(request_start.elapsed().as_secs_f64());
             Ok(buf)
         } else {
-            counter!(METRIC_BUFFER_CACHE_MISS).increment(1);
+            counter!(BUFFER_CACHE_MISS).increment(1);
             match self.backend.read_block(fd, offset, size).await {
                 Ok(buf) => {
                     self.insert((fd.into(), offset, size), buf.clone()).await;
@@ -252,7 +252,7 @@ impl<B: StorageWrite> StorageWrite for BufferCache<B> {
         data: FBuf,
     ) -> Result<CachedFBuf, StorageError> {
         if self.overlaps_with_previous_write(fd, offset..offset + data.len() as u64) {
-            counter!(METRIC_WRITES_FAILED).increment(1);
+            counter!(WRITES_FAILED).increment(1);
             return Err(StorageError::OverlappingWrites);
         }
         let res = self.backend.write_block(fd, offset, data).await;
