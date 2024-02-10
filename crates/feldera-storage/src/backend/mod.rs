@@ -265,5 +265,5 @@ pub trait StorageExecutor {
 }
 
 //pub use monoio_impl::MonoioBackend as DefaultBackend;
-//pub use posixio_impl::PosixBackend as DefaultBackend;
-pub use memory_impl::MemoryBackend as DefaultBackend;
+pub use posixio_impl::PosixBackend as DefaultBackend;
+//pub use memory_impl::MemoryBackend as DefaultBackend;

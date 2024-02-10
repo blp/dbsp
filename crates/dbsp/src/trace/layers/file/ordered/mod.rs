@@ -2,7 +2,7 @@ mod consumer;
 
 pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
-    reader::{Cursor as FileCursor, FallibleEq, Reader, RowGroup},
+    reader::{Cursor as FileCursor, FallibleEq, Reader},
     writer::{Parameters, Writer2},
 };
 use rand::{seq::index::sample, Rng};
@@ -220,7 +220,7 @@ where
 {
     fn copy_values<KF, VF>(
         &mut self,
-        values_group: &RowGroup<StorageBackend, V, R, (), (K, (), (V, R, ()))>,
+        value_cursor: &mut FileCursor<StorageBackend, V, R, (), (K, (), (V, R, ()))>,
         key: &K,
         key_filter: &KF,
         value_filter: &VF,
@@ -229,7 +229,6 @@ where
         VF: Fn(&V) -> bool,
     {
         if key_filter(key) {
-            let mut value_cursor = values_group.first().unwrap();
             let mut n: u64 = 0;
             unsafe {
                 value_cursor.for_each(|(value, diff)| {
@@ -359,9 +358,9 @@ where
                 Ordering::Less => {
                     self.copy_values_if(&mut cursor1, key_filter, value_filter);
                     unsafe {
-                        cursor1.cursor.for_each_cursor(|(key, _), row_group| {
+                        cursor1.cursor.for_each_cursor(|(key, _), value_cursor| {
                             if key < key2 {
-                                self.copy_values(&row_group, key, key_filter, value_filter);
+                                self.copy_values(value_cursor, key, key_filter, value_filter);
                                 true
                             } else {
                                 false
@@ -383,9 +382,9 @@ where
                 Ordering::Greater => {
                     self.copy_values_if(&mut cursor2, key_filter, value_filter);
                     unsafe {
-                        cursor2.cursor.for_each_cursor(|(key, _), row_group| {
+                        cursor2.cursor.for_each_cursor(|(key, _), value_cursor| {
                             if key < key1 {
-                                self.copy_values(&row_group, key, key_filter, value_filter);
+                                self.copy_values(value_cursor, key, key_filter, value_filter);
                                 true
                             } else {
                                 false
@@ -398,15 +397,15 @@ where
         }
 
         unsafe {
-            cursor1.cursor.for_each_cursor(|(key, _), row_group| {
-                self.copy_values(&row_group, key, key_filter, value_filter);
+            cursor1.cursor.for_each_cursor(|(key, _), value_cursor| {
+                self.copy_values(value_cursor, key, key_filter, value_filter);
                 true
             })
         }
         .unwrap();
         unsafe {
-            cursor2.cursor.for_each_cursor(|(key, _), row_group| {
-                self.copy_values(&row_group, key, key_filter, value_filter);
+            cursor2.cursor.for_each_cursor(|(key, _), value_cursor| {
+                self.copy_values(value_cursor, key, key_filter, value_filter);
                 true
             })
         }

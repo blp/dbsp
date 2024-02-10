@@ -593,22 +593,27 @@ where
         f: &mut F,
     ) -> (u64, bool)
     where
-        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+        F: FnMut(&(K, A), &mut Cursor<S, NK, NA, NN, T>) -> bool,
         S: StorageRead + StorageControl + StorageExecutor,
-        NK: Rkyv,
+        NK: Rkyv + Debug,
         NA: Rkyv,
         T: ColumnSpec,
     {
         let end = min(end, self.inner.rows().end);
-        for row in row..end {
+        if row < end {
             let next_row_group = RowGroup {
                 reader: row_group.reader,
                 column: row_group.column + 1,
                 rows: self.row_group(row).unwrap(), /* XXX bad unwrap */
                 _phantom: PhantomData,
             };
-            if !f(&self.item_for_row(row), &next_row_group) {
-                return (row, false);
+            let mut cursor = next_row_group.first().unwrap();
+            for row in row..end {
+                cursor.row_group.rows = self.row_group(row).unwrap()/*XXX unwrap*/;
+                cursor.position.move_to_row(&cursor.row_group, cursor.row_group.rows.start).unwrap() /* XXX bad unwrap */;
+                if !f(&self.item_for_row(row), &mut cursor) {
+                    return (row, false);
+                }
             }
         }
         return (end, true);
@@ -1819,7 +1824,7 @@ where
     /// XXX
     pub unsafe fn for_each_cursor<F>(&mut self, mut f: F) -> Result<(), Error>
     where
-        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+        F: FnMut(&(K, A), &mut Cursor<S, NK, NA, NN, T>) -> bool,
         S: StorageRead,
     {
         if let Position::Before = self.position {
@@ -2073,10 +2078,10 @@ where
     ) -> Result<bool, Error>
     where
         S: StorageRead + StorageControl + StorageExecutor,
-        NK: Rkyv,
+        NK: Rkyv + Debug,
         NA: Rkyv,
         T: ColumnSpec,
-        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+        F: FnMut(&(K, A), &mut Cursor<S, NK, NA, NN, T>) -> bool,
     {
         loop {
             let (row, keep_going) = self.data.for_each_cursor(row_group, self.row, end, f);
