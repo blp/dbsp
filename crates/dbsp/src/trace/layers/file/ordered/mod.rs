@@ -2,7 +2,7 @@ mod consumer;
 
 pub use consumer::{FileOrderedLayerConsumer, FileOrderedLayerValues};
 use feldera_storage::file::{
-    reader::{Cursor as FileCursor, FallibleEq, Reader},
+    reader::{Cursor as FileCursor, FallibleEq, Reader, RowGroup},
     writer::{Parameters, Writer2},
 };
 use rand::{seq::index::sample, Rng};
@@ -218,6 +218,35 @@ where
     V: DBData,
     R: DBWeight,
 {
+    fn copy_values<KF, VF>(
+        &mut self,
+        values_group: &RowGroup<StorageBackend, V, R, (), (K, (), (V, R, ()))>,
+        key: &K,
+        key_filter: &KF,
+        value_filter: &VF,
+    ) where
+        KF: Fn(&K) -> bool,
+        VF: Fn(&V) -> bool,
+    {
+        if key_filter(key) {
+            let mut value_cursor = values_group.first().unwrap();
+            let mut n: u64 = 0;
+            unsafe {
+                value_cursor.for_each(|(value, diff)| {
+                    if value_filter(&value) {
+                        self.0.write1((&value, &diff)).unwrap();
+                        n += 1;
+                    }
+                    true
+                })
+            }
+            .unwrap();
+            if n > 0 {
+                self.0.write0((&key, &())).unwrap();
+            }
+        }
+    }
+
     fn copy_values_if<KF, VF>(
         &mut self,
         cursor: &mut FileOrderedCursor<K, V, R>,
@@ -230,20 +259,17 @@ where
         let key = cursor.current_key();
         if key_filter(key) {
             let mut value_cursor = cursor.cursor.next_column().unwrap().first().unwrap();
-            let mut n = 0;
-            loop {
-                let batch = unsafe { value_cursor.take_batch(usize::MAX) }.unwrap();
-                if batch.is_empty() {
-                    break;
-                }
-
-                for (value, diff) in batch {
+            let mut n: u64 = 0;
+            unsafe {
+                value_cursor.for_each(|(value, diff)| {
                     if value_filter(&value) {
                         self.0.write1((&value, &diff)).unwrap();
                         n += 1;
                     }
-                }
+                    true
+                })
             }
+            .unwrap();
             if n > 0 {
                 self.0.write0((&key, &())).unwrap();
             }
@@ -332,14 +358,17 @@ where
             match key1.cmp(key2) {
                 Ordering::Less => {
                     self.copy_values_if(&mut cursor1, key_filter, value_filter);
-                    let extra = unsafe {
-                        cursor1
-                            .cursor
-                            .estimate_count_until_first_ge(&|key| key.cmp(key2))
-                    };
-                    for _ in 0..extra {
-                        self.copy_values_if(&mut cursor1, key_filter, value_filter);
+                    unsafe {
+                        cursor1.cursor.for_each_cursor(|(key, _), row_group| {
+                            if key < key2 {
+                                self.copy_values(&row_group, key, key_filter, value_filter);
+                                true
+                            } else {
+                                false
+                            }
+                        })
                     }
+                    .unwrap();
                 }
                 Ordering::Equal => {
                     if key_filter(key1)
@@ -353,24 +382,35 @@ where
 
                 Ordering::Greater => {
                     self.copy_values_if(&mut cursor2, key_filter, value_filter);
-                    let extra = unsafe {
-                        cursor2
-                            .cursor
-                            .estimate_count_until_first_ge(&|key| key1.cmp(key))
-                    };
-                    for _ in 0..extra {
-                        self.copy_values_if(&mut cursor2, key_filter, value_filter);
+                    unsafe {
+                        cursor2.cursor.for_each_cursor(|(key, _), row_group| {
+                            if key < key1 {
+                                self.copy_values(&row_group, key, key_filter, value_filter);
+                                true
+                            } else {
+                                false
+                            }
+                        })
                     }
+                    .unwrap();
                 }
             }
         }
 
-        while cursor1.valid() {
-            self.copy_values_if(&mut cursor1, key_filter, value_filter);
+        unsafe {
+            cursor1.cursor.for_each_cursor(|(key, _), row_group| {
+                self.copy_values(&row_group, key, key_filter, value_filter);
+                true
+            })
         }
-        while cursor2.valid() {
-            self.copy_values_if(&mut cursor2, key_filter, value_filter);
+        .unwrap();
+        unsafe {
+            cursor2.cursor.for_each_cursor(|(key, _), row_group| {
+                self.copy_values(&row_group, key, key_filter, value_filter);
+                true
+            })
         }
+        .unwrap();
     }
 }
 

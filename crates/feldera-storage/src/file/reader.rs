@@ -4,7 +4,10 @@
 
 use std::{
     cell::RefCell,
-    cmp::Ordering::{self, *},
+    cmp::{
+        min,
+        Ordering::{self, *},
+    },
     collections::{hash_map::Entry, HashMap},
     fmt::{Debug, Formatter, Result as FmtResult},
     marker::PhantomData,
@@ -569,6 +572,46 @@ where
             batch.push(self.item_for_row(row));
         }
         batch
+    }
+    pub unsafe fn for_each<F>(&self, row: u64, end: u64, f: &mut F) -> (u64, bool)
+    where
+        F: FnMut(&(K, A)) -> bool,
+    {
+        let end = min(end, self.inner.rows().end);
+        for row in row..end {
+            if !f(&self.item_for_row(row)) {
+                return (row, false);
+            }
+        }
+        return (end, true);
+    }
+    pub unsafe fn for_each_cursor<S, NK, NA, NN, T, F>(
+        &self,
+        row_group: &RowGroup<S, K, A, (NK, NA, NN), T>,
+        row: u64,
+        end: u64,
+        f: &mut F,
+    ) -> (u64, bool)
+    where
+        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+        S: StorageRead + StorageControl + StorageExecutor,
+        NK: Rkyv,
+        NA: Rkyv,
+        T: ColumnSpec,
+    {
+        let end = min(end, self.inner.rows().end);
+        for row in row..end {
+            let next_row_group = RowGroup {
+                reader: row_group.reader,
+                column: row_group.column + 1,
+                rows: self.row_group(row).unwrap(), /* XXX bad unwrap */
+                _phantom: PhantomData,
+            };
+            if !f(&self.item_for_row(row), &next_row_group) {
+                return (row, false);
+            }
+        }
+        return (end, true);
     }
 }
 
@@ -1682,7 +1725,15 @@ where
 
     /// XXX
     pub unsafe fn take_batch(&mut self, max: usize) -> Result<Vec<(K, A)>, Error> {
-         self.position.take_batch(&self.row_group, max)
+        self.position.take_batch(&self.row_group, max)
+    }
+
+    /// XXX
+    pub unsafe fn for_each<F>(&mut self, mut f: F) -> Result<(), Error>
+    where
+        F: FnMut(&(K, A)) -> bool,
+    {
+        self.position.for_each(&self.row_group, &mut f)
     }
 
     /// Moves the cursor backward past rows for which `predicate` returns false,
@@ -1764,6 +1815,26 @@ where
             self.row_group.column + 1,
             self.position.row_group()?,
         ))
+    }
+    /// XXX
+    pub unsafe fn for_each_cursor<F>(&mut self, mut f: F) -> Result<(), Error>
+    where
+        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+        S: StorageRead,
+    {
+        if let Position::Before = self.position {
+            if self.row_group.is_empty() {
+                return Ok(());
+            }
+            self.position
+                .move_to_row(&self.row_group, self.row_group.rows.start)?;
+        }
+        if let Position::Row(path) = &mut self.position {
+            if path.for_each_cursor(&self.row_group, self.row_group.rows.end, &mut f)? {
+                self.position = Position::After
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1970,6 +2041,53 @@ where
             self.data.rows().end,
         );
         self.data.take_batch(start..end)
+    }
+    pub unsafe fn for_each<S, T, F>(
+        &mut self,
+        reader: &Reader<S, T>,
+        column: usize,
+        end: u64,
+        f: &mut F,
+    ) -> Result<bool, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+        F: FnMut(&(K, A)) -> bool,
+    {
+        loop {
+            let (row, keep_going) = self.data.for_each(self.row, end, f);
+            if row >= end {
+                return Ok(true);
+            }
+            self.move_to_row(reader, column, row)?;
+            if !keep_going {
+                return Ok(false);
+            }
+        }
+    }
+    pub unsafe fn for_each_cursor<S, NK, NA, NN, T, F>(
+        &mut self,
+        row_group: &RowGroup<'_, S, K, A, (NK, NA, NN), T>,
+        end: u64,
+        f: &mut F,
+    ) -> Result<bool, Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        NK: Rkyv,
+        NA: Rkyv,
+        T: ColumnSpec,
+        F: FnMut(&(K, A), &RowGroup<S, NK, NA, NN, T>) -> bool,
+    {
+        loop {
+            let (row, keep_going) = self.data.for_each_cursor(row_group, self.row, end, f);
+            if row >= end {
+                return Ok(true);
+            }
+            self.move_to_row(&row_group.reader, row_group.column, row)?;
+            if !keep_going {
+                return Ok(false);
+            }
+        }
     }
 }
 
@@ -2254,8 +2372,31 @@ where
                     }
                 }
                 Ok(batch)
-            },
+            }
             Position::After => Ok(Vec::new()),
         }
+    }
+    pub unsafe fn for_each<S, N, T, F>(
+        &mut self,
+        row_group: &RowGroup<'_, S, K, A, N, T>,
+        f: &mut F,
+    ) -> Result<(), Error>
+    where
+        S: StorageRead + StorageControl + StorageExecutor,
+        T: ColumnSpec,
+        F: FnMut(&(K, A)) -> bool,
+    {
+        if let Position::Before = self {
+            if row_group.is_empty() {
+                return Ok(());
+            }
+            self.move_to_row(row_group, row_group.rows.start)?;
+        }
+        if let Position::Row(path) = self {
+            if path.for_each(row_group.reader, row_group.column, row_group.rows.end, f)? {
+                *self = Position::After
+            }
+        }
+        Ok(())
     }
 }
