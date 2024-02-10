@@ -26,6 +26,8 @@ pub mod metrics;
 #[cfg(feature = "glommio")]
 pub mod glommio_impl;
 pub mod monoio_impl;
+pub mod posixio_impl;
+pub mod memory_impl;
 
 #[cfg(test)]
 pub(crate) mod tests;
