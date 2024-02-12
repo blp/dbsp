@@ -26,7 +26,7 @@ use crate::{
     DBData, DBTimestamp, DBWeight, NumEntries, Rkyv,
 };
 
-use super::StorageBackend;
+use super::{storage_backend, StorageBackend};
 
 type RawValBatch<K, V, T, R> = Reader<StorageBackend, (K, (), (V, Vec<(T, R)>, ()))>;
 
@@ -193,8 +193,7 @@ where
     fn recede_to(&mut self, frontier: &T) {
         // Nothing to do if the batch is entirely before the frontier.
         if !self.upper().less_equal(frontier) {
-            let mut writer =
-                Writer2::new(&StorageBackend::default_for_thread(), Parameters::default()).unwrap();
+            let mut writer = Writer2::new(&storage_backend(), Parameters::default()).unwrap();
             let mut key_cursor = self.file.rows().first().unwrap();
             while key_cursor.has_value() {
                 let mut val_cursor = key_cursor.next_column().unwrap().first().unwrap();
@@ -409,7 +408,7 @@ where
         value_filter: &Option<Filter<V>>,
     ) -> RawValBatch<K, V, T, R> {
         let mut output =
-            Writer2::new(&StorageBackend::default_for_thread(), Parameters::default()).unwrap();
+            Writer2::new(&storage_backend(), Parameters::default()).unwrap();
         let mut cursor1 = source1.file.rows().nth(source1.lower_bound as u64).unwrap();
         let mut cursor2 = source2.file.rows().nth(source2.lower_bound as u64).unwrap();
         loop {
@@ -472,7 +471,7 @@ where
             file: self
                 .result
                 .take()
-                .unwrap_or(Reader::empty(&StorageBackend::default_for_thread()).unwrap()),
+                .unwrap_or(Reader::empty(&storage_backend()).unwrap()),
             lower_bound: 0,
             lower: self.lower,
             upper: self.upper,
@@ -714,7 +713,7 @@ where
     fn new_builder(time: T) -> Self {
         Self {
             time,
-            writer: Writer2::new(&StorageBackend::default_for_thread(), Parameters::default())
+            writer: Writer2::new(&storage_backend(), Parameters::default())
                 .unwrap(),
             cur_key: None,
         }

@@ -11,7 +11,7 @@ use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     trace::{
         layers::{Builder, Cursor, MergeBuilder, Trie, TupleBuilder},
-        ord::file::StorageBackend,
+        ord::file::{storage_backend, StorageBackend},
     },
     DBData, DBWeight, NumEntries,
 };
@@ -85,7 +85,7 @@ where
 {
     pub fn empty() -> Self {
         Self {
-            file: Reader::empty(&StorageBackend::default_for_thread()).unwrap(),
+            file: Reader::empty(&storage_backend()).unwrap(),
             lower_bound: 0,
         }
     }
@@ -384,7 +384,7 @@ where
     }
 
     fn with_key_capacity(_capacity: usize) -> Self {
-        Self(Writer2::new(&StorageBackend::default_for_thread(), Parameters::default()).unwrap())
+        Self(Writer2::new(&storage_backend(), Parameters::default()).unwrap())
     }
 
     fn reserve(&mut self, _additional: usize) {}
@@ -464,7 +464,7 @@ where
 
     fn new() -> Self {
         Self {
-            writer: Writer2::new(&StorageBackend::default_for_thread(), Parameters::default())
+            writer: Writer2::new(&storage_backend(), Parameters::default())
                 .unwrap(),
             key: None,
         }

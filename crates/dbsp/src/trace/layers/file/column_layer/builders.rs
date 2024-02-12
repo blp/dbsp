@@ -3,7 +3,7 @@ use crate::{
         layers::{
             file::column_layer::FileColumnLayer, Builder, Cursor, MergeBuilder, Trie, TupleBuilder,
         },
-        ord::file::StorageBackend,
+        ord::file::{storage_backend, StorageBackend},
     },
     DBData, DBWeight,
 };
@@ -47,7 +47,7 @@ where
     }
 
     fn with_key_capacity(_capacity: usize) -> Self {
-        Self(Writer1::new(&StorageBackend::default_for_thread(), Parameters::default()).unwrap())
+        Self(Writer1::new(&storage_backend(), Parameters::default()).unwrap())
     }
 
     fn reserve(&mut self, _additional: usize) {}
@@ -134,7 +134,7 @@ where
     type Item = (K, R);
 
     fn new() -> Self {
-        Self(Writer1::new(&StorageBackend::default_for_thread(), Parameters::default()).unwrap())
+        Self(Writer1::new(&storage_backend(), Parameters::default()).unwrap())
     }
 
     fn with_capacity(_capacity: usize) -> Self {

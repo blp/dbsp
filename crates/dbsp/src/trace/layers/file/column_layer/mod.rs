@@ -16,7 +16,7 @@ use std::{
 
 use crate::algebra::{AddAssignByRef, AddByRef, NegByRef};
 use crate::trace::layers::{Builder, Trie, TupleBuilder};
-use crate::trace::ord::file::StorageBackend;
+use crate::trace::ord::file::{storage_backend, StorageBackend};
 use crate::{DBData, DBWeight, NumEntries};
 
 pub use self::builders::FileColumnLayerBuilder;
@@ -44,7 +44,7 @@ where
 
     pub fn empty() -> Self {
         Self {
-            file: Reader::empty(&StorageBackend::default_for_thread()).unwrap(),
+            file: Reader::empty(&storage_backend()).unwrap(),
             lower_bound: 0,
         }
     }
