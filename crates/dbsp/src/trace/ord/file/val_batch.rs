@@ -4,12 +4,9 @@ use std::{
     marker::PhantomData,
 };
 
-use feldera_storage::{
-    backend::{StorageControl, StorageExecutor, StorageRead},
-    file::{
-        reader::{ColumnSpec, Cursor as FileCursor, Reader},
-        writer::{Parameters, Writer2},
-    },
+use feldera_storage::file::{
+    reader::{ColumnSpec, Cursor as FileCursor, Reader},
+    writer::{Parameters, Writer2},
 };
 use itertools::Itertools;
 use rand::{seq::index::sample, Rng};
@@ -266,12 +263,11 @@ fn include<K>(x: &K, filter: &Option<Filter<K>>) -> bool {
     }
 }
 
-fn read_filtered<S, K, A, N, T>(
-    cursor: &mut FileCursor<S, K, A, N, T>,
+fn read_filtered<K, A, N, T>(
+    cursor: &mut FileCursor<StorageBackend, K, A, N, T>,
     filter: &Option<Filter<K>>,
 ) -> Option<K>
 where
-    S: StorageRead + StorageControl + StorageExecutor,
     K: Rkyv + Debug,
     A: Rkyv,
     T: ColumnSpec,
@@ -407,8 +403,7 @@ where
         key_filter: &Option<Filter<K>>,
         value_filter: &Option<Filter<V>>,
     ) -> RawValBatch<K, V, T, R> {
-        let mut output =
-            Writer2::new(&storage_backend(), Parameters::default()).unwrap();
+        let mut output = Writer2::new(&storage_backend(), Parameters::default()).unwrap();
         let mut cursor1 = source1.file.rows().nth(source1.lower_bound as u64).unwrap();
         let mut cursor2 = source2.file.rows().nth(source2.lower_bound as u64).unwrap();
         loop {
@@ -713,8 +708,7 @@ where
     fn new_builder(time: T) -> Self {
         Self {
             time,
-            writer: Writer2::new(&storage_backend(), Parameters::default())
-                .unwrap(),
+            writer: Writer2::new(&storage_backend(), Parameters::default()).unwrap(),
             cur_key: None,
         }
     }
