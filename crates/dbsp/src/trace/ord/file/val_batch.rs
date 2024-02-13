@@ -13,7 +13,6 @@ use crate::{
         Factory, LeanVec, WeightTrait, WithFactory,
     },
     storage::{
-        backend::{StorageControl, StorageExecutor, StorageRead},
         file::{
             reader::{ColumnSpec, Cursor as FileCursor, Reader},
             writer::{Parameters, Writer2},
@@ -422,13 +421,12 @@ fn include<K: ?Sized>(x: &K, filter: &Option<Filter<K>>) -> bool {
     }
 }
 
-fn read_filtered<'a, S, K, A, N, T>(
-    cursor: &mut FileCursor<S, K, A, N, T>,
+fn read_filtered<'a, K, A, N, T>(
+    cursor: &mut FileCursor<StorageBackend, K, A, N, T>,
     filter: &Option<Filter<K>>,
     key: &'a mut K,
 ) -> Option<&'a K>
 where
-    S: StorageRead + StorageControl + StorageExecutor,
     K: DataTrait + ?Sized,
     A: DataTrait + ?Sized,
     T: ColumnSpec,
