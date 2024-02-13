@@ -30,19 +30,22 @@ use crate::test::init_test_logger;
 type CacheKey = (i64, u64, usize);
 
 /// CachedFBuf (the values of the cache) are reference-counted buffers.
-type CachedFBuf = Arc<FBuf>;
+type CachedFBuf<A> = (Arc<FBuf>, A);
 
-pub struct TinyLfuCache(Cache<CacheKey, CachedFBuf>);
+pub struct TinyLfuCache<A>(Cache<CacheKey, CachedFBuf<A>>);
 
-impl Deref for TinyLfuCache {
-    type Target = Cache<CacheKey, CachedFBuf>;
+impl<A> Deref for TinyLfuCache<A> {
+    type Target = Cache<CacheKey, CachedFBuf<A>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Default for TinyLfuCache {
+impl<A> Default for TinyLfuCache<A>
+where
+    A: Clone + Send + Sync + 'static,
+{
     /// A default instance of the LruCache will check if the environment
     /// variable `FELDERA_BUFFER_CACHE_BYTES` is set to determine the amount of
     /// bytes to cache.
@@ -60,7 +63,10 @@ impl Default for TinyLfuCache {
     }
 }
 
-impl TinyLfuCache {
+impl<A> TinyLfuCache<A>
+where
+    A: Clone + Send + Sync + 'static,
+{
     const BLOCK_SIZE: usize = 512;
 
     /// Builds a TinyLFU cache with the given capacity.
@@ -70,11 +76,11 @@ impl TinyLfuCache {
     pub fn with_capacity(capacity: usize) -> Self {
         TinyLfuCache(
             Cache::builder()
-                .weigher(|_, fbuf: &CachedFBuf| {
+                .weigher(|_, fbuf: &CachedFBuf<A>| {
                     // This weigher API wants us to return u32. We might have buffers bigger than
                     // `u32::MAX`. But they're also at least 512 bytes. So if we divide by 512
                     // it gives us a max relative size we can represent of two TiB per buffer.
-                    (fbuf.len() / Self::BLOCK_SIZE) as u32
+                    (fbuf.0.len() / Self::BLOCK_SIZE) as u32
                 })
                 // This now corresponds to what is returned by weigher, so if we want it
                 // to hold `n` bytes `max_capacity` is `n / 512`.
@@ -94,8 +100,8 @@ impl TinyLfuCache {
 /// e.g., if we have two writes to overlapping regions the cache needs
 /// to still be correct (or at least reject the last write, which is easier and
 /// what we do since our storage format is append-only).
-pub struct BufferCache<B> {
-    cache: Arc<TinyLfuCache>,
+pub struct BufferCache<B, A> {
+    cache: Arc<TinyLfuCache<A>>,
     /// A list of written ranges per file. It's important that the vector is
     /// sorted by the start of the range, since we binary search it.
     blocks: RefCell<HashMap<i64, Vec<Range<u64>>>>,
@@ -103,8 +109,11 @@ pub struct BufferCache<B> {
     backend: B,
 }
 
-impl<B> BufferCache<B> {
-    pub fn with_backend_lfu(backend: B, cache: Arc<TinyLfuCache>) -> Self {
+impl<B, A> BufferCache<B, A>
+where
+    A: Clone + Send + Sync + 'static,
+{
+    pub fn with_backend_lfu(backend: B, cache: Arc<TinyLfuCache<A>>) -> Self {
         Self {
             cache,
             blocks: Default::default(),
@@ -112,11 +121,11 @@ impl<B> BufferCache<B> {
         }
     }
 
-    async fn get(&self, key: &CacheKey) -> Option<CachedFBuf> {
+    async fn get(&self, key: &CacheKey) -> Option<CachedFBuf<A>> {
         self.cache.get(key).await
     }
 
-    async fn insert(&self, key: CacheKey, value: CachedFBuf) {
+    async fn insert(&self, key: CacheKey, value: CachedFBuf<A>) {
         self.cache.insert(key, value).await;
     }
 
@@ -190,7 +199,10 @@ fn overlaps_with_previous_write_check() {
     assert!(cache.overlaps_with_previous_write(fd, 512..(1024 + 512)));
 }
 
-impl<B: StorageControl> StorageControl for BufferCache<B> {
+impl<B, A> StorageControl for BufferCache<B, A>
+where
+    B: StorageControl,
+{
     async fn create(&self) -> Result<FileHandle, StorageError> {
         let fd = self.backend.create().await?;
         let fid = (&fd).into();
@@ -210,7 +222,11 @@ impl<B: StorageControl> StorageControl for BufferCache<B> {
     }
 }
 
-impl<B: StorageRead> StorageRead for BufferCache<B> {
+impl<B, A> StorageRead for BufferCache<B, A>
+where
+    B: StorageRead,
+    A: Clone + Default + Send + Sync + 'static,
+{
     async fn prefetch(&self, _fd: &ImmutableFileHandle, _offset: u64, _size: usize) {}
 
     async fn read_block(
@@ -218,17 +234,18 @@ impl<B: StorageRead> StorageRead for BufferCache<B> {
         fd: &ImmutableFileHandle,
         offset: u64,
         size: usize,
-    ) -> Result<CachedFBuf, StorageError> {
+    ) -> Result<Arc<FBuf>, StorageError> {
         let request_start = Instant::now();
         if let Some(buf) = self.get(&(fd.into(), offset, size)).await {
             counter!(BUFFER_CACHE_HIT).increment(1);
             histogram!(BUFFER_CACHE_LATENCY).record(request_start.elapsed().as_secs_f64());
-            Ok(buf)
+            Ok(buf.0)
         } else {
             counter!(BUFFER_CACHE_MISS).increment(1);
             match self.backend.read_block(fd, offset, size).await {
                 Ok(buf) => {
-                    self.insert((fd.into(), offset, size), buf.clone()).await;
+                    self.insert((fd.into(), offset, size), (buf.clone(), A::default()))
+                        .await;
                     Ok(buf)
                 }
                 Err(e) => Err(e),
@@ -241,7 +258,11 @@ impl<B: StorageRead> StorageRead for BufferCache<B> {
     }
 }
 
-impl<B: StorageWrite> StorageWrite for BufferCache<B> {
+impl<B, A> StorageWrite for BufferCache<B, A>
+where
+    B: StorageWrite,
+    A: Clone + Default + Send + Sync + 'static,
+{
     /// The BufferCache `write_block` function is more restrictive than the
     /// trait definition. It does not allow overlapping writes.
     /// This is to allow to fill the cache on writes.
@@ -250,7 +271,7 @@ impl<B: StorageWrite> StorageWrite for BufferCache<B> {
         fd: &FileHandle,
         offset: u64,
         data: FBuf,
-    ) -> Result<CachedFBuf, StorageError> {
+    ) -> Result<Arc<FBuf>, StorageError> {
         if self.overlaps_with_previous_write(fd, offset..offset + data.len() as u64) {
             counter!(WRITES_FAILED).increment(1);
             return Err(StorageError::OverlappingWrites);
@@ -258,7 +279,7 @@ impl<B: StorageWrite> StorageWrite for BufferCache<B> {
         let res = self.backend.write_block(fd, offset, data).await;
         match res {
             Ok(buf) => {
-                self.insert((fd.into(), offset, buf.len()), buf.clone())
+                self.insert((fd.into(), offset, buf.len()), (buf.clone(), A::default()))
                     .await;
 
                 // !overlaps_with_previous_write => range not in the list yet
@@ -283,7 +304,7 @@ impl<B: StorageWrite> StorageWrite for BufferCache<B> {
     }
 }
 
-impl<B: StorageExecutor> StorageExecutor for BufferCache<B>
+impl<B, A> StorageExecutor for BufferCache<B, A>
 where
     B: StorageExecutor,
 {
