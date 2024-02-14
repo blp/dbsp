@@ -27,8 +27,8 @@ use crate::storage::{buffer_cache::FBuf, init};
 
 use super::{
     metrics::{
-        describe_disk_metrics, FILES_CREATED, FILES_DELETED, TOTAL_BYTES_WRITTEN, WRITES_SUCCESS,
-        WRITE_LATENCY, TOTAL_BYTES_READ, READ_LATENCY, READS_FAILED, READS_SUCCESS,
+        describe_disk_metrics, FILES_CREATED, FILES_DELETED, READS_FAILED, READS_SUCCESS,
+        READ_LATENCY, TOTAL_BYTES_READ, TOTAL_BYTES_WRITTEN, WRITES_SUCCESS, WRITE_LATENCY,
     },
     AtomicIncrementOnlyI64, FileHandle, ImmutableFileHandle, StorageControl, StorageError,
     StorageExecutor, StorageRead, StorageWrite, NEXT_FILE_HANDLE,
@@ -169,7 +169,7 @@ impl StorageWrite for MonoioBackend {
         fd: &FileHandle,
         offset: u64,
         data: FBuf,
-    ) -> Result<Arc<FBuf>, StorageError> {
+    ) -> Result<Rc<FBuf>, StorageError> {
         let files = self.files.read().await;
         let request_start = Instant::now();
         let fm = files.get(&fd.0).unwrap();
@@ -182,7 +182,7 @@ impl StorageWrite for MonoioBackend {
         counter!(WRITES_SUCCESS).increment(1);
         histogram!(WRITE_LATENCY).record(request_start.elapsed().as_secs_f64());
 
-        Ok(Arc::new(buf))
+        Ok(Rc::new(buf))
     }
 
     async fn complete(
@@ -210,7 +210,7 @@ impl StorageRead for MonoioBackend {
         fd: &ImmutableFileHandle,
         offset: u64,
         size: usize,
-    ) -> Result<Arc<FBuf>, StorageError> {
+    ) -> Result<Rc<FBuf>, StorageError> {
         let buffer = FBuf::with_capacity(size);
 
         let files = self.files.read().await;
@@ -226,7 +226,7 @@ impl StorageRead for MonoioBackend {
                     Err(StorageError::ShortRead)
                 } else {
                     counter!(READS_SUCCESS).increment(1);
-                    Ok(Arc::new(buf))
+                    Ok(Rc::new(buf))
                 }
             }
             Err(e) => {

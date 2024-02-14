@@ -12,12 +12,10 @@ use crate::{
         DataTrait, DynDataTyped, DynOpt, DynPair, DynUnit, DynVec, DynWeightedPairs, Erase,
         Factory, LeanVec, WeightTrait, WithFactory,
     },
-    storage::{
-        file::{
-            reader::{ColumnSpec, Cursor as FileCursor, Reader},
-            writer::{Parameters, Writer2},
-            Factories as FileFactories,
-        },
+    storage::file::{
+        reader::{ColumnSpec, Cursor as FileCursor, Reader},
+        writer::{Parameters, Writer2},
+        Factories as FileFactories,
     },
     time::{Antichain, AntichainRef},
     trace::{
