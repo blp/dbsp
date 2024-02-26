@@ -55,6 +55,16 @@ impl MemoryBackend {
         }
     }
 
+    /// See [`MemoryBackend::new`]. This function is a convenience function that
+    /// creates a new backend with global unique file-handle counter.
+    pub fn with_base<P: AsRef<Path>>(_base: P) -> Self {
+        Self::new(
+            NEXT_FILE_HANDLE
+                .get_or_init(|| Arc::new(Default::default()))
+                .clone(),
+        )
+    }
+
     /// Helper function to delete (mutable and immutable) files.
     fn delete_inner(&self, fd: i64) -> Result<(), StorageError> {
         self.files.write().unwrap().remove(&fd).unwrap();
