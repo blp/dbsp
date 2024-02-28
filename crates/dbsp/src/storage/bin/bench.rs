@@ -28,7 +28,10 @@ use monoio::{FusionDriver, RuntimeBuilder};
 use feldera_storage::backend::glommio_impl::GlommioBackend;
 
 use feldera_storage::backend::monoio_impl::MonoioBackend;
-use feldera_storage::backend::{AtomicIncrementOnlyI64, StorageControl, StorageRead, StorageWrite};
+use feldera_storage::backend::posixio_impl::PosixBackend;
+use feldera_storage::backend::{
+    AtomicIncrementOnlyI64, StorageControl, StorageExecutor, StorageRead, StorageWrite,
+};
 use feldera_storage::buffer_cache::FBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -190,6 +193,7 @@ enum Backend {
     #[cfg(feature = "glommio")]
     Glommio,
     Monoio,
+    Posix,
 }
 
 impl From<String> for Backend {
@@ -198,6 +202,7 @@ impl From<String> for Backend {
             #[cfg(feature = "glommio")]
             "Glommio" => Backend::Glommio,
             "Monoio" => Backend::Monoio,
+            "Posix" => Backend::Posix,
             _ => panic!("invalid backend"),
         }
     }
@@ -278,7 +283,7 @@ fn thread_cpu_time() -> Duration {
 }
 
 async fn benchmark<T: StorageControl + StorageWrite + StorageRead>(
-    backend: T,
+    backend: &T,
     barrier: Arc<Barrier>,
 ) -> ThreadBenchResult {
     let args = Args::parse();
@@ -374,7 +379,7 @@ fn monoio_main(args: Args) -> BenchResult {
                     .with_entries(4096)
                     .build()
                     .expect("Failed building the Runtime");
-                rt.block_on(benchmark(monoio_backend, barrier))
+                rt.block_on(benchmark(&monoio_backend, barrier))
             })
         })
         .collect();
@@ -388,7 +393,40 @@ fn monoio_main(args: Args) -> BenchResult {
         .expect("Failed building the Runtime");
 
     let mut br = BenchResult::default();
-    let main_res = rt.block_on(benchmark(monoio_backend, barrier));
+    let main_res = rt.block_on(benchmark(&monoio_backend, barrier));
+    br.times.push(main_res);
+
+    // Wait for other n-1 threads
+    threads.into_iter().for_each(|t| {
+        let tres = t.join().expect("thread panicked");
+        br.times.push(tres);
+    });
+
+    br
+}
+
+fn posixio_main(args: Args) -> BenchResult {
+    let counter: Arc<AtomicIncrementOnlyI64> = Default::default();
+    let barrier = Arc::new(Barrier::new(args.threads));
+    // spawn n-1 threads
+    let threads: Vec<_> = (1..args.threads)
+        .map(|_| {
+            let args = args.clone();
+            let barrier = barrier.clone();
+            let counter = counter.clone();
+            thread::spawn(move || {
+                let barrier = barrier.clone();
+                let posixio_backend = PosixBackend::new(args.path.clone(), counter);
+                posixio_backend.block_on(benchmark(&posixio_backend, barrier))
+            })
+        })
+        .collect();
+
+    // Run on main thread
+    let posixio_backend = PosixBackend::new(args.path.clone(), counter);
+
+    let mut br = BenchResult::default();
+    let main_res = posixio_backend.block_on(benchmark(&posixio_backend, barrier));
     br.times.push(main_res);
 
     // Wait for other n-1 threads
@@ -420,6 +458,7 @@ fn main() {
         #[cfg(feature = "glommio")]
         Backend::Glommio => glommio_main(args.clone()),
         Backend::Monoio => monoio_main(args.clone()),
+        Backend::Posix => posixio_main(args.clone()),
     };
 
     br.display(args.clone());
