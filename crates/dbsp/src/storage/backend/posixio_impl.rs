@@ -159,7 +159,7 @@ impl PosixBackend {
 
 impl StorageControl for PosixBackend {
     async fn create_named<P: AsRef<Path>>(&self, name: P) -> Result<FileHandle, StorageError> {
-        let path = name.as_ref().to_path_buf();
+        let path = self.base.join(name);
         let file_counter = self.next_file_id.increment();
         let file = open_as_direct(
             &path,
