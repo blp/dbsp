@@ -29,6 +29,7 @@ use std::marker::PhantomData;
 use dbsp::{
     algebra::{F32, F64},
     operator::NeighborhoodDescr,
+    DBData,
 };
 use rust_decimal::Decimal;
 use serde::{
@@ -291,8 +292,8 @@ macro_rules! serialize_struct {
         #[allow(unused_mut)]
         impl<C, $($arg),*> $crate::SerializeWithContext<C> for $struct<$($arg),*>
         where
-            $($arg: $crate::SerializeWithContext<C>),*
-            $($($arg : $bound)?),*
+            $($arg: $crate::SerializeWithContext<C>,)*
+            $($($arg : $bound,)?)*
         {
             fn serialize_with_context<S>(&self, serializer: S, context: &C) -> Result<S::Ok, S::Error>
             where
@@ -328,7 +329,7 @@ macro_rules! serialize_table_record {
     }
 }
 
-serialize_struct!(NeighborhoodDescr(K, V)[4]{
+serialize_struct!(NeighborhoodDescr(K: DBData, V: DBData)[4]{
     anchor["anchor"]: Option<K>,
     anchor_val["anchor_val"]: V,
     before["before"]: usize,

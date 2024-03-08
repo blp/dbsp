@@ -13,8 +13,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
 use serde_urlencoded::Deserializer as UrlDeserializer;
 use serde_yaml::Value as YamlValue;
-use std::io::Write;
-use std::{borrow::Cow, mem::take, sync::Arc};
+use std::{borrow::Cow, io::Write, mem::take, sync::Arc};
 
 /// JSON format encoder.
 pub struct JsonOutputFormat;
@@ -385,7 +384,6 @@ impl Encoder for JsonEncoder {
 mod test {
     use super::{JsonEncoder, JsonEncoderConfig};
     use crate::format::json::{DebeziumOp, DebeziumPayload, DebeziumUpdate};
-    use crate::test::{generate_test_batches_with_weights, test_struct_schema};
     use crate::{
         catalog::SerBatch,
         format::{
@@ -393,16 +391,16 @@ mod test {
             Encoder,
         },
         static_compile::seroutput::SerBatchImpl,
-        test::{MockOutputConsumer, TestStruct},
+        test::{
+            generate_test_batches_with_weights, test_struct_schema, MockOutputConsumer, TestStruct,
+        },
     };
-    use dbsp::{trace::Batch, IndexedZSet, OrdZSet};
+    use dbsp::{utils::Tup2, OrdZSet};
     use log::trace;
     use pipeline_types::format::json::JsonUpdateFormat;
     use proptest::prelude::*;
     use serde::Deserialize;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::{fmt::Debug, sync::Arc};
+    use std::{cell::RefCell, fmt::Debug, rc::Rc, sync::Arc};
 
     trait OutputUpdate: Debug + for<'de> Deserialize<'de> + Eq + Ord {
         type Val;
@@ -491,7 +489,7 @@ mod test {
 
     fn test_json<U: OutputUpdate<Val = TestStruct>>(
         array: bool,
-        batches: Vec<Vec<(TestStruct, i64)>>,
+        batches: Vec<Vec<Tup2<TestStruct, i64>>>,
     ) {
         let config = JsonEncoderConfig {
             update_format: U::update_format(),
@@ -511,7 +509,7 @@ mod test {
                     (),
                     batch
                         .iter()
-                        .map(|(x, w)| (x.clone(), *w))
+                        .map(|Tup2(x, w)| Tup2(x.clone(), *w))
                         .collect::<Vec<_>>(),
                 );
                 Arc::new(<SerBatchImpl<_, TestStruct, ()>>::new(zset)) as Arc<dyn SerBatch>
@@ -527,7 +525,7 @@ mod test {
                     (),
                     batch
                         .iter()
-                        .map(|(x, w)| (x.clone(), *w))
+                        .map(|Tup2(x, w)| Tup2(x.clone(), *w))
                         .collect::<Vec<_>>(),
                 );
                 let mut deletes = zset
@@ -597,10 +595,10 @@ mod test {
         assert_eq!(actual_output, expected_output);
     }
 
-    fn test_data() -> Vec<Vec<(TestStruct, i64)>> {
+    fn test_data() -> Vec<Vec<Tup2<TestStruct, i64>>> {
         vec![
             vec![
-                (
+                Tup2(
                     TestStruct {
                         id: 0,
                         b: true,
@@ -609,7 +607,7 @@ mod test {
                     },
                     1,
                 ),
-                (
+                Tup2(
                     TestStruct {
                         id: 1,
                         b: false,
@@ -620,7 +618,7 @@ mod test {
                 ),
             ],
             vec![
-                (
+                Tup2(
                     TestStruct {
                         id: 2,
                         b: true,
@@ -629,7 +627,7 @@ mod test {
                     },
                     -2,
                 ),
-                (
+                Tup2(
                     TestStruct {
                         id: 3,
                         b: false,
@@ -640,7 +638,7 @@ mod test {
                 ),
             ],
             vec![
-                (
+                Tup2(
                     TestStruct {
                         id: 4,
                         b: true,
@@ -649,7 +647,7 @@ mod test {
                     },
                     -1,
                 ),
-                (
+                Tup2(
                     TestStruct {
                         id: 5,
                         b: false,
