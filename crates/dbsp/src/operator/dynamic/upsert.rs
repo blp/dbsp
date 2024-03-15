@@ -15,7 +15,7 @@ use std::{borrow::Cow, marker::PhantomData, ops::Neg};
 
 pub struct UpdateSetFactories<T: Timestamp, B: ZSet> {
     pub batch_factories: B::Factories,
-    pub trace_factories: <T::OrdKeyBatch<B::Key, B::R> as BatchReader>::Factories,
+    pub trace_factories: <T::MemKeyBatch<B::Key, B::R> as BatchReader>::Factories,
 }
 
 impl<T: Timestamp, B: ZSet> Clone for UpdateSetFactories<T, B> {
@@ -45,7 +45,7 @@ where
 
 pub struct UpsertFactories<T: Timestamp, B: IndexedZSet> {
     pub batch_factories: B::Factories,
-    pub trace_factories: <T::OrdValBatch<B::Key, B::Val, B::R> as BatchReader>::Factories,
+    pub trace_factories: <T::MemValBatch<B::Key, B::Val, B::R> as BatchReader>::Factories,
 }
 
 impl<T: Timestamp, B: IndexedZSet> Clone for UpsertFactories<T, B> {

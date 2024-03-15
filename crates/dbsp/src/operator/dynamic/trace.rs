@@ -9,8 +9,8 @@ use crate::{
         Scope, Stream, WithClock,
     },
     circuit_cache_key,
-    dynamic::{ClonableTrait, DataTrait},
-    trace::{Batch, BatchReader, BatchReaderFactories, Builder, Cursor, Filter, Spine, Trace},
+    dynamic::DataTrait,
+    trace::{copy_batch, Batch, BatchReader, Filter, Spillable, Spine, Stored, Trace},
     Error, Runtime, Timestamp,
 };
 use dyn_clone::clone_box;
@@ -207,44 +207,10 @@ struct TraceBoundsInner<K: ?Sized + 'static, V: ?Sized + 'static> {
 
 // TODO: add infrastructure to compact the trace during slack time.
 
-/// Add `timestamp` to all tuples in the input batch.
-///
-/// Given an input batch without timing information (`BatchReader::Time = ()`),
-/// generate an output batch by adding the same time `timestamp` to
-/// each tuple.
-///
-/// Most DBSP operators output untimed batches.  When such a batch is
-/// added to a trace, the current timestamp must be added to it.
-// TODO: this can be implemented more efficiently by having a special batch type
-// where all updates have the same timestamp, as this is the only kind of
-// batch that we ever create directly in DBSP; batches with multiple timestamps
-// are only created as a result of merging.  The main complication is that
-// we will need to extend the trace implementation to work with batches of
-// multiple types.  This shouldn't be too hard and is on the todo list.
-fn batch_add_time<BI, TS, BO>(batch: &BI, timestamp: &TS, factories: &BO::Factories) -> BO
-where
-    TS: Timestamp,
-    BI: BatchReader<Time = ()>,
-    BO: Batch<Key = BI::Key, Val = BI::Val, Time = TS, R = BI::R>,
-{
-    let mut builder = BO::Builder::with_capacity(factories, timestamp.clone(), batch.len());
-    let mut cursor = batch.cursor();
-    let mut weight = batch.factories().weight_factory().default_box();
-    while cursor.key_valid() {
-        while cursor.val_valid() {
-            cursor.weight().clone_to(&mut weight);
-            builder.push_refs(cursor.key(), cursor.val(), &weight);
-            cursor.step_val();
-        }
-        cursor.step_key();
-    }
-    builder.done()
-}
-
 /// A key-only [`Spine`] of `C`'s default batch type, with key and weight types
 /// taken from `B`.
 pub type KeySpine<B, C> = Spine<
-    <<C as WithClock>::Time as Timestamp>::OrdKeyBatch<
+    <<C as WithClock>::Time as Timestamp>::MemKeyBatch<
         <B as BatchReader>::Key,
         <B as BatchReader>::R,
     >,
@@ -253,7 +219,17 @@ pub type KeySpine<B, C> = Spine<
 /// A [`Spine`] of `C`'s default batch type, with key, value, and weight types
 /// taken from `B`.
 pub type ValSpine<B, C> = Spine<
-    <<C as WithClock>::Time as Timestamp>::OrdValBatch<
+    <<C as WithClock>::Time as Timestamp>::MemValBatch<
+        <B as BatchReader>::Key,
+        <B as BatchReader>::Val,
+        <B as BatchReader>::R,
+    >,
+>;
+
+/// A [`Spine`] of `C`'s default batch type, with key, value, and weight types
+/// taken from `B`.
+pub type FileValSpine<B, C> = Spine<
+    <<C as WithClock>::Time as Timestamp>::FileValBatch<
         <B as BatchReader>::Key,
         <B as BatchReader>::Val,
         <B as BatchReader>::R,
@@ -265,11 +241,33 @@ where
     C: Circuit,
     B: Clone + 'static,
 {
+    pub fn dyn_spill(
+        &self,
+        output_factories: &<B::Spilled as BatchReader>::Factories,
+    ) -> Stream<C, B::Spilled>
+    where
+        B: Spillable,
+    {
+        let output_factories = output_factories.clone();
+        self.apply(move |batch| batch.spill(&output_factories))
+    }
+
+    pub fn dyn_unspill(
+        &self,
+        output_factories: &<B::Unspilled as BatchReader>::Factories,
+    ) -> Stream<C, B::Unspilled>
+    where
+        B: Stored,
+    {
+        let output_factories = output_factories.clone();
+        self.apply(move |batch| batch.unspill(&output_factories))
+    }
+
     /// See [`Stream::trace`].
     pub fn dyn_trace(
         &self,
-        output_factories: &<ValSpine<B, C> as BatchReader>::Factories,
-    ) -> Stream<C, ValSpine<B, C>>
+        output_factories: &<FileValSpine<B, C> as BatchReader>::Factories,
+    ) -> Stream<C, FileValSpine<B, C>>
     where
         B: Batch<Time = ()>,
     {
@@ -279,10 +277,10 @@ where
     /// See [`Stream::trace_with_bound`].
     pub fn dyn_trace_with_bound(
         &self,
-        output_factories: &<ValSpine<B, C> as BatchReader>::Factories,
+        output_factories: &<FileValSpine<B, C> as BatchReader>::Factories,
         lower_key_bound: TraceBound<B::Key>,
         lower_val_bound: TraceBound<B::Val>,
-    ) -> Stream<C, ValSpine<B, C>>
+    ) -> Stream<C, FileValSpine<B, C>>
     where
         B: Batch<Time = ()>,
     {
@@ -307,7 +305,10 @@ where
                         persistent_id,
                     ));
                     let trace = circuit.add_binary_operator_with_preference(
-                        <TraceAppend<ValSpine<B, C>, B, C>>::new(output_factories, circuit.clone()),
+                        <TraceAppend<FileValSpine<B, C>, B, C>>::new(
+                            output_factories,
+                            circuit.clone(),
+                        ),
                         (&local, OwnershipPreference::STRONGLY_PREFER_OWNED),
                         (
                             &self.try_sharded_version(),
@@ -343,11 +344,12 @@ where
     pub fn dyn_integrate_trace_retain_keys<TS>(
         &self,
         input_factories: &B::Factories,
+        output_factories: &<B::Spilled as BatchReader>::Factories,
         bounds_stream: &Stream<C, Box<TS>>,
         retain_key_func: Box<dyn Fn(&TS) -> Filter<B::Key>>,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, Spine<B::Spilled>>
     where
-        B: Batch<Time = ()> + Send,
+        B: Batch<Time = ()> + Spillable + Send,
         TS: DataTrait + ?Sized,
         Box<TS>: Clone,
     {
@@ -358,7 +360,8 @@ where
         // with and without sharding.
         let (trace, bounds) = self
             .dyn_shard(input_factories)
-            .integrate_trace_inner(input_factories);
+            .dyn_spill(output_factories)
+            .integrate_trace_inner(output_factories);
 
         bounds_stream.inspect(move |ts| {
             let filter = retain_key_func(ts.as_ref());
@@ -373,11 +376,12 @@ where
     pub fn dyn_integrate_trace_retain_values<TS>(
         &self,
         input_factories: &B::Factories,
+        output_factories: &<B::Spilled as BatchReader>::Factories,
         bounds_stream: &Stream<C, Box<TS>>,
         retain_val_func: Box<dyn Fn(&TS) -> Filter<B::Val>>,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, Spine<<B as Spillable>::Spilled>>
     where
-        B: Batch<Time = ()> + Send,
+        B: Batch<Time = ()> + Spillable + Send,
         TS: DataTrait + ?Sized,
         Box<TS>: Clone,
     {
@@ -388,7 +392,8 @@ where
         // with and without sharding.
         let (trace, bounds) = self
             .dyn_shard(input_factories)
-            .integrate_trace_inner(input_factories);
+            .dyn_spill(output_factories)
+            .integrate_trace_inner(output_factories);
 
         bounds_stream.inspect(move |ts| {
             let filter = retain_val_func(ts.as_ref());
@@ -400,25 +405,28 @@ where
 
     // TODO: this method should replace `Stream::integrate()`.
     #[track_caller]
-    pub fn dyn_integrate_trace(&self, input_factories: &B::Factories) -> Stream<C, Spine<B>>
+    pub fn dyn_integrate_trace(
+        &self,
+        factories: &<B::Spilled as BatchReader>::Factories,
+    ) -> Stream<C, Spine<<B as Spillable>::Spilled>>
     where
-        B: Batch<Time = ()>,
-        Spine<B>: SizeOf,
+        B: Batch<Time = ()> + Spillable,
+        Spine<<B as Spillable>::Spilled>: SizeOf,
     {
-        self.dyn_integrate_trace_with_bound(input_factories, TraceBound::new(), TraceBound::new())
+        self.dyn_integrate_trace_with_bound(factories, TraceBound::new(), TraceBound::new())
     }
 
     pub fn dyn_integrate_trace_with_bound(
         &self,
-        input_factories: &B::Factories,
+        factories: &<B::Spilled as BatchReader>::Factories,
         lower_key_bound: TraceBound<B::Key>,
         lower_val_bound: TraceBound<B::Val>,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, Spine<<B as Spillable>::Spilled>>
     where
-        B: Batch<Time = ()>,
-        Spine<B>: SizeOf,
+        B: Batch<Time = ()> + Spillable,
+        Spine<<B as Spillable>::Spilled>: SizeOf,
     {
-        let (trace, bounds) = self.integrate_trace_inner(input_factories);
+        let (trace, bounds) = self.dyn_spill(factories).integrate_trace_inner(factories);
 
         bounds.add_key_bound(lower_key_bound);
         bounds.add_val_bound(lower_val_bound);
@@ -727,7 +735,7 @@ where
     fn eval_owned_and_ref(&mut self, mut trace: T, batch: &B) -> T {
         // TODO: extend `trace` type to feed untimed batches directly
         // (adding fixed timestamp on the fly).
-        trace.insert(batch_add_time(
+        trace.insert(copy_batch(
             batch,
             &self.clock.time(),
             &self.output_factories,
@@ -742,7 +750,7 @@ where
     }
 
     fn eval_owned(&mut self, mut trace: T, batch: B) -> T {
-        trace.insert(batch_add_time(
+        trace.insert(copy_batch(
             &batch,
             &self.clock.time(),
             &self.output_factories,

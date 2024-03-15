@@ -1,12 +1,16 @@
 use crate::{
     dynamic::{DowncastTrait, DynData, Erase},
-    operator::{dynamic::trace::ValSpine, TraceBound},
+    operator::TraceBound,
     trace::BatchReaderFactories,
-    typed_batch::{Batch, DynBatch, DynBatchReader, Spine, TypedBatch, TypedBox},
+    typed_batch::{
+        Batch, DynBatch, DynBatchReader, DynSpillable, DynSpine, DynStored, Spillable,
+        SpilledSpine, TypedBatch, TypedBox,
+    },
     Circuit, DBData, DBWeight, Stream,
 };
 use dyn_clone::clone_box;
-use size_of::SizeOf;
+
+use super::dynamic::trace::FileValSpine;
 
 impl<C, K, V, R, B> Stream<C, TypedBatch<K, V, R, B>>
 where
@@ -18,11 +22,27 @@ where
 {
     // TODO: derive timestamp type from the parent circuit.
 
+    pub fn spill(&self) -> Stream<C, TypedBatch<K, V, R, B::Spilled>>
+    where
+        B: DynSpillable,
+    {
+        let factories = BatchReaderFactories::new::<K, V, R>();
+        self.inner().dyn_spill(&factories).typed()
+    }
+
+    pub fn unspill(&self) -> Stream<C, TypedBatch<K, V, R, B::Unspilled>>
+    where
+        B: DynStored,
+    {
+        let factories = BatchReaderFactories::new::<K, V, R>();
+        self.inner().dyn_unspill(&factories).typed()
+    }
+
     /// Record batches in `self` in a trace.
     ///
     /// This operator labels each untimed batch in the stream with the current
     /// timestamp and adds it to a trace.
-    pub fn trace(&self) -> Stream<C, TypedBatch<K, V, R, ValSpine<B, C>>> {
+    pub fn trace(&self) -> Stream<C, TypedBatch<K, V, R, FileValSpine<B, C>>> {
         let factories = BatchReaderFactories::new::<K, V, R>();
         self.inner().dyn_trace(&factories).typed()
     }
@@ -44,7 +64,7 @@ where
         &self,
         lower_key_bound: TraceBound<B::Key>,
         lower_val_bound: TraceBound<B::Val>,
-    ) -> Stream<C, TypedBatch<K, V, R, ValSpine<B, C>>> {
+    ) -> Stream<C, TypedBatch<K, V, R, FileValSpine<B, C>>> {
         let factories = BatchReaderFactories::new::<K, V, R>();
         self.inner()
             .dyn_trace_with_bound(&factories, lower_key_bound, lower_val_bound)
@@ -159,17 +179,20 @@ where
         &self,
         bounds_stream: &Stream<C, TypedBox<TS, DynData>>,
         retain_key_func: RK,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, SpilledSpine<B>>
     where
         TS: DBData + Erase<DynData>,
         RK: Fn(&B::Key, &TS) -> bool + Clone + 'static,
-        B::InnerBatch: Send,
+        B: Spillable,
+        B::InnerBatch: DynSpillable + Send,
     {
-        let factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
+        let input_factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
+        let output_factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
 
         self.inner()
             .dyn_integrate_trace_retain_keys(
-                &factories,
+                &input_factories,
+                &output_factories,
                 &bounds_stream.inner_data(),
                 Box::new(move |ts| {
                     let ts = clone_box(ts);
@@ -192,17 +215,20 @@ where
         &self,
         bounds_stream: &Stream<C, TypedBox<TS, DynData>>,
         retain_value_func: RV,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<C, SpilledSpine<B>>
     where
         TS: DBData + Erase<DynData>,
         RV: Fn(&B::Val, &TS) -> bool + Clone + 'static,
-        B::InnerBatch: Send,
+        B: Spillable,
+        B::InnerBatch: DynSpillable + Send,
     {
-        let factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
+        let input_factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
+        let output_factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
 
         self.inner()
             .dyn_integrate_trace_retain_values(
-                &factories,
+                &input_factories,
+                &output_factories,
                 &bounds_stream.inner_data(),
                 Box::new(move |ts: &DynData| {
                     let ts = clone_box(ts);
@@ -218,9 +244,10 @@ where
     }
 
     #[track_caller]
-    pub fn integrate_trace(&self) -> Stream<C, Spine<B>>
+    pub fn integrate_trace(&self) -> Stream<C, SpilledSpine<B>>
     where
-        Spine<B>: SizeOf,
+        B: Spillable,
+        B::InnerBatch: DynSpillable,
     {
         let factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
 
@@ -231,9 +258,13 @@ where
         &self,
         lower_key_bound: TraceBound<<B::Inner as DynBatchReader>::Key>,
         lower_val_bound: TraceBound<<B::Inner as DynBatchReader>::Val>,
-    ) -> Stream<C, Spine<B>>
+    ) -> Stream<
+        C,
+        TypedBatch<B::Key, B::Val, B::R, DynSpine<<B::InnerBatch as DynSpillable>::Spilled>>,
+    >
     where
-        Spine<B>: SizeOf,
+        B: Spillable,
+        B::InnerBatch: DynSpillable,
     {
         let factories = BatchReaderFactories::new::<B::Key, B::Val, B::R>();
 

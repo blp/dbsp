@@ -2,7 +2,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     dynamic::{DataTrait, WeightTrait},
     time::Timestamp,
-    trace::{OrdKeyBatch, OrdValBatch},
+    trace::{FileValBatch, OrdKeyBatch, OrdValBatch},
     Scope,
 };
 use rkyv::{Archive, Deserialize, Serialize};
@@ -88,9 +88,12 @@ where
 {
     type Nested = Product<Self, u32>;
 
-    type OrdValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+    type MemValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
         OrdValBatch<K, V, Self, R>;
-    type OrdKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = OrdKeyBatch<K, Self, R>;
+    type MemKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = OrdKeyBatch<K, Self, R>;
+
+    type FileValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+        FileValBatch<K, V, Self, R>;
 
     fn minimum() -> Self {
         Self::new(TOuter::minimum(), TInner::minimum())

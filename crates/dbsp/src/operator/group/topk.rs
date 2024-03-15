@@ -5,13 +5,13 @@ use crate::{
         group::custom_ord::{CmpFunc, WithCustomOrd},
     },
     typed_batch::{IndexedZSet, OrdIndexedZSet},
-    DBData, DynZWeight, RootCircuit, Stream, ZWeight,
+    DBData, DynZWeight, RootCircuit, Stream, ZWeight, trace::Spillable,
 };
 
 impl<B> Stream<RootCircuit, B>
 where
     B: IndexedZSet<DynK = DynData, DynV = DynData>,
-    B::InnerBatch: Send,
+    B::InnerBatch: Spillable + Send,
 {
     /// Pick `k` smallest values in each group.
     ///

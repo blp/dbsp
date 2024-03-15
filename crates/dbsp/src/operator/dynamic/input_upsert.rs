@@ -116,7 +116,7 @@ pub struct InputUpsertFactories<T: Timestamp, B: IndexedZSet> {
     pub batch_factories: B::Factories,
     pub opt_key_factory: &'static dyn Factory<DynOpt<B::Key>>,
     pub opt_val_factory: &'static dyn Factory<DynOpt<B::Val>>,
-    pub trace_factories: <T::OrdValBatch<B::Key, B::Val, B::R> as BatchReader>::Factories,
+    pub trace_factories: <T::MemValBatch<B::Key, B::Val, B::R> as BatchReader>::Factories,
 }
 
 impl<T: Timestamp, B: IndexedZSet> Clone for InputUpsertFactories<T, B> {

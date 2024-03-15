@@ -4,7 +4,7 @@ use crate::{
     dynamic::{DataTrait, DynPair, DynUnit, DynVec, Erase, Factory, LeanVec, WithFactory},
     trace::{
         cursor::{CursorPair, ReverseKeyCursor},
-        BatchReaderFactories, OrdIndexedWSetFactories,
+        BatchReaderFactories, OrdIndexedWSetFactories, Spillable, BatchReader,
     },
     utils::Tup2,
     DBData, DynZWeight, RootCircuit, Stream, ZWeight,
@@ -13,8 +13,9 @@ use std::{cmp::Ordering, marker::PhantomData, ops::Neg};
 
 const MAX_RETRACTIONS_CAPACITY: usize = 100_000usize;
 
-pub struct LagFactories<B: IndexedZSet, OV: DataTrait + ?Sized> {
+pub struct LagFactories<B: IndexedZSet + Spillable, OV: DataTrait + ?Sized> {
     input_factories: B::Factories,
+    stored_factories: <B::Spilled as BatchReader>::Factories,
     output_factories: OrdIndexedWSetFactories<B::Key, DynPair<B::Val, OV>, B::R>,
     retraction_factory: &'static dyn Factory<ForwardRetraction<DynPair<B::Val, OV>>>,
     retractions_factory: &'static dyn Factory<ForwardRetractions<DynPair<B::Val, OV>>>,
@@ -23,7 +24,7 @@ pub struct LagFactories<B: IndexedZSet, OV: DataTrait + ?Sized> {
 
 impl<B, OV> LagFactories<B, OV>
 where
-    B: IndexedZSet,
+    B: IndexedZSet + Spillable,
     OV: DataTrait + ?Sized,
 {
     pub fn new<KType, VType, OVType>() -> Self
@@ -34,6 +35,7 @@ where
     {
         Self {
             input_factories: BatchReaderFactories::new::<KType, VType, ZWeight>(),
+            stored_factories: BatchReaderFactories::new::<KType, VType, ZWeight>(),
             output_factories: BatchReaderFactories::new::<KType, Tup2<VType, OVType>, ZWeight>(),
             retraction_factory: WithFactory::<Tup2<Tup2<VType, OVType>, ZWeight>>::FACTORY,
             retractions_factory:
@@ -45,7 +47,7 @@ where
 
 impl<B> Stream<RootCircuit, B>
 where
-    B: IndexedZSet + Send,
+    B: IndexedZSet + Spillable + Send,
 {
     /// See [`Stream::lag`].
     #[allow(clippy::type_complexity)]
@@ -60,6 +62,7 @@ where
     {
         self.dyn_group_transform(
             &factories.input_factories,
+            &factories.stored_factories,
             &factories.output_factories,
             Box::new(Lag::new(
                 factories.output_factories.val_factory(),
@@ -88,6 +91,7 @@ where
     {
         self.dyn_group_transform(
             &factories.input_factories,
+            &factories.stored_factories,
             &factories.output_factories,
             Box::new(Lag::new(
                 factories.output_factories.val_factory(),
