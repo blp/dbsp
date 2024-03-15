@@ -1,6 +1,7 @@
 use crate::{
     dynamic::{DowncastTrait, DynData, DynPair},
     operator::dynamic::group::LagFactories,
+    trace::Spillable,
     typed_batch::{DynOrdIndexedZSet, IndexedZSet, TypedBatch},
     utils::Tup2,
     DBData, RootCircuit, Stream, ZWeight,
@@ -9,7 +10,7 @@ use crate::{
 impl<B> Stream<RootCircuit, B>
 where
     B: IndexedZSet,
-    B::InnerBatch: Send,
+    B::InnerBatch: Spillable + Send,
 {
     /// Lag operator matches each row in a group with a previous row in the
     /// same group.
