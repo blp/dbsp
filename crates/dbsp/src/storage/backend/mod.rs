@@ -66,15 +66,6 @@ impl AtomicIncrementOnlyI64 {
 /// A file-descriptor we can write to.
 pub struct FileHandle(i64);
 
-#[cfg(test)]
-impl FileHandle {
-    /// Creating arbitrary file-handles is only necessary for testing, and
-    /// dangerous otherwise. Use the StorageControl API instead.
-    pub(crate) fn new(fd: i64) -> Self {
-        Self(fd)
-    }
-}
-
 impl From<&FileHandle> for i64 {
     fn from(fd: &FileHandle) -> Self {
         fd.0
@@ -83,15 +74,6 @@ impl From<&FileHandle> for i64 {
 
 /// A file-descriptor we can read or prefetch from.
 pub struct ImmutableFileHandle(i64);
-
-#[cfg(test)]
-impl ImmutableFileHandle {
-    /// Creating arbitrary file-handles is only necessary for testing, and
-    /// dangerous otherwise. Use the StorageControl API instead.
-    pub(crate) fn new(fd: i64) -> Self {
-        Self(fd)
-    }
-}
 
 impl From<&ImmutableFileHandle> for i64 {
     fn from(fd: &ImmutableFileHandle) -> Self {
@@ -213,7 +195,7 @@ pub trait StorageWrite {
         fd: &FileHandle,
         offset: u64,
         data: FBuf,
-    ) -> Result<Arc<FBuf>, StorageError>;
+    ) -> Result<Rc<FBuf>, StorageError>;
 
     /// Completes writing of a file.
     ///
@@ -278,7 +260,7 @@ pub trait StorageRead {
         fd: &ImmutableFileHandle,
         offset: u64,
         size: usize,
-    ) -> Result<Arc<FBuf>, StorageError>;
+    ) -> Result<Rc<FBuf>, StorageError>;
 
     /// Returns the file's size in bytes.
     async fn get_size(&self, fd: &ImmutableFileHandle) -> Result<u64, StorageError>;
