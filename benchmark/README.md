@@ -1,12 +1,12 @@
 # Comparative Benchmarking
 
-It's useful for comparative purposes to be able to run the same
-benchmark on DBSP and other systems.  The `run-nexmark.sh` script in
-this directory supports running the
-[Nexmark](https://datalab.cs.pdx.edu/niagara/NEXMark/) benchmarks in
-comparable ways across a few different systems, currently:
+It's useful to be able to run the same benchmark on Feldera and other
+systems.  The `run-nexmark.sh` script in this directory supports
+running the [Nexmark](https://datalab.cs.pdx.edu/niagara/NEXMark/)
+benchmarks in comparable ways across a few different systems,
+currently:
 
-  * DBSP.
+  * Feldera.
 
   * Flink.
 
@@ -20,7 +20,7 @@ options are:
 
   * The underlying system to use, with `--runner`:
 
-    - `--runner=dbsp` for DBSP.
+    - `--runner=feldera` for Feldera.
 
 	- `--runner=flink` for standalone Flink.
 
@@ -51,7 +51,7 @@ options are:
     formulated that way.
 
   * Set the number of cores to use with `--cores`.  The default is
-    however many cores your system has, but no more than 16.  DBSP
+    however many cores your system has, but no more than 16.  Feldera
     uses the exact number of cores specified; some of the other
     runners only approximate the number of cores.
 
@@ -69,9 +69,19 @@ options, or you can use `suite.mk`, which is a wrapper around
 
 # Setting up the runners
 
-## DBSP setup
+## Feldera setup
 
-`run-nexmark.sh` supports DBSP without special setup.
+`run-nexmark.sh` supports Feldera without special setup.
+
+Feldera uses temporary files for storage, by default in `/tmp`.  If
+`/tmp` is `tmpfs`, as is the default on Fedora and some other
+distributions, then these files will really be written into memory.
+In that case, consider setting `TMPDIR` in the environment to a
+directory on a real filesystem, e.g.:
+
+```
+TMPDIR=/var/run ./run-nexmark.sh
+```
 
 ## Flink setup
 
@@ -88,7 +98,7 @@ To use `run-nexmark.sh` with Beam, first follow the instructions for
 building Nexmark in `beam/README.md`.  This can be as simple as:
 
 ```
-(cd flink && ./setup.sh)
+(cd beam && ./setup.sh)
 ```
 
 ### Google Cloud Dataflow on Beam
@@ -191,7 +201,7 @@ shows results obtained on one particular system:
 ╭────────┬───────────────────────────────────────────────────────────────────────────╮
 │        │                                   runner                                  │
 │        ├─────────┬─────────┬──────────────────────────┬────────────────────────────┤
-│        │   DBSP  │  Flink  │       Flink on Beam      │      Dataflow on Beam      │
+│        │ Feldera │  Flink  │       Flink on Beam      │      Dataflow on Beam      │
 │        ├─────────┼─────────┼──────────────────────────┼────────────────────────────┤
 │        │ language│ language│         language         │          language          │
 │        ├─────────┼─────────┼────────┬────────┬────────┼─────────┬─────────┬────────┤

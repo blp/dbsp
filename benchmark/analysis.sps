@@ -1,8 +1,7 @@
-/* This is SPSS syntax for generating a summary table.  It works with
-/* GNU PSPP's current tip-of-master (the CTABLES command isn't supported
-/* in the latest release version).
+/* This is SPSS syntax for generating a summary table.
+/* It also works with GNU PSPP 2.0 or later.
 
-DATA LIST LIST(',') NOTABLE FILE='|grep -vh when *-100M.csv'
+DATA LIST LIST(',') NOTABLE FILE='|grep -vh when nexmark.csv'
    /when (YMDHMS17)
     runner (A15)
     mode (A6)
@@ -26,6 +25,7 @@ VARIABLE LEVEL querynum (NOMINAL).
 
 RECODE runner
   ('dbsp'=0)
+  ('feldera'=0)
   ('flink'=1)
   ('beam.direct'=2)
   ('beam.flink'=3)
@@ -35,7 +35,7 @@ RECODE runner
   INTO nrunner.
 VARIABLE LABEL nrunner 'runner'.
 VALUE LABELS nrunner
-  0 'DBSP'
+  0 'Feldera'
   1 'Flink'
   2 'Beam (direct)'
   3 'Flink on Beam'
