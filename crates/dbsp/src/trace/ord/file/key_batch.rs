@@ -293,6 +293,7 @@ where
     result: Option<FileOrderedLayer<K, DynDataTyped<T>, R>>,
     lower: Antichain<T>,
     upper: Antichain<T>,
+    required_fuel: isize,
 }
 
 impl<K, T, R> Merger<K, DynUnit, T, R, FileKeyBatch<K, T, R>> for FileKeyMerger<K, T, R>
@@ -308,6 +309,7 @@ where
             result: None,
             lower: batch1.lower().meet(batch2.lower()),
             upper: batch1.upper().join(batch2.upper()),
+            required_fuel: (batch1.len() + batch2.len()) as isize,
         }
     }
 
@@ -331,7 +333,13 @@ where
         _value_filter: &Option<Filter<DynUnit>>,
         fuel: &mut isize,
     ) {
-        debug_assert!(*fuel > 0);
+        if self.required_fuel > *fuel {
+            self.required_fuel -= *fuel;
+            *fuel = 0;
+            return;
+        }
+        *fuel -= self.required_fuel;
+        self.required_fuel = 0;
         if self.result.is_none() {
             let mut builder =
                 <<FileOrderedLayer<K, DynDataTyped<T>, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(

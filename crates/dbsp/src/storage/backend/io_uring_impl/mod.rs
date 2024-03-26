@@ -454,7 +454,11 @@ impl Inner {
         {
             Ok(()) => {
                 counter!(TOTAL_BYTES_READ).increment(buffer.len() as u64);
-                histogram!(READ_LATENCY).record(request_start.elapsed().as_secs_f64());
+                let latency = request_start.elapsed().as_secs_f64();
+                if latency > 0.1 {
+                    println!("high latency {}", (latency * 1000.) as u64);
+                }
+                histogram!(READ_LATENCY).record(latency);
                 counter!(READS_SUCCESS).increment(1);
                 Ok(Rc::new(buffer))
             }

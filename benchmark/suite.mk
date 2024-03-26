@@ -23,7 +23,7 @@ runners = feldera flink beam.flink beam.spark beam.dataflow
 modes = batch stream
 languages = default sql zetasql
 
-events = 100M
+events = 10M
 cores = 16
 
 # Compose the Cartesian product of runners × modes × languages, but
@@ -40,8 +40,6 @@ $(foreach runner,$(runners),\
 $(foreach language,$(if $(filter beam.%,$(runner)),$(languages),default),\
 $(foreach mode,$(modes),\
 $(runner)-$(mode)-$(language)-$(events).csv))))
-
-$(shell echo $(targets) >&2)
 
 all: $(targets)
 .PHONY: all

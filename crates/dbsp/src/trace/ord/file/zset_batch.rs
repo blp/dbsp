@@ -452,6 +452,7 @@ where
     factories: FileZSetFactories<K, R>,
     // result that we are currently assembling.
     result: <FileColumnLayer<K, R> as Trie>::MergeBuilder,
+    required_fuel: isize,
 }
 
 impl<K, R> Merger<K, DynUnit, (), R, FileZSet<K, R>> for FileZSetMerger<K, R>
@@ -461,12 +462,14 @@ where
     R: WeightTrait + ?Sized,
 {
     fn new_merger(batch1: &FileZSet<K, R>, batch2: &FileZSet<K, R>) -> Self {
+        //        println!("start merge {}", (batch1.len() + batch2.len()));
         Self {
             factories: batch1.factories().clone(),
             result: <<FileColumnLayer<K, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
                 &batch1.layer,
                 &batch2.layer,
             ),
+            required_fuel: (batch1.len() + batch2.len()) as isize,
         }
     }
 
@@ -485,6 +488,15 @@ where
         _value_filter: &Option<Filter<DynUnit>>,
         fuel: &mut isize,
     ) {
+        if self.required_fuel > *fuel {
+            self.required_fuel -= *fuel;
+            *fuel = 0;
+            return;
+        }
+        *fuel -= self.required_fuel;
+        self.required_fuel = 0;
+
+        //        println!("finish merge {}", (source1.len() + source2.len()));
         let initial_size = self.result.keys();
 
         if let Some(key_filter) = key_filter {

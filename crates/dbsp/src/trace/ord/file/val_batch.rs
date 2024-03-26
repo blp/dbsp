@@ -409,6 +409,7 @@ where
     result: Option<RawValBatch<K, V, T, R>>,
     lower: Antichain<T>,
     upper: Antichain<T>,
+    required_fuel: isize,
 }
 
 fn include<K: ?Sized>(x: &K, filter: &Option<Filter<K>>) -> bool {
@@ -662,6 +663,7 @@ where
             result: None,
             lower: batch1.lower().meet(batch2.lower()),
             upper: batch1.upper().join(batch2.upper()),
+            required_fuel: (batch1.len() + batch2.len()) as isize,
         }
     }
 
@@ -686,7 +688,13 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
-        debug_assert!(*fuel > 0);
+        if self.required_fuel > *fuel {
+            self.required_fuel -= *fuel;
+            *fuel = 0;
+            return;
+        }
+        *fuel -= self.required_fuel;
+        self.required_fuel = 0;
         if self.result.is_none() {
             self.result = Some(self.merge(source1, source2, key_filter, value_filter));
         }

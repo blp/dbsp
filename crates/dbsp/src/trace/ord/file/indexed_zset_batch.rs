@@ -417,6 +417,7 @@ where
 {
     factories: FileIndexedZSetFactories<K, V, R>,
     result: Option<FileOrderedLayer<K, V, R>>,
+    required_fuel: isize,
 }
 
 impl<K, V, R> Merger<K, V, (), R, FileIndexedZSet<K, V, R>> for FileIndexedZSetMerger<K, V, R>
@@ -427,10 +428,12 @@ where
     R: WeightTrait + ?Sized,
 {
     #[inline]
-    fn new_merger(batch1: &FileIndexedZSet<K, V, R>, _batch2: &FileIndexedZSet<K, V, R>) -> Self {
+    fn new_merger(batch1: &FileIndexedZSet<K, V, R>, batch2: &FileIndexedZSet<K, V, R>) -> Self {
+        //println!("start merge {}", (batch1.len() + batch2.len()));
         Self {
             factories: batch1.factories.clone(),
             result: None,
+            required_fuel: (batch1.len() + batch2.len()) as isize,
         }
     }
 
@@ -453,7 +456,14 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
-        debug_assert!(*fuel > 0);
+        if self.required_fuel > *fuel {
+            self.required_fuel -= *fuel;
+            *fuel = 0;
+            return;
+        }
+        *fuel -= self.required_fuel;
+        self.required_fuel = 0;
+        //println!("finish merge {}", (source1.len() + source2.len()));
         if self.result.is_none() {
             let mut builder =
                 <<FileOrderedLayer<K, V, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
