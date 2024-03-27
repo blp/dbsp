@@ -24,8 +24,8 @@ use dyn_clone::clone_box;
 use rand::{seq::index::sample, Rng};
 use rkyv::{ser::Serializer, Archive, Archived, Deserialize, Fallible, Serialize};
 use size_of::SizeOf;
-use std::path::PathBuf;
 use std::{cmp::min, ops::Neg};
+use std::{cmp::Ordering, path::PathBuf};
 use std::{
     fmt::{self, Debug},
     ops::{Add, AddAssign},
@@ -493,13 +493,109 @@ where
 
     // Position in first batch.
     lower1: usize,
-    upper1: usize,
     // Position in second batch.
     lower2: usize,
-    upper2: usize,
 
     // Output so far.
     writer: Writer2<Backend, K, DynUnit, V, R>,
+}
+
+impl<K, V, R> FileIndexedZSetMerger<K, V, R>
+where
+    K: DataTrait + ?Sized,
+    V: DataTrait + ?Sized,
+    R: WeightTrait + ?Sized,
+{
+    fn copy_values_if(
+        &mut self,
+        cursor: &mut FileIndexedZSetCursor<K, V, R>,
+        key_filter: &Option<Filter<K>>,
+        value_filter: &Option<Filter<V>>,
+        fuel: &mut isize,
+    ) {
+        if filter(key_filter, cursor.key.as_ref()) {
+            *fuel -= cursor.val_cursor.len() as isize;
+            let mut n = 0;
+            while cursor.val_valid() {
+                let val = cursor.val();
+                if filter(value_filter, val) {
+                    let diff = cursor.diff.as_ref();
+                    self.writer.write1((val, diff)).unwrap();
+                    n += 1;
+                }
+                cursor.step_val();
+            }
+            if n > 0 {
+                self.writer
+                    .write0((cursor.key.as_ref(), ().erase()))
+                    .unwrap();
+            }
+        } else {
+            *fuel -= 1;
+        }
+        cursor.step_key();
+    }
+
+    fn copy_value(
+        &mut self,
+        cursor: &mut FileIndexedZSetCursor<K, V, R>,
+        value_filter: &Option<Filter<V>>,
+    ) -> u64 {
+        let retval = if filter(value_filter, cursor.val.as_ref()) {
+            self.writer
+                .write1((cursor.val.as_ref(), cursor.diff.as_ref()))
+                .unwrap();
+            1
+        } else {
+            0
+        };
+        cursor.step_val();
+        retval
+    }
+
+    fn merge_values<'a>(
+        &mut self,
+        cursor1: &mut FileIndexedZSetCursor<'a, K, V, R>,
+        cursor2: &mut FileIndexedZSetCursor<'a, K, V, R>,
+        value_filter: &Option<Filter<V>>,
+    ) -> bool {
+        let mut n = 0;
+        let mut sum = self.factories.weight_factory.default_box();
+
+        while cursor1.val_valid() && cursor2.val_valid() {
+            let value1 = cursor1.val();
+            let value2 = cursor2.val();
+            let cmp = value1.cmp(value2);
+            match cmp {
+                Ordering::Less => {
+                    n += self.copy_value(cursor1, value_filter);
+                }
+                Ordering::Equal => {
+                    if filter(value_filter, value1) {
+                        cursor1.diff.as_ref().add(cursor2.diff.as_ref(), &mut sum);
+                        if !sum.is_zero() {
+                            self.writer.write1((value1, &sum)).unwrap();
+                            n += 1;
+                        }
+                    }
+                    cursor1.step_val();
+                    cursor2.step_val();
+                }
+
+                Ordering::Greater => {
+                    n += self.copy_value(cursor2, value_filter);
+                }
+            }
+        }
+
+        while cursor1.val_valid() {
+            n += self.copy_value(cursor1, value_filter);
+        }
+        while cursor2.val_valid() {
+            n += self.copy_value(cursor2, value_filter);
+        }
+        n > 0
+    }
 }
 
 impl<K, V, R> Merger<K, V, (), R, FileIndexedZSet<K, V, R>> for FileIndexedZSetMerger<K, V, R>
@@ -514,9 +610,7 @@ where
         Self {
             factories: batch1.factories.clone(),
             lower1: batch1.lower_bound,
-            upper1: batch1.file.n_rows(0) as usize,
             lower2: batch2.lower_bound,
-            upper2: batch2.file.n_rows(0) as usize,
             writer: Writer2::new(
                 &batch1.factories.factories0,
                 &batch1.factories.factories1,
@@ -544,8 +638,52 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
-        todo!()
+        let mut cursor1 = FileIndexedZSetCursor::new_from(source1, self.lower1);
+        let mut cursor2 = FileIndexedZSetCursor::new_from(source2, self.lower2);
+        while cursor1.key_valid() && cursor2.key_valid() && *fuel > 0 {
+            match cursor1.key.as_ref().cmp(cursor2.key.as_ref()) {
+                Ordering::Less => {
+                    self.copy_values_if(&mut cursor1, key_filter, value_filter, fuel);
+                }
+                Ordering::Equal => {
+                    if filter(key_filter, cursor1.key.as_ref()) {
+                        *fuel -= (cursor1.val_cursor.len() + cursor2.val_cursor.len()) as isize;
+                        if self.merge_values(&mut cursor1, &mut cursor2, value_filter) {
+                            self.writer
+                                .write0((cursor1.key.as_ref(), ().erase()))
+                                .unwrap();
+                        }
+                    } else {
+                        *fuel -= 1;
+                    }
+                    cursor1.step_key();
+                    cursor2.step_key();
+                }
+
+                Ordering::Greater => {
+                    self.copy_values_if(&mut cursor2, key_filter, value_filter, fuel);
+                }
+            }
+        }
+
+        while cursor1.key_valid() && *fuel > 0 {
+            self.copy_value(&mut cursor1, value_filter);
+            *fuel -= 1;
+        }
+        while cursor2.key_valid() && *fuel > 0 {
+            self.copy_value(&mut cursor2, value_filter);
+            *fuel -= 1;
+        }
+        self.lower1 = cursor1.key_cursor.absolute_position() as usize;
+        self.lower2 = cursor2.key_cursor.absolute_position() as usize;
     }
+}
+
+fn filter<T>(f: &Option<Filter<T>>, t: &T) -> bool
+where
+    T: ?Sized,
+{
+    f.as_ref().map_or(true, |f| f(t))
 }
 
 impl<K, V, R> SizeOf for FileIndexedZSetMerger<K, V, R>
@@ -617,11 +755,11 @@ where
     V: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
-    fn new(zset: &'s FileIndexedZSet<K, V, R>) -> Self {
+    fn new_from(zset: &'s FileIndexedZSet<K, V, R>, lower_bound: usize) -> Self {
         let key_cursor = zset
             .file
             .rows()
-            .subset(zset.lower_bound as u64..)
+            .subset(lower_bound as u64..)
             .first()
             .unwrap();
         let mut key = zset.factories.key_factory.default_box();
@@ -641,6 +779,10 @@ where
             diff,
             val_valid,
         }
+    }
+
+    fn new(zset: &'s FileIndexedZSet<K, V, R>) -> Self {
+        Self::new_from(zset, zset.lower_bound)
     }
 
     fn move_key<F>(&mut self, op: F)
@@ -850,7 +992,10 @@ where
     }
 
     #[inline(never)]
-    fn done(self) -> FileIndexedZSet<K, V, R> {
+    fn done(mut self) -> FileIndexedZSet<K, V, R> {
+        if let Some(key) = self.key.get() {
+            self.writer.write0((key, ().erase())).unwrap();
+        }
         FileIndexedZSet {
             factories: self.factories,
             file: self.writer.into_reader().unwrap(),
