@@ -1,30 +1,34 @@
 use crate::{
     algebra::{AddAssignByRef, AddByRef, NegByRef},
     dynamic::{
-        DataTrait, DynPair, DynVec, DynWeightedPairs, Erase, Factory, LeanVec, WeightTrait,
-        WeightTraitTyped, WithFactory,
+        DataTrait, DynOpt, DynPair, DynUnit, DynVec, DynWeightedPairs, Erase, Factory, LeanVec,
+        WeightTrait, WeightTraitTyped, WithFactory,
+    },
+    storage::{
+        backend::Backend,
+        file::{
+            reader::{Cursor as FileCursor, Error as ReaderError, Reader},
+            writer::{Parameters, Writer2},
+            Factories as FileFactories,
+        },
     },
     time::AntichainRef,
     trace::{
-        layers::{
-            Builder as TrieBuilder, Cursor as TrieCursor, FileOrderedCursor, FileOrderedLayer,
-            FileOrderedLayerFactories, FileOrderedTupleBuilder, FileOrderedValueCursor,
-            MergeBuilder, Trie, TupleBuilder,
-        },
-        ord::merge_batcher::MergeBatcher,
-        Batch, BatchFactories, BatchReader, BatchReaderFactories, Builder, Cursor, Filter, Merger,
-        WeightedItem,
+        ord::merge_batcher::MergeBatcher, Batch, BatchFactories, BatchReader, BatchReaderFactories,
+        Builder, Cursor, Filter, Merger, WeightedItem,
     },
     utils::Tup2,
-    DBData, DBWeight, NumEntries,
+    DBData, DBWeight, NumEntries, Runtime,
 };
-use rand::Rng;
+use dyn_clone::clone_box;
+use rand::{seq::index::sample, Rng};
 use rkyv::{ser::Serializer, Archive, Archived, Deserialize, Fallible, Serialize};
 use size_of::SizeOf;
 use std::path::PathBuf;
+use std::{cmp::min, ops::Neg};
 use std::{
-    fmt::{self, Debug, Display},
-    ops::{Add, AddAssign, Neg},
+    fmt::{self, Debug},
+    ops::{Add, AddAssign},
 };
 
 pub struct FileIndexedZSetFactories<K, V, R>
@@ -33,9 +37,14 @@ where
     V: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
-    layer_factories: FileOrderedLayerFactories<K, V, R>,
+    key_factory: &'static dyn Factory<K>,
+    val_factory: &'static dyn Factory<V>,
+    weight_factory: &'static dyn Factory<R>,
     keys_factory: &'static dyn Factory<DynVec<K>>,
     item_factory: &'static dyn Factory<DynPair<K, V>>,
+    factories0: FileFactories<K, DynUnit>,
+    factories1: FileFactories<V, R>,
+    opt_key_factory: &'static dyn Factory<DynOpt<K>>,
     weighted_item_factory: &'static dyn Factory<WeightedItem<K, V, R>>,
     weighted_items_factory: &'static dyn Factory<DynWeightedPairs<DynPair<K, V>, R>>,
 }
@@ -48,9 +57,14 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            layer_factories: self.layer_factories.clone(),
+            key_factory: self.key_factory,
+            val_factory: self.val_factory,
+            weight_factory: self.weight_factory,
             keys_factory: self.keys_factory,
             item_factory: self.item_factory,
+            factories0: self.factories0.clone(),
+            factories1: self.factories1.clone(),
+            opt_key_factory: self.opt_key_factory,
             weighted_item_factory: self.weighted_item_factory,
             weighted_items_factory: self.weighted_items_factory,
         }
@@ -70,9 +84,14 @@ where
         RType: DBWeight + Erase<R>,
     {
         Self {
-            layer_factories: FileOrderedLayerFactories::new::<KType, VType, RType>(),
+            key_factory: WithFactory::<KType>::FACTORY,
+            val_factory: WithFactory::<VType>::FACTORY,
+            weight_factory: WithFactory::<RType>::FACTORY,
             keys_factory: WithFactory::<LeanVec<KType>>::FACTORY,
             item_factory: WithFactory::<Tup2<KType, VType>>::FACTORY,
+            factories0: FileFactories::new::<KType, ()>(),
+            factories1: FileFactories::new::<VType, RType>(),
+            opt_key_factory: WithFactory::<Option<KType>>::FACTORY,
             weighted_item_factory: WithFactory::<Tup2<Tup2<KType, VType>, RType>>::FACTORY,
             weighted_items_factory:
                 WithFactory::<LeanVec<Tup2<Tup2<KType, VType>, RType>>>::FACTORY,
@@ -80,7 +99,7 @@ where
     }
 
     fn key_factory(&self) -> &'static dyn Factory<K> {
-        self.layer_factories.factories0.key_factory
+        self.key_factory
     }
 
     fn keys_factory(&self) -> &'static dyn Factory<DynVec<K>> {
@@ -88,11 +107,11 @@ where
     }
 
     fn val_factory(&self) -> &'static dyn Factory<V> {
-        self.layer_factories.factories1.key_factory
+        self.val_factory
     }
 
     fn weight_factory(&self) -> &'static dyn Factory<R> {
-        self.layer_factories.diff_factory
+        self.weight_factory
     }
 }
 
@@ -126,8 +145,9 @@ where
     R: WeightTrait + ?Sized,
 {
     factories: FileIndexedZSetFactories<K, V, R>,
-    #[doc(hidden)]
-    pub layer: FileOrderedLayer<K, V, R>,
+    #[allow(clippy::type_complexity)]
+    file: Reader<Backend, (&'static K, &'static DynUnit, (&'static V, &'static R, ()))>,
+    lower_bound: usize,
 }
 
 impl<K, V, R> Debug for FileIndexedZSet<K, V, R>
@@ -137,9 +157,35 @@ where
     R: WeightTrait + ?Sized,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileIndexedZSet")
-            .field("layer", &self.layer)
-            .finish()
+        write!(
+            f,
+            "FileIndexedZSet {{ lower_bound: {}, data: ",
+            self.lower_bound
+        )?;
+        let mut cursor = self.cursor();
+        let mut n_keys = 0;
+        while cursor.key_valid() {
+            if n_keys > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?}(", cursor.key())?;
+            let mut n_values = 0;
+            while cursor.val_valid() {
+                if n_values > 0 {
+                    write!(f, ", ")?;
+                }
+                let val = cursor.val();
+                write!(f, "({val:?}")?;
+                let diff = cursor.weight();
+                write!(f, ", {diff:+?})")?;
+                n_values += 1;
+                cursor.step_val();
+            }
+            write!(f, ")")?;
+            n_keys += 1;
+            cursor.step_key();
+        }
+        write!(f, " }}")
     }
 }
 
@@ -152,7 +198,8 @@ where
     fn clone(&self) -> Self {
         Self {
             factories: self.factories.clone(),
-            layer: self.layer.clone(),
+            file: self.file.clone(),
+            lower_bound: self.lower_bound,
         }
     }
 }
@@ -200,38 +247,20 @@ where
 {
 }
 
-impl<K, V, R> Display for FileIndexedZSet<K, V, R>
-where
-    K: DataTrait + ?Sized,
-    V: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-    FileOrderedLayer<K, V, R>: Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "layer:\n{}",
-            textwrap::indent(&self.layer.to_string(), "    ")
-        )
-    }
-}
-
 impl<K, V, R> NumEntries for FileIndexedZSet<K, V, R>
 where
     K: DataTrait + ?Sized,
     V: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
-    const CONST_NUM_ENTRIES: Option<usize> = FileOrderedLayer::<K, V, R>::CONST_NUM_ENTRIES;
+    const CONST_NUM_ENTRIES: Option<usize> = None;
 
-    #[inline]
     fn num_entries_shallow(&self) -> usize {
-        self.layer.num_entries_shallow()
+        self.file.rows().len() as usize
     }
 
-    #[inline]
     fn num_entries_deep(&self) -> usize {
-        self.layer.num_entries_deep()
+        self.file.n_rows(1) as usize
     }
 }
 
@@ -244,9 +273,28 @@ where
 {
     #[inline]
     fn neg_by_ref(&self) -> Self {
+        let mut writer = Writer2::new(
+            &self.factories.factories0,
+            &self.factories.factories1,
+            &Runtime::storage(),
+            Parameters::default(),
+        )
+        .unwrap();
+
+        let mut cursor = self.cursor();
+        while cursor.key_valid() {
+            while cursor.val_valid() {
+                let diff = cursor.diff.neg_by_ref();
+                writer.write1((cursor.val.as_ref(), diff.erase())).unwrap();
+                cursor.step_val();
+            }
+            writer.write0((cursor.key.as_ref(), &())).unwrap();
+            cursor.step_key();
+        }
         Self {
             factories: self.factories.clone(),
-            layer: self.layer.neg_by_ref(),
+            file: writer.into_reader().unwrap(),
+            lower_bound: 0,
         }
     }
 }
@@ -262,10 +310,7 @@ where
 
     #[inline]
     fn neg(self) -> Self {
-        Self {
-            factories: self.factories.clone(),
-            layer: self.layer.neg(),
-        }
+        self.neg_by_ref()
     }
 }
 
@@ -279,9 +324,12 @@ where
     #[inline]
 
     fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            factories: self.factories.clone(),
-            layer: self.layer.add(rhs.layer),
+        if self.is_empty() {
+            rhs
+        } else if rhs.is_empty() {
+            self
+        } else {
+            self.merge(&rhs)
         }
     }
 }
@@ -294,7 +342,9 @@ where
 {
     #[inline]
     fn add_assign(&mut self, rhs: Self) {
-        self.layer.add_assign(rhs.layer);
+        if !rhs.is_empty() {
+            *self = self.merge(&rhs);
+        }
     }
 }
 
@@ -306,7 +356,9 @@ where
 {
     #[inline]
     fn add_assign_by_ref(&mut self, rhs: &Self) {
-        self.layer.add_assign_by_ref(&rhs.layer);
+        if !rhs.is_empty() {
+            *self = self.merge(rhs);
+        }
     }
 }
 
@@ -318,10 +370,7 @@ where
 {
     #[inline]
     fn add_by_ref(&self, rhs: &Self) -> Self {
-        Self {
-            factories: self.factories.clone(),
-            layer: self.layer.add_by_ref(&rhs.layer),
-        }
+        self.merge(rhs)
     }
 }
 
@@ -351,12 +400,12 @@ where
 
     #[inline]
     fn key_count(&self) -> usize {
-        self.layer.keys()
+        self.file.n_rows(0) as usize - self.lower_bound
     }
 
     #[inline]
     fn len(&self) -> usize {
-        self.layer.tuples()
+        self.file.n_rows(1) as usize
     }
 
     #[inline]
@@ -370,14 +419,38 @@ where
     }
 
     fn truncate_keys_below(&mut self, lower_bound: &Self::Key) {
-        self.layer.truncate_keys_below(lower_bound);
+        let mut cursor = self.file.rows().before();
+        unsafe { cursor.advance_to_value_or_larger(lower_bound) }.unwrap();
+
+        let lower_bound = cursor.absolute_position() as usize;
+        if lower_bound > self.lower_bound {
+            self.lower_bound = min(lower_bound, self.file.rows().len() as usize);
+        }
     }
 
-    fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, sample: &mut DynVec<Self::Key>)
+    fn sample_keys<RG>(&self, rng: &mut RG, sample_size: usize, output: &mut DynVec<Self::Key>)
     where
         RG: Rng,
     {
-        self.layer.sample_keys(rng, sample_size, sample);
+        let size = self.key_count();
+        let mut cursor = self.cursor();
+        if sample_size >= size {
+            output.reserve(size);
+
+            while cursor.key_valid() {
+                output.push_ref(cursor.key());
+                cursor.step_key();
+            }
+        } else {
+            output.reserve(sample_size);
+
+            let mut indexes = sample(rng, size, sample_size).into_vec();
+            indexes.sort_unstable();
+            for index in indexes.into_iter() {
+                cursor.move_key(|key_cursor| key_cursor.move_to_row(index as u64));
+                output.push_ref(cursor.key());
+            }
+        }
     }
 }
 
@@ -400,11 +473,12 @@ where
     fn dyn_empty(factories: &Self::Factories, _time: Self::Time) -> Self {
         Self {
             factories: factories.clone(),
-            layer: FileOrderedLayer::empty(&factories.layer_factories),
+            file: Reader::empty(&Runtime::storage()).unwrap(),
+            lower_bound: 0,
         }
     }
     fn persistent_id(&self) -> Option<PathBuf> {
-        Some(self.layer.path())
+        Some(self.file.path())
     }
 }
 
@@ -416,8 +490,16 @@ where
     R: WeightTrait + ?Sized,
 {
     factories: FileIndexedZSetFactories<K, V, R>,
-    result: Option<FileOrderedLayer<K, V, R>>,
-    required_fuel: isize,
+
+    // Position in first batch.
+    lower1: usize,
+    upper1: usize,
+    // Position in second batch.
+    lower2: usize,
+    upper2: usize,
+
+    // Output so far.
+    writer: Writer2<Backend, K, DynUnit, V, R>,
 }
 
 impl<K, V, R> Merger<K, V, (), R, FileIndexedZSet<K, V, R>> for FileIndexedZSetMerger<K, V, R>
@@ -429,22 +511,28 @@ where
 {
     #[inline]
     fn new_merger(batch1: &FileIndexedZSet<K, V, R>, batch2: &FileIndexedZSet<K, V, R>) -> Self {
-        //println!("start merge {}", (batch1.len() + batch2.len()));
         Self {
             factories: batch1.factories.clone(),
-            result: None,
-            required_fuel: (batch1.len() + batch2.len()) as isize,
+            lower1: batch1.lower_bound,
+            upper1: batch1.file.n_rows(0) as usize,
+            lower2: batch2.lower_bound,
+            upper2: batch2.file.n_rows(0) as usize,
+            writer: Writer2::new(
+                &batch1.factories.factories0,
+                &batch1.factories.factories1,
+                &Runtime::storage(),
+                Parameters::default(),
+            )
+            .unwrap(),
         }
     }
 
     #[inline]
-    fn done(mut self) -> FileIndexedZSet<K, V, R> {
+    fn done(self) -> FileIndexedZSet<K, V, R> {
         FileIndexedZSet {
             factories: self.factories.clone(),
-            layer: self
-                .result
-                .take()
-                .unwrap_or_else(|| FileOrderedLayer::empty(&self.factories.layer_factories)),
+            file: self.writer.into_reader().unwrap(),
+            lower_bound: 0,
         }
     }
 
@@ -456,36 +544,7 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
-        if self.required_fuel > *fuel {
-            self.required_fuel -= *fuel;
-            *fuel = 0;
-            return;
-        }
-        *fuel -= self.required_fuel;
-        self.required_fuel = 0;
-        //println!("finish merge {}", (source1.len() + source2.len()));
-        if self.result.is_none() {
-            let mut builder =
-                <<FileOrderedLayer<K, V, R> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(
-                    &source1.layer,
-                    &source2.layer,
-                );
-            let cursor1 = source1.layer.cursor();
-            let cursor2 = source2.layer.cursor();
-            match (key_filter, value_filter) {
-                (None, None) => builder.push_merge(cursor1, cursor2),
-                (Some(key_filter), None) => {
-                    builder.push_merge_retain_keys(cursor1, cursor2, key_filter)
-                }
-                (Some(key_filter), Some(value_filter)) => {
-                    builder.push_merge_retain_values(cursor1, cursor2, key_filter, value_filter)
-                }
-                (None, Some(value_filter)) => {
-                    builder.push_merge_retain_values(cursor1, cursor2, &|_| true, value_filter)
-                }
-            };
-            self.result = Some(builder.done());
-        }
+        todo!()
     }
 }
 
@@ -500,6 +559,18 @@ where
     }
 }
 
+type KeyCursor<'s, K, V, R> = FileCursor<
+    's,
+    Backend,
+    K,
+    DynUnit,
+    (&'static V, &'static R, ()),
+    (&'static K, &'static DynUnit, (&'static V, &'static R, ())),
+>;
+
+type ValCursor<'s, K, V, R> =
+    FileCursor<'s, Backend, V, R, (), (&'static K, &'static DynUnit, (&'static V, &'static R, ()))>;
+
 /// A cursor for navigating a single layer.
 #[derive(Debug, SizeOf)]
 pub struct FileIndexedZSetCursor<'s, K, V, R>
@@ -508,8 +579,16 @@ where
     V: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
-    key_cursor: FileOrderedCursor<'s, K, V, R>,
-    val_cursor: FileOrderedValueCursor<'s, K, V, R>,
+    zset: &'s FileIndexedZSet<K, V, R>,
+
+    key_cursor: KeyCursor<'s, K, V, R>,
+    key: Box<K>,
+    key_valid: bool,
+
+    val_cursor: ValCursor<'s, K, V, R>,
+    val: Box<V>,
+    diff: Box<R>,
+    val_valid: bool,
 }
 
 impl<'s, K, V, R> Clone for FileIndexedZSetCursor<'s, K, V, R>
@@ -520,8 +599,14 @@ where
 {
     fn clone(&self) -> Self {
         Self {
+            zset: self.zset,
             key_cursor: self.key_cursor.clone(),
+            key: clone_box(&self.key),
+            key_valid: self.key_valid,
             val_cursor: self.val_cursor.clone(),
+            val: clone_box(&self.val),
+            diff: clone_box(&self.diff),
+            val_valid: self.val_valid,
         }
     }
 }
@@ -533,20 +618,47 @@ where
     R: WeightTrait + ?Sized,
 {
     fn new(zset: &'s FileIndexedZSet<K, V, R>) -> Self {
-        let key_cursor = zset.layer.cursor();
-        let val_cursor = key_cursor.values();
+        let key_cursor = zset
+            .file
+            .rows()
+            .subset(zset.lower_bound as u64..)
+            .first()
+            .unwrap();
+        let mut key = zset.factories.key_factory.default_box();
+        let key_valid = unsafe { key_cursor.key(&mut key) }.is_some();
+
+        let val_cursor = key_cursor.next_column().unwrap().first().unwrap();
+        let mut val = zset.factories.val_factory.default_box();
+        let mut diff = zset.factories.weight_factory.default_box();
+        let val_valid = unsafe { val_cursor.item((&mut val, &mut diff)) }.is_some();
         Self {
+            zset,
             key_cursor,
+            key,
+            key_valid,
             val_cursor,
+            val,
+            diff,
+            val_valid,
         }
     }
 
     fn move_key<F>(&mut self, op: F)
     where
-        F: Fn(&mut FileOrderedCursor<'s, K, V, R>),
+        F: Fn(&mut KeyCursor<'s, K, V, R>) -> Result<(), ReaderError>,
     {
-        op(&mut self.key_cursor);
-        self.val_cursor = self.key_cursor.values();
+        op(&mut self.key_cursor).unwrap();
+        self.key_valid = unsafe { self.key_cursor.key(&mut self.key) }.is_some();
+        self.val_cursor = self.key_cursor.next_column().unwrap().first().unwrap();
+        self.val_valid = unsafe { self.val_cursor.item((&mut self.val, &mut self.diff)) }.is_some();
+    }
+
+    fn move_val<F>(&mut self, op: F)
+    where
+        F: Fn(&mut ValCursor<'s, K, V, R>) -> Result<(), ReaderError>,
+    {
+        op(&mut self.val_cursor).unwrap();
+        self.val_valid = unsafe { self.val_cursor.item((&mut self.val, &mut self.diff)) }.is_some();
     }
 }
 
@@ -557,20 +669,22 @@ where
     R: WeightTrait + ?Sized,
 {
     fn weight_factory(&self) -> &'static dyn Factory<R> {
-        self.key_cursor.storage.factories.diff_factory
+        self.zset.factories.weight_factory
     }
 
     fn key(&self) -> &K {
-        self.key_cursor.current_key()
+        debug_assert!(self.key_valid);
+        self.key.as_ref()
     }
 
     fn val(&self) -> &V {
-        self.val_cursor.current_value()
+        debug_assert!(self.val_valid);
+        self.val.as_ref()
     }
 
     fn map_times(&mut self, logic: &mut dyn FnMut(&(), &R)) {
-        if self.val_cursor.valid() {
-            logic(&(), self.val_cursor.current_diff())
+        if self.val_valid {
+            logic(&(), self.diff.as_ref())
         }
     }
 
@@ -579,91 +693,91 @@ where
     }
 
     fn map_values(&mut self, logic: &mut dyn FnMut(&V, &R)) {
-        while self.val_valid() {
-            logic(self.val(), self.val_cursor.current_diff());
+        while self.val_valid {
+            logic(self.val(), self.diff.as_ref());
             self.step_val();
         }
     }
 
     fn weight(&mut self) -> &R {
-        debug_assert!(self.val_cursor.valid());
-        self.val_cursor.current_diff()
+        debug_assert!(self.val_valid);
+        self.diff.as_ref()
     }
 
     fn key_valid(&self) -> bool {
-        self.key_cursor.valid()
+        self.key_valid
     }
 
     fn val_valid(&self) -> bool {
-        self.val_cursor.valid()
+        self.val_valid
     }
 
     fn step_key(&mut self) {
-        self.move_key(|key_cursor| key_cursor.step());
+        self.move_key(|key_cursor| key_cursor.move_next());
     }
 
     fn step_key_reverse(&mut self) {
-        self.move_key(|key_cursor| key_cursor.step_reverse());
+        self.move_key(|key_cursor| key_cursor.move_prev());
     }
 
     fn seek_key(&mut self, key: &K) {
-        self.move_key(|key_cursor| key_cursor.seek(key));
+        self.move_key(|key_cursor| unsafe { key_cursor.advance_to_value_or_larger(key) });
     }
 
     fn seek_key_with(&mut self, predicate: &dyn Fn(&K) -> bool) {
-        self.move_key(|key_cursor| key_cursor.seek_with(&predicate));
+        self.move_key(|key_cursor| unsafe { key_cursor.seek_forward_until(predicate) });
     }
 
     fn seek_key_with_reverse(&mut self, predicate: &dyn Fn(&K) -> bool) {
-        self.move_key(|key_cursor| key_cursor.seek_with_reverse(&predicate));
+        self.move_key(|key_cursor| unsafe { key_cursor.seek_backward_until(predicate) });
     }
 
     fn seek_key_reverse(&mut self, key: &K) {
-        self.move_key(|key_cursor| key_cursor.seek_reverse(key));
+        self.move_key(|key_cursor| unsafe { key_cursor.rewind_to_value_or_smaller(key) });
     }
 
     fn step_val(&mut self) {
-        self.val_cursor.step();
+        self.move_val(|val_cursor| val_cursor.move_next());
     }
 
     fn seek_val(&mut self, val: &V) {
-        self.val_cursor.seek(val);
+        self.move_val(|val_cursor| unsafe { val_cursor.advance_to_value_or_larger(val) });
     }
 
     fn seek_val_with(&mut self, predicate: &dyn Fn(&V) -> bool) {
-        self.val_cursor.seek_val_with(predicate);
+        self.move_val(|val_cursor| unsafe { val_cursor.seek_forward_until(predicate) });
     }
 
     fn rewind_keys(&mut self) {
-        self.move_key(|key_cursor| key_cursor.rewind());
+        self.move_key(|key_cursor| key_cursor.move_first());
     }
 
     fn fast_forward_keys(&mut self) {
-        self.move_key(|key_cursor| key_cursor.fast_forward());
+        self.move_key(|key_cursor| key_cursor.move_last());
     }
 
     fn rewind_vals(&mut self) {
-        self.val_cursor.rewind();
+        self.move_val(|val_cursor| val_cursor.move_first());
     }
 
     fn step_val_reverse(&mut self) {
-        self.val_cursor.step_reverse();
+        self.move_val(|val_cursor| val_cursor.move_last());
     }
 
     fn seek_val_reverse(&mut self, val: &V) {
-        self.val_cursor.seek_reverse(val);
+        self.move_val(|val_cursor| unsafe { val_cursor.rewind_to_value_or_smaller(val) });
     }
 
     fn seek_val_with_reverse(&mut self, predicate: &dyn Fn(&V) -> bool) {
-        self.val_cursor.seek_val_with_reverse(predicate);
+        self.move_val(|val_cursor| unsafe { val_cursor.seek_backward_until(predicate) });
     }
 
     fn fast_forward_vals(&mut self) {
-        self.val_cursor.fast_forward();
+        self.move_val(|val_cursor| val_cursor.move_last());
     }
 }
 
-/// A builder for creating layers from unsorted update tuples.
+/// A builder for batches from ordered update tuples.
 pub struct FileIndexedZSetBuilder<K, V, R>
 where
     K: DataTrait + ?Sized,
@@ -671,7 +785,8 @@ where
     R: WeightTrait + ?Sized,
 {
     factories: FileIndexedZSetFactories<K, V, R>,
-    builder: FileOrderedTupleBuilder<K, V, R>,
+    writer: Writer2<Backend, K, DynUnit, V, R>,
+    key: Box<DynOpt<K>>,
 }
 
 impl<K, V, R> Builder<FileIndexedZSet<K, V, R>> for FileIndexedZSetBuilder<K, V, R>
@@ -685,23 +800,24 @@ where
     fn new_builder(factories: &FileIndexedZSetFactories<K, V, R>, _time: ()) -> Self {
         Self {
             factories: factories.clone(),
-            builder: FileOrderedTupleBuilder::<K, V, R>::new(&factories.layer_factories),
+            writer: Writer2::new(
+                &factories.factories0,
+                &factories.factories1,
+                &Runtime::storage(),
+                Parameters::default(),
+            )
+            .unwrap(),
+            key: factories.opt_key_factory.default_box(),
         }
     }
 
     #[inline]
     fn with_capacity(
         factories: &FileIndexedZSetFactories<K, V, R>,
-        _time: (),
-        capacity: usize,
+        time: (),
+        _capacity: usize,
     ) -> Self {
-        Self {
-            factories: factories.clone(),
-            builder: <FileOrderedTupleBuilder<K, V, R> as TupleBuilder>::with_capacity(
-                &factories.layer_factories,
-                capacity,
-            ),
-        }
+        Self::new_builder(factories, time)
     }
 
     #[inline]
@@ -712,24 +828,33 @@ where
         let (kv, r) = item.split();
         let (k, v) = kv.split();
 
-        self.builder.push_refs((k, (v, r)));
+        self.push_refs(k, v, r);
     }
 
     #[inline]
     fn push_refs(&mut self, key: &K, val: &V, weight: &R) {
-        self.builder.push_refs((key, (val, weight)))
+        if let Some(cur_key) = self.key.get() {
+            if cur_key != key {
+                self.writer.write0((cur_key, ().erase())).unwrap();
+                self.key.from_ref(key);
+            }
+        } else {
+            self.key.from_ref(key);
+        }
+        self.writer.write1((val, weight)).unwrap();
     }
 
     #[inline]
     fn push_vals(&mut self, key: &mut K, val: &mut V, weight: &mut R) {
-        self.builder.push_refs((key, (val, weight)))
+        self.push_refs(key, val, weight)
     }
 
     #[inline(never)]
     fn done(self) -> FileIndexedZSet<K, V, R> {
         FileIndexedZSet {
             factories: self.factories,
-            layer: self.builder.done(),
+            file: self.writer.into_reader().unwrap(),
+            lower_bound: 0,
         }
     }
 }

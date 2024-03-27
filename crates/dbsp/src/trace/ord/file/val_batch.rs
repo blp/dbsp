@@ -688,6 +688,7 @@ where
         value_filter: &Option<Filter<V>>,
         fuel: &mut isize,
     ) {
+        print!(".");
         if self.required_fuel > *fuel {
             self.required_fuel -= *fuel;
             *fuel = 0;

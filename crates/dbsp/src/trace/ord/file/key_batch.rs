@@ -333,6 +333,7 @@ where
         _value_filter: &Option<Filter<DynUnit>>,
         fuel: &mut isize,
     ) {
+        print!(".");
         if self.required_fuel > *fuel {
             self.required_fuel -= *fuel;
             *fuel = 0;
