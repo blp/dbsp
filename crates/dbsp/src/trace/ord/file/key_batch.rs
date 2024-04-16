@@ -791,7 +791,7 @@ where
     /// [`Self::done_with_bounds`], supplying correct upper and lower bounds, to
     /// ensure that the final batch's invariants are correct.
     #[inline]
-    fn push_time(&mut self, key: &K, val: &DynUnit, time: &T, weight: &R) {
+    fn push_time(&mut self, key: &K, _val: &DynUnit, time: &T, weight: &R) {
         if let Some(cur_key) = self.key.get() {
             if cur_key != key {
                 self.writer.write0((cur_key, ().erase())).unwrap();

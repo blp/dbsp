@@ -1,8 +1,12 @@
 use crate::{
-    dynamic::{DataTrait, DynPair, DynUnit, DynVec, DynWeightedPairs, Erase, Factory, WeightTrait},
+    dynamic::{
+        DataTrait, DynDataTyped, DynPair, DynUnit, DynVec, DynWeightedPairs, Erase, Factory,
+        WeightTrait,
+    },
+    storage::{backend::Storage, file::reader::Cursor as FileCursor},
     time::AntichainRef,
     trace::{
-        layers::{Cursor as _, OrdOffset},
+        layers::{Cursor as _, LeafCursor, OrdOffset},
         ord::{
             file::key_batch::{FileKeyBuilder, FileKeyCursor, FileKeyMerger},
             merge_batcher::MergeBatcher,
@@ -341,96 +345,6 @@ where
     ToFile(GenericMerger<K, T, R, FileKeyBatch<K, T, R>>),
 }
 
-/*
-impl<K, T, R> FallbackKeyMerger<K, T, R>
-where
-    K: DataTrait + ?Sized,
-    T: Timestamp,
-    R: WeightTrait + ?Sized,
-{
-    fn copy_values_if(
-        &mut self,
-        cursor: &mut FallbackKeyCursor<K, T, R>,
-        key_filter: &Option<Filter<K>>,
-        fuel: &mut isize,
-    ) {
-        if filter(key_filter, cursor.key.as_ref()) {
-            cursor.map_times(&mut |time, diff| {
-                self.writer.write1((time, diff)).unwrap();
-                *fuel -= 1;
-            });
-            self.writer
-                .write0((cursor.key.as_ref(), ().erase()))
-                .unwrap();
-        } else {
-            *fuel -= 1;
-        }
-        cursor.step_key();
-    }
-
-    fn merge_values<'a>(
-        &mut self,
-        cursor1: &mut FallbackKeyCursor<'a, K, T, R>,
-        cursor2: &mut FallbackKeyCursor<'a, K, T, R>,
-        sum: &mut R,
-        fuel: &mut isize,
-    ) -> bool {
-        let mut n = 0;
-
-        let mut subcursor1 = cursor1.cursor.next_column().unwrap().first().unwrap();
-        let mut subcursor2 = cursor2.cursor.next_column().unwrap().first().unwrap();
-        while subcursor1.has_value() && subcursor2.has_value() {
-            let (time1, diff1) =
-                unsafe { subcursor1.item((cursor1.time.as_mut(), &mut cursor1.diff)) }.unwrap();
-            let (time2, diff2) =
-                unsafe { subcursor2.item((cursor2.time.as_mut(), &mut cursor2.diff)) }.unwrap();
-            let cmp = time1.cmp(&time2);
-            match cmp {
-                Ordering::Less => {
-                    self.writer.write1((time1, diff1)).unwrap();
-                    subcursor1.move_next().unwrap();
-                    n += 1;
-                }
-                Ordering::Equal => {
-                    diff1.add(diff2, sum);
-                    if !sum.is_zero() {
-                        self.writer.write1((time1, sum)).unwrap();
-                        n += 1;
-                    }
-                    subcursor1.move_next().unwrap();
-                    subcursor2.move_next().unwrap();
-                }
-
-                Ordering::Greater => {
-                    self.writer.write1((time2, diff2)).unwrap();
-                    n += 1;
-                    subcursor2.move_next().unwrap();
-                }
-            }
-            *fuel -= 1;
-        }
-
-        while let Some((time, diff)) =
-            unsafe { subcursor1.item((cursor1.time.as_mut(), &mut cursor1.diff)) }
-        {
-            self.writer.write1((time, diff)).unwrap();
-            subcursor1.move_next().unwrap();
-            n += 1;
-            *fuel -= 1;
-        }
-        while let Some((time, diff)) =
-            unsafe { subcursor2.item((cursor2.time.as_mut(), &mut cursor2.diff)) }
-        {
-            self.writer.write1((time, diff)).unwrap();
-            subcursor2.move_next().unwrap();
-            n += 1;
-            *fuel -= 1;
-        }
-        n > 0
-    }
-}
- */
-
 impl<K, T, R> Merger<K, DynUnit, T, R, FallbackKeyBatch<K, T, R>> for FallbackKeyMerger<K, T, R>
 where
     Self: SizeOf,
@@ -758,9 +672,48 @@ where
     K: ?Sized,
     R: ?Sized,
 {
+    type TimeDiffCursor<'a>: TimeDiffCursor<'a, T, R>
+    where
+        Self: 'a;
+
+    fn time_diff_cursor(&self) -> Self::TimeDiffCursor<'_>;
+
     /// Applies `logic` to each pair of time and difference. Intended for
     /// mutation of the closure's scope.
-    fn const_map_times(&self, logic: &mut dyn FnMut(&T, &R));
+    fn const_map_times(&self, tmp: &mut R, logic: &mut dyn FnMut(&T, &R));
+}
+
+trait TimeDiffCursor<'a, T, R>
+where
+    R: ?Sized,
+{
+    fn current<'b>(&'b mut self, tmp: &'b mut R) -> Option<(&T, &R)>;
+    fn step(&mut self);
+}
+
+struct OrdKeyTimeDiffCursor<'a, T, R>
+where
+    T: Timestamp,
+    R: WeightTrait + ?Sized,
+{
+    cursor: LeafCursor<'a, DynDataTyped<T>, R>,
+}
+
+impl<'a, T, R> TimeDiffCursor<'a, T, R> for OrdKeyTimeDiffCursor<'a, T, R>
+where
+    T: Timestamp,
+    R: WeightTrait + ?Sized,
+{
+    fn current(&mut self, _tmp: &mut R) -> Option<(&T, &R)> {
+        if self.cursor.valid() {
+            Some((self.cursor.current_key(), self.cursor.current_diff()))
+        } else {
+            None
+        }
+    }
+    fn step(&mut self) {
+        self.cursor.step()
+    }
 }
 
 impl<'s, K, T, R, O> CursorConstMapTimes<K, T, R> for OrdKeyCursor<'s, K, T, R, O>
@@ -770,12 +723,60 @@ where
     R: WeightTrait + ?Sized,
     O: OrdOffset,
 {
-    fn const_map_times(&self, logic: &mut dyn FnMut(&T, &R)) {
+    fn const_map_times(&self, _tmp: &mut R, logic: &mut dyn FnMut(&T, &R)) {
         let mut cursor = self.cursor.values();
         while cursor.valid() {
             logic(cursor.current_key(), cursor.current_diff());
             cursor.step();
         }
+    }
+
+    type TimeDiffCursor<'a> = OrdKeyTimeDiffCursor<'a, T, R> where Self: 'a;
+
+    fn time_diff_cursor(&self) -> Self::TimeDiffCursor<'_> {
+        OrdKeyTimeDiffCursor {
+            cursor: self.cursor.values(),
+        }
+    }
+}
+
+struct FileKeyTimeDiffCursor<'a, K, T, R>
+where
+    K: DataTrait + ?Sized,
+    T: Timestamp,
+    R: WeightTrait + ?Sized,
+{
+    cursor: FileCursor<
+        'a,
+        Box<dyn Storage>,
+        DynDataTyped<T>,
+        R,
+        (),
+        (
+            &'static K,
+            &'static DynUnit,
+            (&'static DynDataTyped<T>, &'static R, ()),
+        ),
+    >,
+    time: T,
+}
+
+impl<'a, K, T, R> TimeDiffCursor<'a, T, R> for FileKeyTimeDiffCursor<'a, K, T, R>
+where
+    K: DataTrait + ?Sized,
+    T: Timestamp,
+    R: WeightTrait + ?Sized,
+{
+    fn current<'b>(&'b mut self, tmp: &'b mut R) -> Option<(&T, &R)> {
+        if unsafe { self.cursor.item((&mut self.time, tmp)) }.is_some() {
+            Some((&self.time, tmp))
+        } else {
+            None
+        }
+    }
+
+    fn step(&mut self) {
+        self.cursor.move_next().unwrap();
     }
 }
 
@@ -785,15 +786,24 @@ where
     T: Timestamp,
     R: WeightTrait + ?Sized,
 {
-    fn const_map_times(&self, logic: &mut dyn FnMut(&T, &R)) {
-        todo!()
-        /*
-                let mut val_cursor = self.cursor.next_column().unwrap().first().unwrap();
-                while unsafe { val_cursor.item((self.time.as_mut(), &mut self.diff)) }.is_some() {
-                    logic(self.time.as_ref(), self.diff.as_ref());
-                    val_cursor.move_next().unwrap();
-                }
-        */
+    fn const_map_times(&self, tmp: &mut R, logic: &mut dyn FnMut(&T, &R)) {
+        let mut val_cursor = self.cursor.next_column().unwrap().first().unwrap();
+        let mut time = T::default();
+        while unsafe { val_cursor.item((&mut time, tmp)) }.is_some() {
+            logic(&time, tmp);
+            val_cursor.move_next().unwrap();
+        }
+    }
+
+    type TimeDiffCursor<'a> = FileKeyTimeDiffCursor<'a, K, T, R>
+    where
+        Self: 'a;
+
+    fn time_diff_cursor(&self) -> Self::TimeDiffCursor<'_> {
+        FileKeyTimeDiffCursor {
+            cursor: self.cursor.next_column().unwrap().first().unwrap(),
+            time: T::default(),
+        }
     }
 }
 
@@ -832,15 +842,24 @@ where
 
         let mut cursor1 = self.pos1.cursor(source1);
         let mut cursor2 = self.pos2.cursor(source2);
-        let mut diff = source1.factories().weight_factory().default_box();
+        let mut diff1 = source1.factories().weight_factory().default_box();
+        let mut diff2 = source1.factories().weight_factory().default_box();
+        let mut sum = source1.factories().weight_factory().default_box();
         while cursor1.key_valid() && cursor2.key_valid() && *fuel > 0 {
             match cursor1.key().cmp(cursor2.key()) {
                 Ordering::Less => {
-                    self.copy_values_if(&mut cursor1, key_filter, fuel);
+                    self.copy_values_if(&mut diff1, &mut cursor1, key_filter, fuel);
                 }
                 Ordering::Equal => {
                     if filter(key_filter, cursor1.key()) {
-                        self.merge_values(&mut cursor1, &mut cursor2, diff.as_mut(), fuel);
+                        self.merge_values(
+                            &mut cursor1,
+                            &mut cursor2,
+                            &mut diff1,
+                            &mut diff2,
+                            &mut sum,
+                            fuel,
+                        );
                     } else {
                         *fuel -= 1;
                     }
@@ -849,16 +868,16 @@ where
                 }
 
                 Ordering::Greater => {
-                    self.copy_values_if(&mut cursor2, key_filter, fuel);
+                    self.copy_values_if(&mut diff1, &mut cursor2, key_filter, fuel);
                 }
             }
         }
 
         while cursor1.key_valid() && *fuel > 0 {
-            self.copy_values_if(&mut cursor1, key_filter, fuel);
+            self.copy_values_if(&mut diff1, &mut cursor1, key_filter, fuel);
         }
         while cursor2.key_valid() && *fuel > 0 {
-            self.copy_values_if(&mut cursor2, key_filter, fuel);
+            self.copy_values_if(&mut diff1, &mut cursor2, key_filter, fuel);
         }
         self.pos1 = Position::from_cursor(&cursor1);
         self.pos2 = Position::from_cursor(&cursor2);
@@ -870,6 +889,7 @@ where
 
     fn copy_values_if<C>(
         &mut self,
+        tmp: &mut R,
         cursor: &mut C,
         key_filter: &Option<Filter<K>>,
         fuel: &mut isize,
@@ -877,66 +897,67 @@ where
         C: CursorConstMapTimes<K, T, R>,
     {
         if filter(key_filter, cursor.key()) {
-            cursor.const_map_times(&mut |time, diff| {
+            let mut tdc = cursor.time_diff_cursor();
+            while let Some((time, diff)) = tdc.current(tmp) {
                 self.builder.push_time(cursor.key(), &(), time, diff);
+                tdc.step();
                 *fuel -= 1;
-            });
+            }
         } else {
             *fuel -= 1;
         }
         cursor.step_key();
     }
 
-    fn copy_value<C>(&mut self, cursor: &mut C)
-    where
-        C: CursorConstMapTimes<K, T, R>,
-    {
-        cursor.const_map_times(&mut |time, diff| {
-            self.builder.push_time(cursor.key(), &(), time, diff);
-        });
-        cursor.step_val();
-    }
-
     fn merge_values<C1, C2>(
         &mut self,
         cursor1: &mut C1,
         cursor2: &mut C2,
+        tmp1: &mut R,
+        tmp2: &mut R,
         sum: &mut R,
         fuel: &mut isize,
     ) where
         C1: CursorConstMapTimes<K, T, R>,
         C2: CursorConstMapTimes<K, T, R>,
     {
-        while cursor1.val_valid() && cursor2.val_valid() {
-            let value1 = cursor1.val();
-            let value2 = cursor2.val();
-            let cmp = value1.cmp(value2);
-            match cmp {
+        let mut tdc1 = cursor1.time_diff_cursor();
+        let mut tdc2 = cursor2.time_diff_cursor();
+
+        loop {
+            let Some((time1, diff1)) = tdc1.current(tmp1) else {
+                break;
+            };
+            let Some((time2, diff2)) = tdc2.current(tmp2) else {
+                break;
+            };
+
+            match time1.cmp(time2) {
                 Ordering::Less => {
-                    self.copy_value(cursor1);
+                    self.builder.push_time(cursor1.key(), &(), time1, diff1);
+                    tdc1.step();
                 }
                 Ordering::Equal => {
-                    cursor1.weight_ref().add(cursor2.weight_ref(), sum);
+                    diff1.add(diff2, sum);
                     if !sum.is_zero() {
-                        self.builder.push_refs(cursor1.key(), cursor1.val(), sum);
+                        self.builder.push_time(cursor1.key(), &(), time1, sum);
                     }
-                    cursor1.step_val();
-                    cursor2.step_val();
                 }
-
                 Ordering::Greater => {
-                    self.copy_value(cursor2);
+                    self.builder.push_time(cursor2.key(), &(), time2, diff2);
+                    tdc2.step();
                 }
             }
             *fuel -= 1;
         }
-
-        while cursor1.val_valid() {
-            self.copy_value(cursor1);
+        while let Some((time1, diff1)) = tdc1.current(tmp1) {
+            self.builder.push_time(cursor1.key(), &(), time1, diff1);
+            tdc1.step();
             *fuel -= 1;
         }
-        while cursor2.val_valid() {
-            self.copy_value(cursor2);
+        while let Some((time2, diff2)) = tdc2.current(tmp2) {
+            self.builder.push_time(cursor2.key(), &(), time2, diff2);
+            tdc2.step();
             *fuel -= 1;
         }
     }
