@@ -14,7 +14,7 @@ use crate::{
     time::{Antichain, AntichainRef},
     trace::{
         ord::merge_batcher::MergeBatcher, Batch, BatchFactories, BatchReader, BatchReaderFactories,
-        Builder, Cursor, Filter, Merger, WeightedItem,
+        Builder, Cursor, Filter, Merger, TimedBuilder, WeightedItem,
     },
     utils::Tup2,
     DBData, DBWeight, NumEntries, Runtime, Timestamp,
@@ -569,12 +569,12 @@ where
     R: WeightTrait + ?Sized,
 {
     batch: &'s FileKeyBatch<K, T, R>,
-    cursor: RawCursor<'s, K, T, R>,
+    pub(crate) cursor: RawCursor<'s, K, T, R>,
     key: Box<K>,
     val_valid: bool,
 
-    time: Box<DynDataTyped<T>>,
-    diff: Box<R>,
+    pub(crate) time: Box<DynDataTyped<T>>,
+    pub(crate) diff: Box<R>,
 }
 
 impl<'s, K, T, R> Clone for FileKeyCursor<'s, K, T, R>
@@ -779,6 +779,52 @@ where
     key: Box<DynOpt<K>>,
 }
 
+impl<K, T, R> TimedBuilder<FileKeyBatch<K, T, R>> for FileKeyBuilder<K, T, R>
+where
+    K: DataTrait + ?Sized,
+    T: Timestamp,
+    R: WeightTrait + ?Sized,
+{
+    /// Pushes a tuple including `time` into the builder.
+    ///
+    /// A caller that uses this must finalize the batch with
+    /// [`Self::done_with_bounds`], supplying correct upper and lower bounds, to
+    /// ensure that the final batch's invariants are correct.
+    #[inline]
+    fn push_time(&mut self, key: &K, val: &DynUnit, time: &T, weight: &R) {
+        if let Some(cur_key) = self.key.get() {
+            if cur_key != key {
+                self.writer.write0((cur_key, ().erase())).unwrap();
+                self.key.from_ref(key);
+            }
+        } else {
+            self.key.from_ref(key);
+        }
+        self.writer.write1((time, weight)).unwrap();
+    }
+
+    /// Finalizes a batch with lower bound `lower` and upper bound `upper`.
+    /// This is only necessary if `push_time()` was used; otherwise, use
+    /// [`Self::done`] instead.
+    #[inline(never)]
+    fn done_with_bounds(
+        mut self,
+        lower: Antichain<T>,
+        upper: Antichain<T>,
+    ) -> FileKeyBatch<K, T, R> {
+        if let Some(key) = self.key.get() {
+            self.writer.write0((key, ().erase())).unwrap();
+        }
+        FileKeyBatch {
+            factories: self.factories,
+            file: self.writer.into_reader().unwrap(),
+            lower,
+            upper,
+            lower_bound: 0,
+        }
+    }
+}
+
 impl<K, T, R> Builder<FileKeyBatch<K, T, R>> for FileKeyBuilder<K, T, R>
 where
     Self: SizeOf,
@@ -823,15 +869,8 @@ where
 
     #[inline]
     fn push_refs(&mut self, key: &K, _val: &DynUnit, weight: &R) {
-        if let Some(cur_key) = self.key.get() {
-            if cur_key != key {
-                self.writer.write0((cur_key, ().erase())).unwrap();
-                self.key.from_ref(key);
-            }
-        } else {
-            self.key.from_ref(key);
-        }
-        self.writer.write1((&self.time, weight)).unwrap();
+        let time = self.time.clone();
+        self.push_time(key, &(), &time, weight);
     }
 
     fn push_vals(&mut self, key: &mut K, val: &mut DynUnit, weight: &mut R) {
@@ -839,24 +878,15 @@ where
     }
 
     #[inline(never)]
-    fn done(mut self) -> FileKeyBatch<K, T, R> {
+    fn done(self) -> FileKeyBatch<K, T, R> {
+        let lower = Antichain::from_elem(self.time.clone());
         let time_next = self.time.advance(0);
         let upper = if time_next <= self.time {
             Antichain::new()
         } else {
             Antichain::from_elem(time_next)
         };
-
-        if let Some(key) = self.key.get() {
-            self.writer.write0((key, ().erase())).unwrap();
-        }
-        FileKeyBatch {
-            factories: self.factories,
-            file: self.writer.into_reader().unwrap(),
-            lower: Antichain::from_elem(self.time),
-            upper,
-            lower_bound: 0,
-        }
+        self.done_with_bounds(lower, upper)
     }
 }
 

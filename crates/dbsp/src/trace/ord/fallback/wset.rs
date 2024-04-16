@@ -731,7 +731,7 @@ where
     pos2: Position<K>,
 }
 
-trait CursorWeightRef<K, T, R>: Cursor<K, DynUnit, T, R>
+trait CursorWeightRef<K, R>: Cursor<K, DynUnit, (), R>
 where
     K: ?Sized,
     R: ?Sized,
@@ -739,7 +739,7 @@ where
     fn weight_ref(&self) -> &R;
 }
 
-impl<'s, K, R> CursorWeightRef<K, (), R> for VecWSetCursor<'s, K, R>
+impl<'s, K, R> CursorWeightRef<K, R> for VecWSetCursor<'s, K, R>
 where
     K: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
@@ -749,7 +749,7 @@ where
     }
 }
 
-impl<'s, K, R> CursorWeightRef<K, (), R> for FileWSetCursor<'s, K, R>
+impl<'s, K, R> CursorWeightRef<K, R> for FileWSetCursor<'s, K, R>
 where
     K: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
@@ -783,8 +783,8 @@ where
     ) where
         A: BatchReader<Key = K, Val = DynUnit, R = R, Time = ()>,
         B: BatchReader<Key = K, Val = DynUnit, R = R, Time = ()>,
-        A::Cursor<'s>: CursorWeightRef<K, (), R>,
-        B::Cursor<'s>: CursorWeightRef<K, (), R>,
+        A::Cursor<'s>: CursorWeightRef<K, R>,
+        B::Cursor<'s>: CursorWeightRef<K, R>,
     {
         if !filter(value_filter, &()) {
             return;
@@ -824,7 +824,7 @@ where
 
     fn copy_value_if<C>(&mut self, cursor: &mut C, key_filter: &Option<Filter<K>>, fuel: &mut isize)
     where
-        C: CursorWeightRef<K, (), R>,
+        C: CursorWeightRef<K, R>,
     {
         if filter(key_filter, cursor.key()) {
             self.builder
