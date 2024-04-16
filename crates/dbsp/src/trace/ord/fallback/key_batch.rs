@@ -667,7 +667,7 @@ where
     pos2: Position<K>,
 }
 
-trait CursorConstMapTimes<K, T, R>: Cursor<K, DynUnit, T, R>
+trait HasTimeDiffCursor<K, T, R>: Cursor<K, DynUnit, T, R>
 where
     K: ?Sized,
     R: ?Sized,
@@ -677,10 +677,6 @@ where
         Self: 'a;
 
     fn time_diff_cursor(&self) -> Self::TimeDiffCursor<'_>;
-
-    /// Applies `logic` to each pair of time and difference. Intended for
-    /// mutation of the closure's scope.
-    fn const_map_times(&self, tmp: &mut R, logic: &mut dyn FnMut(&T, &R));
 }
 
 trait TimeDiffCursor<'a, T, R>
@@ -691,13 +687,10 @@ where
     fn step(&mut self);
 }
 
-struct OrdKeyTimeDiffCursor<'a, T, R>
+struct OrdKeyTimeDiffCursor<'a, T, R>(LeafCursor<'a, DynDataTyped<T>, R>)
 where
     T: Timestamp,
-    R: WeightTrait + ?Sized,
-{
-    cursor: LeafCursor<'a, DynDataTyped<T>, R>,
-}
+    R: WeightTrait + ?Sized;
 
 impl<'a, T, R> TimeDiffCursor<'a, T, R> for OrdKeyTimeDiffCursor<'a, T, R>
 where
@@ -705,38 +698,28 @@ where
     R: WeightTrait + ?Sized,
 {
     fn current(&mut self, _tmp: &mut R) -> Option<(&T, &R)> {
-        if self.cursor.valid() {
-            Some((self.cursor.current_key(), self.cursor.current_diff()))
+        if self.0.valid() {
+            Some((self.0.current_key(), self.0.current_diff()))
         } else {
             None
         }
     }
     fn step(&mut self) {
-        self.cursor.step()
+        self.0.step()
     }
 }
 
-impl<'s, K, T, R, O> CursorConstMapTimes<K, T, R> for OrdKeyCursor<'s, K, T, R, O>
+impl<'s, K, T, R, O> HasTimeDiffCursor<K, T, R> for OrdKeyCursor<'s, K, T, R, O>
 where
     K: DataTrait + ?Sized,
     T: Timestamp,
     R: WeightTrait + ?Sized,
     O: OrdOffset,
 {
-    fn const_map_times(&self, _tmp: &mut R, logic: &mut dyn FnMut(&T, &R)) {
-        let mut cursor = self.cursor.values();
-        while cursor.valid() {
-            logic(cursor.current_key(), cursor.current_diff());
-            cursor.step();
-        }
-    }
-
     type TimeDiffCursor<'a> = OrdKeyTimeDiffCursor<'a, T, R> where Self: 'a;
 
     fn time_diff_cursor(&self) -> Self::TimeDiffCursor<'_> {
-        OrdKeyTimeDiffCursor {
-            cursor: self.cursor.values(),
-        }
+        OrdKeyTimeDiffCursor(self.cursor.values())
     }
 }
 
@@ -780,21 +763,12 @@ where
     }
 }
 
-impl<'s, K, T, R> CursorConstMapTimes<K, T, R> for FileKeyCursor<'s, K, T, R>
+impl<'s, K, T, R> HasTimeDiffCursor<K, T, R> for FileKeyCursor<'s, K, T, R>
 where
     K: DataTrait + ?Sized,
     T: Timestamp,
     R: WeightTrait + ?Sized,
 {
-    fn const_map_times(&self, tmp: &mut R, logic: &mut dyn FnMut(&T, &R)) {
-        let mut val_cursor = self.cursor.next_column().unwrap().first().unwrap();
-        let mut time = T::default();
-        while unsafe { val_cursor.item((&mut time, tmp)) }.is_some() {
-            logic(&time, tmp);
-            val_cursor.move_next().unwrap();
-        }
-    }
-
     type TimeDiffCursor<'a> = FileKeyTimeDiffCursor<'a, K, T, R>
     where
         Self: 'a;
@@ -833,8 +807,8 @@ where
     ) where
         A: BatchReader<Key = K, Val = DynUnit, R = R, Time = T>,
         B: BatchReader<Key = K, Val = DynUnit, R = R, Time = T>,
-        A::Cursor<'s>: CursorConstMapTimes<K, T, R>,
-        B::Cursor<'s>: CursorConstMapTimes<K, T, R>,
+        A::Cursor<'s>: HasTimeDiffCursor<K, T, R>,
+        B::Cursor<'s>: HasTimeDiffCursor<K, T, R>,
     {
         if !filter(value_filter, &()) {
             return;
@@ -894,7 +868,7 @@ where
         key_filter: &Option<Filter<K>>,
         fuel: &mut isize,
     ) where
-        C: CursorConstMapTimes<K, T, R>,
+        C: HasTimeDiffCursor<K, T, R>,
     {
         if filter(key_filter, cursor.key()) {
             let mut tdc = cursor.time_diff_cursor();
@@ -918,8 +892,8 @@ where
         sum: &mut R,
         fuel: &mut isize,
     ) where
-        C1: CursorConstMapTimes<K, T, R>,
-        C2: CursorConstMapTimes<K, T, R>,
+        C1: HasTimeDiffCursor<K, T, R>,
+        C2: HasTimeDiffCursor<K, T, R>,
     {
         let mut tdc1 = cursor1.time_diff_cursor();
         let mut tdc2 = cursor2.time_diff_cursor();
