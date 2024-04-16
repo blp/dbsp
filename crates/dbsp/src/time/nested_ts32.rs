@@ -2,7 +2,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     dynamic::{DataTrait, WeightTrait},
     time::{FileValBatch, Product, Timestamp},
-    trace::{FileKeyBatch, OrdKeyBatch, OrdValBatch},
+    trace::{FallbackKeyBatch, OrdKeyBatch, OrdValBatch},
     Scope,
 };
 use rkyv::{Archive, Deserialize, Serialize};
@@ -112,7 +112,8 @@ impl Timestamp for NestedTimestamp32 {
 
     type FileValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
         FileValBatch<K, V, Self, R>;
-    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = FileKeyBatch<K, Self, R>;
+    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+        FallbackKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
         Self::new(false, 0)

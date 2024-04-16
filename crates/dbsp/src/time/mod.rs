@@ -66,7 +66,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     dynamic::{DataTrait, WeightTrait},
     trace::{
-        Batch, FallbackIndexedWSet, FallbackWSet, FileKeyBatch, FileValBatch, OrdIndexedWSet,
+        Batch, FallbackIndexedWSet, FallbackKeyBatch, FallbackWSet, FileValBatch, OrdIndexedWSet,
         OrdKeyBatch, OrdValBatch, OrdWSet,
     },
     DBData, Scope,
@@ -235,7 +235,8 @@ impl Timestamp for UnitTimestamp {
 
     type FileValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
         FileValBatch<K, V, Self, R>;
-    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = FileKeyBatch<K, Self, R>;
+    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+        FallbackKeyBatch<K, Self, R>;
     fn minimum() -> Self {
         UnitTimestamp
     }
@@ -286,7 +287,8 @@ impl Timestamp for u32 {
 
     type FileValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
         FileValBatch<K, V, Self, R>;
-    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = FileKeyBatch<K, Self, R>;
+    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+        FallbackKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
         0

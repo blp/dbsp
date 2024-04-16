@@ -49,7 +49,8 @@ pub mod spine_fueled;
 pub mod test;
 
 pub use ord::{
-    FallbackIndexedWSet, FallbackIndexedWSetFactories, FallbackWSet, FallbackWSetFactories,
+    FallbackIndexedWSet, FallbackIndexedWSetFactories, FallbackKeyBatch, FallbackKeyBatchFactories,
+    FallbackWSet, FallbackWSetFactories,
 };
 pub use ord::{
     FileIndexedWSet, FileIndexedWSetFactories, FileKeyBatch, FileKeyBatchFactories, FileValBatch,

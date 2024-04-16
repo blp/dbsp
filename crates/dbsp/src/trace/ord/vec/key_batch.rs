@@ -708,7 +708,7 @@ where
     /// [`Self::done_with_bounds`], supplying correct upper and lower bounds, to
     /// ensure that the final batch's invariants are correct.
     #[inline]
-    fn push_time(&mut self, key: &K, _val: &DynUnit,  time: &T, weight: &R) {
+    fn push_time(&mut self, key: &K, _val: &DynUnit, time: &T, weight: &R) {
         self.builder.push_refs((key, (time, weight)));
     }
 

@@ -2,7 +2,7 @@ use crate::{
     algebra::{Lattice, PartialOrder},
     dynamic::{DataTrait, WeightTrait},
     time::Timestamp,
-    trace::{FileKeyBatch, FileValBatch, OrdKeyBatch, OrdValBatch},
+    trace::{FallbackKeyBatch, FileValBatch, OrdKeyBatch, OrdValBatch},
     Scope,
 };
 use rkyv::{Archive, Deserialize, Serialize};
@@ -94,7 +94,8 @@ where
 
     type FileValBatch<K: DataTrait + ?Sized, V: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
         FileValBatch<K, V, Self, R>;
-    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> = FileKeyBatch<K, Self, R>;
+    type FileKeyBatch<K: DataTrait + ?Sized, R: WeightTrait + ?Sized> =
+        FallbackKeyBatch<K, Self, R>;
 
     fn minimum() -> Self {
         Self::new(TOuter::minimum(), TInner::minimum())
