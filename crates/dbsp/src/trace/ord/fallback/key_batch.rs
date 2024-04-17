@@ -4,7 +4,7 @@ use crate::{
         WeightTrait,
     },
     storage::{backend::Storage, file::reader::Cursor as FileCursor},
-    time::AntichainRef,
+    time::{Antichain, AntichainRef},
     trace::{
         layers::{Cursor as _, LeafCursor, OrdOffset},
         ord::{
@@ -28,7 +28,7 @@ use std::{
     path::PathBuf,
 };
 
-use super::cursor::DynamicCursor;
+use super::{cursor::DynamicCursor, utils::Position};
 
 pub struct FallbackKeyBatchFactories<K, T, R>
 where
@@ -124,7 +124,7 @@ where
     inner: Inner<K, T, R>,
 }
 
-pub enum Inner<K, T, R>
+enum Inner<K, T, R>
 where
     K: DataTrait + ?Sized,
     T: Timestamp,
@@ -296,10 +296,9 @@ where
     }
 
     fn recede_to(&mut self, frontier: &T) {
-        // Nothing to do if the batch is entirely before the frontier.
-        if !self.upper().less_equal(frontier) {
-            // TODO: Optimize case where self.upper()==self.lower().
-            self.do_recede_to(frontier);
+        match &mut self.inner {
+            Inner::Vec(vec) => vec.recede_to(frontier),
+            Inner::File(file) => file.recede_to(frontier),
         }
     }
 
@@ -311,17 +310,6 @@ where
     }
 }
 
-impl<K, T, R> FallbackKeyBatch<K, T, R>
-where
-    K: DataTrait + ?Sized,
-    T: Timestamp,
-    R: WeightTrait + ?Sized,
-{
-    fn do_recede_to(&mut self, _frontier: &T) {
-        todo!()
-    }
-}
-
 /// State for an in-progress merge.
 pub struct FallbackKeyMerger<K, T, R>
 where
@@ -330,6 +318,8 @@ where
     R: WeightTrait + ?Sized,
 {
     factories: FallbackKeyBatchFactories<K, T, R>,
+    lower: Antichain<T>,
+    upper: Antichain<T>,
     inner: MergerInner<K, T, R>,
 }
 
@@ -355,6 +345,8 @@ where
     fn new_merger(batch1: &FallbackKeyBatch<K, T, R>, batch2: &FallbackKeyBatch<K, T, R>) -> Self {
         FallbackKeyMerger {
             factories: batch1.factories.clone(),
+            lower: batch1.lower().meet(batch2.lower()),
+            upper: batch1.upper().join(batch2.upper()),
             inner: if batch1.len() + batch2.len() < Runtime::min_storage_rows() {
                 match (&batch1.inner, &batch2.inner) {
                     (Inner::Vec(vec1), Inner::Vec(vec2)) => {
@@ -379,8 +371,12 @@ where
             inner: match self.inner {
                 MergerInner::AllFile(merger) => Inner::File(merger.done()),
                 MergerInner::AllVec(merger) => Inner::Vec(merger.done()),
-                MergerInner::ToVec(merger) => Inner::Vec(merger.done()),
-                MergerInner::ToFile(merger) => Inner::File(merger.done()),
+                MergerInner::ToVec(merger) => {
+                    Inner::Vec(merger.done_with_bounds(self.lower, self.upper))
+                }
+                MergerInner::ToFile(merger) => {
+                    Inner::File(merger.done_with_bounds(self.lower, self.upper))
+                }
             },
         }
     }
@@ -611,49 +607,6 @@ where
     }
 }
 
-enum Position<K>
-where
-    K: DataTrait + ?Sized,
-{
-    Start,
-    At(Box<K>),
-    End,
-}
-
-impl<K> Position<K>
-where
-    K: DataTrait + ?Sized,
-{
-    fn cursor<'s, B>(&self, source: &'s B) -> B::Cursor<'s>
-    where
-        B: BatchReader<Key = K>,
-    {
-        let mut cursor = source.cursor();
-        match self {
-            Position::Start => (),
-            Position::At(key) => cursor.seek_key(key.as_ref()),
-            Position::End => {
-                cursor.fast_forward_keys();
-                cursor.step_key()
-            }
-        }
-        cursor
-    }
-
-    fn from_cursor<C, T, R>(cursor: &C) -> Position<K>
-    where
-        C: Cursor<K, DynUnit, T, R>,
-        T: Timestamp,
-        R: ?Sized,
-    {
-        if cursor.key_valid() {
-            Self::At(clone_box(cursor.key()))
-        } else {
-            Self::End
-        }
-    }
-}
-
 struct GenericMerger<K, T, R, O>
 where
     K: DataTrait + ?Sized,
@@ -857,8 +810,8 @@ where
         self.pos2 = Position::from_cursor(&cursor2);
     }
 
-    fn done(self) -> O {
-        self.builder.done()
+    fn done_with_bounds(self, lower: Antichain<T>, upper: Antichain<T>) -> O {
+        self.builder.done_with_bounds(lower, upper)
     }
 
     fn copy_values_if<C>(

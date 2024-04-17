@@ -3,4 +3,6 @@
 mod cursor;
 pub mod indexed_wset;
 pub mod key_batch;
+pub mod val_batch;
 pub mod wset;
+mod utils;
