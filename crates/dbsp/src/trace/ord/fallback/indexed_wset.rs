@@ -10,11 +10,13 @@ use crate::{
         ord::{
             file::indexed_wset_batch::{FileIndexedWSetBuilder, FileIndexedWSetMerger},
             merge_batcher::MergeBatcher,
-            vec::indexed_wset_batch::{VecIndexedWSetMerger, VecIndexedWSetBuilder},
+            vec::indexed_wset_batch::{
+                VecIndexedWSet, VecIndexedWSetBuilder, VecIndexedWSetFactories,
+                VecIndexedWSetMerger,
+            },
         },
         Batch, BatchFactories, BatchReader, BatchReaderFactories, Builder, FileIndexedWSet,
-        FileIndexedWSetFactories, Filter, Merger, OrdIndexedWSet, OrdIndexedWSetFactories,
-        WeightedItem,
+        FileIndexedWSetFactories, Filter, Merger, WeightedItem,
     },
     DBData, DBWeight, NumEntries, Runtime,
 };
@@ -34,7 +36,7 @@ where
     R: WeightTrait + ?Sized,
 {
     file: FileIndexedWSetFactories<K, V, R>,
-    vec: OrdIndexedWSetFactories<K, V, R>,
+    vec: VecIndexedWSetFactories<K, V, R>,
 }
 
 impl<K, V, R> Clone for FallbackIndexedWSetFactories<K, V, R>
@@ -65,7 +67,7 @@ where
     {
         Self {
             file: FileIndexedWSetFactories::new::<KType, VType, RType>(),
-            vec: OrdIndexedWSetFactories::new::<KType, VType, RType>(),
+            vec: VecIndexedWSetFactories::new::<KType, VType, RType>(),
         }
     }
 
@@ -122,7 +124,7 @@ where
     V: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
-    Vec(OrdIndexedWSet<K, V, R>),
+    Vec(VecIndexedWSet<K, V, R>),
     File(FileIndexedWSet<K, V, R>),
 }
 
@@ -138,7 +140,7 @@ where
             Inner::File(file) => Some(file),
         }
     }
-    fn as_vec(&self) -> Option<&OrdIndexedWSet<K, V, R>> {
+    fn as_vec(&self) -> Option<&VecIndexedWSet<K, V, R>> {
         match self {
             Inner::Vec(vec) => Some(vec),
             Inner::File(_file) => None,
@@ -409,7 +411,7 @@ where
 {
     AllFile(FileIndexedWSetMerger<K, V, R>),
     AllVec(VecIndexedWSetMerger<K, V, R>),
-    ToVec(GenericMerger<K, V, (), R, OrdIndexedWSet<K, V, R>>),
+    ToVec(GenericMerger<K, V, (), R, VecIndexedWSet<K, V, R>>),
     ToFile(GenericMerger<K, V, (), R, FileIndexedWSet<K, V, R>>),
 }
 
