@@ -1,7 +1,10 @@
 //! Logic to manage persistent checkpoints for a circuit.
 
 use crate::dynamic::{self, data::DataTyped, DataTrait, WeightTrait};
-use crate::trace::ord::vec::{VecIndexedWSet, VecWSet};
+use crate::trace::ord::{
+    vec::{VecIndexedWSet, VecWSet},
+    FallbackIndexedWSet,
+};
 use crate::typed_batch::TypedBatch;
 use crate::{DBData, DBWeight, Error};
 
@@ -444,6 +447,21 @@ where
 }
 
 impl<K, V, R> Checkpoint for VecIndexedWSet<K, V, R>
+where
+    K: DataTrait + ?Sized,
+    V: DataTrait + ?Sized,
+    R: WeightTrait + ?Sized,
+{
+    fn checkpoint(&self) -> Result<Vec<u8>, Error> {
+        todo!()
+    }
+
+    fn restore(&mut self, _data: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+}
+
+impl<K, V, R> Checkpoint for FallbackIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,
     V: DataTrait + ?Sized,

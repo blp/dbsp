@@ -179,9 +179,6 @@ where
     }
 }
 
-// This is `#[cfg(test)]` only because it would be surprisingly expensive in
-// production.
-#[cfg(test)]
 impl<Other, K, V, R> PartialEq<Other> for FallbackIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,
@@ -195,7 +192,6 @@ where
     }
 }
 
-#[cfg(test)]
 impl<K, V, R> Eq for FallbackIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,

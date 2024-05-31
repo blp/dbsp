@@ -12,6 +12,7 @@ pub mod string;
 pub mod timestamp;
 
 use casts::cast_to_decimal_decimal;
+use dbsp::trace::ord::fallback::indexed_wset::FallbackIndexedWSetBuilder;
 pub use geopoint::GeoPoint;
 pub use interval::LongInterval;
 pub use interval::ShortInterval;
@@ -22,7 +23,6 @@ pub use timestamp::Timestamp;
 
 use dbsp::algebra::{OrdIndexedZSetFactories, OrdZSetFactories, UnsignedPrimInt};
 use dbsp::dynamic::{DowncastTrait, DynData, Erase};
-use dbsp::trace::ord::vec::indexed_wset_batch::VecIndexedWSetBuilder;
 use dbsp::trace::ord::vec::wset_batch::VecWSetBuilder;
 use dbsp::trace::BatchReaderFactories;
 use dbsp::typed_batch::TypedBatch;
@@ -1546,7 +1546,7 @@ where
     F: Fn((&K, &D), &T) -> bool,
 {
     let factories = OrdIndexedZSetFactories::new::<K, D, ZWeight>();
-    let mut builder = VecIndexedWSetBuilder::with_capacity(&factories, (), data.len());
+    let mut builder = FallbackIndexedWSetBuilder::with_capacity(&factories, (), data.len());
 
     let mut cursor = data.cursor();
     while cursor.key_valid() {

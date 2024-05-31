@@ -9,8 +9,8 @@ use crate::{
     },
     dynamic::{ClonableTrait, DataTrait, DynPair, DynUnit, WeightTrait},
     trace::{
-        Batch, BatchFactories, BatchReader, BatchReaderFactories, Builder, Cursor, OrdIndexedWSet,
-        OrdIndexedWSetFactories, OrdWSet, OrdWSetFactories,
+        ord::vec::VecIndexedWSet, Batch, BatchFactories, BatchReader, BatchReaderFactories,
+        Builder, Cursor, OrdIndexedWSet, OrdIndexedWSetFactories, OrdWSet, OrdWSetFactories,
     },
 };
 use std::{borrow::Cow, marker::PhantomData};
@@ -63,7 +63,7 @@ impl<C: Circuit, B: DynFilterMap> Stream<C, B> {
 
     /// Behaves as [`Self::dyn_map`] followed by
     /// [`index`](`crate::Stream::index`), but is more efficient.  Assembles
-    /// output records into `OrdIndexedZSet` batches.
+    /// output records into `VecIndexedZSet` batches.
     pub fn dyn_map_index<K: DataTrait + ?Sized, V: DataTrait + ?Sized>(
         &self,
         output_factories: &OrdIndexedWSetFactories<K, V, B::R>,
@@ -174,7 +174,7 @@ where
     }
 }
 
-impl<K, V, R> DynFilterMap for OrdIndexedWSet<K, V, R>
+impl<K, V, R> DynFilterMap for VecIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,
     V: DataTrait + ?Sized,

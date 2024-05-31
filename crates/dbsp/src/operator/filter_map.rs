@@ -2,8 +2,8 @@ use crate::{
     dynamic::{DataTrait, Erase, WeightTrait},
     trace::BatchReaderFactories,
     typed_batch::{
-        Batch, BatchReader, DynFallbackIndexedWSet, DynFallbackWSet, DynOrdIndexedWSet, DynOrdWSet,
-        OrdIndexedWSet, OrdWSet, TypedBatch,
+        Batch, BatchReader, DynFallbackWSet, DynOrdIndexedWSet, DynOrdWSet, OrdIndexedWSet,
+        OrdWSet, TypedBatch,
     },
     Circuit, DBData, DBWeight, Stream,
 };
@@ -360,6 +360,7 @@ where
     }
 }
 
+/*
 impl<K, DynK, V, DynV, R, DynR> FilterMap
     for TypedBatch<K, V, R, DynFallbackIndexedWSet<DynK, DynV, DynR>>
 where
@@ -431,3 +432,4 @@ where
             .typed()
     }
 }
+*/
