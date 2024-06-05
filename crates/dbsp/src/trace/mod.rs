@@ -59,7 +59,8 @@ pub use ord::{
     FileIndexedWSet, FileIndexedWSetFactories, FileKeyBatch, FileKeyBatchFactories, FileValBatch,
     FileValBatchFactories, FileWSet, FileWSetFactories, OrdIndexedWSet, OrdIndexedWSetFactories,
     OrdKeyBatch, OrdKeyBatchFactories, OrdValBatch, OrdValBatchFactories, OrdWSet,
-    OrdWSetFactories,
+    OrdWSetFactories, VecIndexedWSet, VecIndexedWSetFactories, VecKeyBatch, VecKeyBatchFactories,
+    VecValBatch, VecValBatchFactories, VecWSet, VecWSetFactories,
 };
 
 use rkyv::{archived_root, Deserialize, Infallible};

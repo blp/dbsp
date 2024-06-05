@@ -3,7 +3,7 @@
 use crate::dynamic::{self, data::DataTyped, DataTrait, WeightTrait};
 use crate::trace::ord::{
     vec::{VecIndexedWSet, VecWSet},
-    FallbackIndexedWSet,
+    FallbackIndexedWSet, FallbackWSet,
 };
 use crate::typed_batch::TypedBatch;
 use crate::{DBData, DBWeight, Error};
@@ -465,6 +465,20 @@ impl<K, V, R> Checkpoint for FallbackIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,
     V: DataTrait + ?Sized,
+    R: WeightTrait + ?Sized,
+{
+    fn checkpoint(&self) -> Result<Vec<u8>, Error> {
+        todo!()
+    }
+
+    fn restore(&mut self, _data: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+}
+
+impl<K, R> Checkpoint for FallbackWSet<K, R>
+where
+    K: DataTrait + ?Sized,
     R: WeightTrait + ?Sized,
 {
     fn checkpoint(&self) -> Result<Vec<u8>, Error> {

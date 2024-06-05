@@ -4,23 +4,26 @@ pub mod merge_batcher;
 pub mod vec;
 
 pub use fallback::{
-    indexed_wset::{FallbackIndexedWSet, FallbackIndexedWSetFactories},
     indexed_wset::{
-        FallbackIndexedWSet as OrdIndexedWSet,
+        FallbackIndexedWSet, FallbackIndexedWSet as OrdIndexedWSet, FallbackIndexedWSetFactories,
         FallbackIndexedWSetFactories as OrdIndexedWSetFactories,
     },
     key_batch::{FallbackKeyBatch, FallbackKeyBatchFactories},
     val_batch::{FallbackValBatch, FallbackValBatchFactories},
-    wset::{FallbackWSet, FallbackWSetFactories},
+    wset::{
+        FallbackWSet, FallbackWSet as OrdWSet, FallbackWSetFactories,
+        FallbackWSetFactories as OrdWSetFactories,
+    },
 };
 pub use file::{
     FileIndexedWSet, FileIndexedWSetFactories, FileKeyBatch, FileKeyBatchFactories, FileValBatch,
     FileValBatchFactories, FileWSet, FileWSetFactories,
 };
 pub use vec::{
-    VecKeyBatch as OrdKeyBatch, VecKeyBatchFactories as OrdKeyBatchFactories,
-    VecValBatch as OrdValBatch, VecValBatchFactories as OrdValBatchFactories, VecWSet as OrdWSet,
-    VecWSetFactories as OrdWSetFactories,
+    VecIndexedWSet, VecIndexedWSetFactories, VecKeyBatch, VecKeyBatch as OrdKeyBatch,
+    VecKeyBatchFactories, VecKeyBatchFactories as OrdKeyBatchFactories, VecValBatch,
+    VecValBatch as OrdValBatch, VecValBatchFactories, VecValBatchFactories as OrdValBatchFactories,
+    VecWSet, VecWSetFactories,
 };
 
 use super::Filter;

@@ -115,65 +115,6 @@ impl<C: Circuit, B: DynFilterMap> Stream<C, B> {
     }
 }
 
-// This impl for VecZSet is identical to the one for FallbackWSet below.  There
-// doesn't seem to be a good way to avoid the code duplication short of a macro.
-impl<K, R> DynFilterMap for OrdWSet<K, R>
-where
-    K: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-{
-    // type Item = K;
-    type DynItemRef<'a> = &'a K;
-
-    fn item_ref<'a>(key: &'a Self::Key, _val: &'a Self::Val) -> Self::DynItemRef<'a> {
-        key
-    }
-
-    fn item_ref_keyval(item_ref: Self::DynItemRef<'_>) -> (&Self::Key, &Self::Val) {
-        (item_ref, &())
-    }
-
-    fn dyn_filter<C: Circuit>(
-        stream: &Stream<C, Self>,
-        filter_func: Box<dyn Fn(Self::DynItemRef<'_>) -> bool>,
-    ) -> Stream<C, Self> {
-        let filtered = stream
-            .circuit()
-            .add_unary_operator(FilterZSet::new(filter_func), &stream.try_sharded_version());
-        filtered.mark_sharded_if(stream);
-        if stream.is_distinct() {
-            filtered.mark_distinct();
-        }
-        filtered
-    }
-
-    fn dyn_map_generic<C: Circuit, O>(
-        stream: &Stream<C, Self>,
-        output_factories: &O::Factories,
-        map_func: Box<dyn Fn(Self::DynItemRef<'_>, &mut DynPair<O::Key, O::Val>)>,
-    ) -> Stream<C, O>
-    where
-        O: Batch<Time = (), R = Self::R>,
-    {
-        stream
-            .circuit()
-            .add_unary_operator(MapZSet::new(output_factories, map_func), stream)
-    }
-
-    fn dyn_flat_map_generic<C: Circuit, O>(
-        stream: &Stream<C, Self>,
-        output_factories: &O::Factories,
-        func: Box<dyn FnMut(Self::DynItemRef<'_>, &mut dyn FnMut(&mut O::Key, &mut O::Val))>,
-    ) -> Stream<C, O>
-    where
-        O: Batch<Time = (), R = Self::R>,
-    {
-        stream
-            .circuit()
-            .add_unary_operator(FlatMapZSet::new(output_factories, func), stream)
-    }
-}
-
 impl<K, V, R> DynFilterMap for VecIndexedWSet<K, V, R>
 where
     K: DataTrait + ?Sized,
