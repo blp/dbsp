@@ -70,3 +70,7 @@ harness = false
 [[example]]
 name = "generate"
 required-features = ["with-kafka"]
+
+[[example]]
+name = "consume"
+required-features = ["with-kafka"]
