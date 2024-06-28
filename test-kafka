@@ -1,0 +1,78 @@
+#! /bin/sh -ex
+
+events_list=10000000
+partitions_list='1 16'
+size_list='524288 65536 4096 512 256'
+
+print_time() {
+    echo "$events,$partitions,$size,$command,$1"
+    echo "$events,$partitions,$size,$command,$1" >> results.txt
+}
+run_time() {
+    /usr/bin/time -f %e -o time "$@"
+    print_time $(< time)
+}
+echo 'events,partitions,size,command,time' > results.txt
+
+consume() {
+    cargo build --release -p dbsp_nexmark --example consume --features with-kafka
+    for events in $events_list; do
+	for partitions in $partitions_list; do
+    	    for size in $size_list; do
+		run_time target/release/examples/consume --group-id $(uuidgen) --topics bid-$partitions-$events-$size --partitions $partitions "$@"
+	    done
+	done
+    done
+}
+
+for command; do
+    case $command in
+	generate)
+	    rpk topic delete -r '.*'
+	    for events in $events_list; do
+		for partitions in $partitions_list; do
+    		    for size in $size_list; do
+			for table in auction bid person; do
+			    rpk topic create --partitions $partitions $table-$partitions-$events-$size
+			done
+			cargo run --release -p dbsp_nexmark --example generate --features with-kafka -- --max-events $events --topic-suffix=-$partitions-$events-$size --record-size $size
+		    done
+		done
+	    done
+	    rpk topic consume -f '%v' -o :end bid-1-10000000-524288 > bid-10000000.txt
+	    ;;
+
+	cat)
+	    time cat bid-10000000.txt | wc -l
+	    ;;
+
+	rpk)
+	    for events in $events_list; do
+		for partitions in 1; do
+    		    for size in $size_list; do
+			run_time rpk topic consume -f '' -o :end bid-$partitions-$events-$size
+		    done
+		done
+	    done
+	    ;;
+
+	consume)
+	    consume
+	    ;;
+
+	consume-threaded)
+	    consume --threaded
+	    ;;
+
+	consume-adapter)
+	    for events in $events_list; do
+		for partitions in $partitions_list; do
+    		    for size in $size_list; do
+			print_time $(KAFKA_TOPIC=bid-$partitions-$events-$size cargo test --release -p dbsp_adapters -- --ignored bench_consume_kafka --nocapture | sed -n 's/^read [0-9].*in \([0-9.]*\) s$/\1/p')
+		    done
+		done
+	    done
+	    ;;	    
+    esac
+done
+cat results.txt

@@ -4,21 +4,24 @@ use crate::{
         kafka::{BufferConsumer, KafkaResources, TestProducer},
         mock_input_pipeline, test_circuit, wait, MockDeZSet, TestStruct, DEFAULT_TIMEOUT_MS,
     },
-    Controller, PipelineConfig,
+    transport::input_transport_config_to_endpoint,
+    Controller, InputConsumer, ParseError, PipelineConfig,
 };
 use env_logger::Env;
 use parquet::data_type::AsBytes;
+use pipeline_types::config::TransportConfig;
 use proptest::prelude::*;
 use rdkafka::message::{BorrowedMessage, Header, Headers};
 use rdkafka::Message;
 use std::{
     io::Write,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{channel, Receiver, Sender},
         Arc,
     },
     thread::sleep,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::info;
 
@@ -545,4 +548,104 @@ proptest! {
         kafka_end_to_end_test("proptest_kafka_end_to_end_json_array_small", "json", "array: true", 5000, data);
     }
 
+}
+
+#[derive(Default)]
+struct Stats {
+    n_messages: AtomicU64,
+    n_records: AtomicU64,
+    n_bytes: AtomicU64,
+}
+
+#[derive(Clone)]
+struct BenchConsumer {
+    stats: Arc<Stats>,
+    done: Sender<()>,
+}
+
+impl BenchConsumer {
+    fn new() -> (Arc<Stats>, Receiver<()>, Self) {
+        let (done, receiver) = channel();
+        let stats = Arc::new(Stats::default());
+        (stats.clone(), receiver, Self { stats, done })
+    }
+}
+
+impl InputConsumer for BenchConsumer {
+    fn start_step(&mut self, _step: crate::transport::Step) {}
+
+    fn input_fragment(&mut self, data: &[u8]) -> Vec<ParseError> {
+        self.stats
+            .n_bytes
+            .fetch_add(data.len() as u64, Ordering::AcqRel);
+        let n_records = data
+            .split(|c| *c == b'\n')
+            .filter(|line| !line.is_empty())
+            .count() as u64;
+        self.stats.n_records.fetch_add(n_records, Ordering::AcqRel);
+        self.stats.n_messages.fetch_add(1, Ordering::AcqRel);
+        Vec::new()
+    }
+
+    fn input_chunk(&mut self, data: &[u8]) -> Vec<ParseError> {
+        self.input_fragment(data)
+    }
+
+    fn committed(&mut self, _step: crate::transport::Step) {}
+
+    fn error(&mut self, _fatal: bool, error: anyhow::Error) {
+        panic!("{error}");
+    }
+
+    fn eoi(&mut self) -> Vec<crate::ParseError> {
+        self.done.send(()).unwrap();
+        Vec::new()
+    }
+
+    fn fork(&self) -> Box<dyn InputConsumer> {
+        Box::new(self.clone())
+    }
+}
+
+fn do_bench() -> (u64, u64, u64) {
+    let bootstrap_server = std::env::var("KAFKA_BROKER").unwrap_or(String::from("localhost:9092"));
+    let topic = std::env::var("KAFKA_TOPIC").expect("set $KAFKA_TOPIC to the topic to consume");
+
+    let config_str = format!(
+        r#"
+name: kafka_input
+config:
+    bootstrap.servers: {bootstrap_server}
+    auto.offset.reset: "earliest"
+    enable.partition.eof: "true"
+    topics: [{topic}]
+"#
+    );
+    let config: TransportConfig = serde_yaml::from_str(&config_str).unwrap();
+    let endpoint = input_transport_config_to_endpoint(config).unwrap().unwrap();
+
+    let (stats, receiver, consumer) = BenchConsumer::new();
+    let reader = endpoint.open(Box::new(consumer), 0).unwrap();
+    reader.start(0).unwrap();
+    receiver.recv().unwrap();
+
+    let n_messages = stats.n_messages.load(Ordering::Acquire);
+    let n_records = stats.n_records.load(Ordering::Acquire);
+    let n_bytes = stats.n_bytes.load(Ordering::Acquire);
+    (n_messages, n_records, n_bytes)
+}
+
+#[test]
+#[ignore = "for benchmarking Kafka consumer performance"]
+fn bench_consume_kafka() {
+    init_test_logger();
+
+    let start = Instant::now();
+    let (n_messages, n_records, n_bytes) = do_bench();
+    let elapsed = start.elapsed();
+    println!(
+        "read {n_records} records ({n_messages} messages, {n_bytes} bytes) in {:.2} s",
+        elapsed.as_secs_f64()
+    );
+    sleep(Duration::from_secs(1))
 }
