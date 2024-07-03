@@ -2,7 +2,7 @@
 
 events_list=10000000
 partitions_list='1 16'
-size_list='524288 65536 4096 512 256'
+size_list='524288 65536 1024 4096 512 256'
 
 print_time() {
     echo "$events,$partitions,$size,$command,$1"
@@ -20,6 +20,17 @@ consume() {
 	for partitions in $partitions_list; do
     	    for size in $size_list; do
 		run_time target/release/examples/consume --group-id $(uuidgen) --topics bid-$partitions-$events-$size --partitions $partitions "$@"
+	    done
+	done
+    done
+}
+
+consume_adapter() {
+    export POLLER_THREADS=$1
+    for events in $events_list; do
+	for partitions in $partitions_list; do
+    	    for size in $size_list; do
+		print_time $(KAFKA_TOPIC=bid-$partitions-$events-$size cargo test --release -p dbsp_adapters -- --ignored bench_consume_kafka --nocapture | sed -n 's/^read [0-9].*in \([0-9.]*\) s$/\1/p')
 	    done
 	done
     done
@@ -65,13 +76,15 @@ for command; do
 	    ;;
 
 	consume-adapter)
-	    for events in $events_list; do
-		for partitions in $partitions_list; do
-    		    for size in $size_list; do
-			print_time $(KAFKA_TOPIC=bid-$partitions-$events-$size cargo test --release -p dbsp_adapters -- --ignored bench_consume_kafka --nocapture | sed -n 's/^read [0-9].*in \([0-9.]*\) s$/\1/p')
-		    done
-		done
-	    done
+	    consume_adapter 1
+	    ;;	    
+
+	consume-adapter2)
+	    consume_adapter 3
+	    ;;	    
+
+	consume-adapter8)
+	    consume_adapter 8
 	    ;;	    
     esac
 done

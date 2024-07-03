@@ -610,6 +610,10 @@ impl InputConsumer for BenchConsumer {
 fn do_bench() -> (u64, u64, u64) {
     let bootstrap_server = std::env::var("KAFKA_BROKER").unwrap_or(String::from("localhost:9092"));
     let topic = std::env::var("KAFKA_TOPIC").expect("set $KAFKA_TOPIC to the topic to consume");
+    let poller_threads: usize = std::env::var("POLLER_THREADS")
+        .expect("set $POLLER_THREADS to the number of poller threads")
+        .parse()
+        .unwrap();
 
     let config_str = format!(
         r#"
@@ -619,6 +623,7 @@ config:
     auto.offset.reset: "earliest"
     enable.partition.eof: "true"
     topics: [{topic}]
+    poller_threads: {poller_threads}
 "#
     );
     let config: TransportConfig = serde_yaml::from_str(&config_str).unwrap();
