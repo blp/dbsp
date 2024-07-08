@@ -1,0 +1,15 @@
+#! /usr/bin/env python3
+
+import fileinput
+n_lines = 0
+min_len = None
+max_len = None
+total_len = 0
+for line in fileinput.input(encoding="utf-8"):
+    if min_len is None or len(line) < min_len:
+        min_len = len(line)
+    if max_len is None or len(line) > max_len:
+        max_len = len(line)
+    total_len += len(line)
+    n_lines += 1
+print("min={} max={} avg={}".format(min_len, max_len, total_len / n_lines))

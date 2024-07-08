@@ -19,7 +19,7 @@ consume() {
     for events in $events_list; do
 	for partitions in $partitions_list; do
     	    for size in $size_list; do
-		run_time target/release/examples/consume --group-id $(uuidgen) --topics bid-$partitions-$events-$size --partitions $partitions "$@"
+		run_time target/release/examples/consume --group-id $(uuidgen) --topics bid-$partitions-$events-$size --partitions $partitions --threads 2 "$@"
 	    done
 	done
     done
@@ -51,6 +51,8 @@ for command; do
 		done
 	    done
 	    rpk topic consume -f '%v' -o :end bid-1-10000000-524288 > bid-10000000.txt
+	    rpk topic consume -f '%v' -o :end auction-1-10000000-524288 > auction-10000000.txt
+	    rpk topic consume -f '%v' -o :end person-1-10000000-524288 > person-10000000.txt
 	    ;;
 
 	cat)
@@ -73,6 +75,10 @@ for command; do
 
 	consume-threaded)
 	    consume --threaded
+	    ;;
+
+	consume-pool)
+	    consume --pool
 	    ;;
 
 	consume-adapter)

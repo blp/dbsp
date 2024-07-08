@@ -1,13 +1,14 @@
 use clap::{App, Arg};
 
 use rdkafka::client::ClientContext;
-use rdkafka::config::ClientConfig;
+use rdkafka::config::{ClientConfig, RDKafkaLogLevel};
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::message::Message;
 use rdkafka::topic_partition_list::TopicPartitionList;
 use rdkafka::util::get_rdkafka_version;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::spawn;
 use std::time::Duration;
@@ -148,6 +149,74 @@ fn threaded_consume_and_print(brokers: &str, group_id: &str, topics: &[&str], n_
     println!("read {n_records} records ({n_messages} messages, {n_bytes} bytes) across {n_partitions} partitions");
 }
 
+fn pool_consume_and_print(
+    brokers: &str,
+    group_id: &str,
+    topics: &[&str],
+    n_partitions: usize,
+    n_threads: usize,
+) {
+    let consumer: BaseConsumer = ClientConfig::new()
+        .set("group.id", group_id)
+        .set("bootstrap.servers", brokers)
+        .set("enable.partition.eof", "true")
+        .set("session.timeout.ms", "6000")
+        .set("enable.auto.commit", "false")
+        //.set("statistics.interval.ms", "30000")
+        .set("auto.offset.reset", "smallest")
+        .set_log_level(RDKafkaLogLevel::Debug)
+        .create()
+        .expect("Consumer creation failed");
+
+    consumer
+        .subscribe(&topics.to_vec())
+        .expect("Can't subscribe to specified topics");
+
+    let consumer = Arc::new(consumer);
+
+    let mut threads = Vec::new();
+    let n_eofs = Arc::new(AtomicUsize::new(0));
+    for _ in 0..n_threads as i32 {
+        let consumer = Arc::clone(&consumer);
+        let n_eofs = Arc::clone(&n_eofs);
+        threads.push(spawn(move || {
+            let mut n_messages = 0;
+            let mut n_records = 0;
+            let mut n_bytes = 0;
+            while n_eofs.load(Ordering::Acquire) < n_partitions {
+                match consumer.poll(Duration::from_millis(100)) {
+                    None => (),
+                    Some(Err(KafkaError::PartitionEOF(_p))) => {
+                        n_eofs.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Some(Err(e)) => panic!("Kafka error after {n_messages} messages: {}", e),
+                    Some(Ok(m)) => {
+                        let payload = m.payload().unwrap_or(&[]);
+                        n_bytes += payload.len();
+                        n_records += payload
+                            .split(|c| *c == b'\n')
+                            .filter(|line| !line.is_empty())
+                            .count();
+                        n_messages += 1;
+                    }
+                };
+            }
+            (n_messages, n_records, n_bytes)
+        }));
+    }
+
+    let mut n_messages = 0;
+    let mut n_records = 0;
+    let mut n_bytes = 0;
+    for thread in threads {
+        let (thread_messages, thread_records, thread_bytes) = thread.join().unwrap();
+        n_messages += thread_messages;
+        n_records += thread_records;
+        n_bytes += thread_bytes;
+    }
+    println!("read {n_records} records ({n_messages} messages, {n_bytes} bytes) across {n_partitions} partitions");
+}
+
 fn main() {
     let matches = App::new("consumer example")
         .version(option_env!("CARGO_PKG_VERSION").unwrap_or(""))
@@ -182,14 +251,24 @@ fn main() {
                 .default_value("0"),
         )
         .arg(
+            Arg::with_name("threads")
+                .long("threads")
+                .help("Number of threads")
+                .takes_value(true)
+                .default_value("0"),
+        )
+        .arg(
             Arg::with_name("threaded")
                 .long("threaded")
                 .help("Use one thread per partition"),
         )
+        .arg(Arg::with_name("pool").long("pool").help("Use thread pool"))
         .get_matches();
 
     let n_partitions: usize = matches.value_of("partitions").unwrap().parse().unwrap();
+    let n_threads: usize = matches.value_of("threads").unwrap().parse().unwrap();
     let threaded = matches.contains_id("threaded");
+    let pool = matches.contains_id("pool");
 
     let (version_n, version_s) = get_rdkafka_version();
     println!("rd_kafka_version: 0x{:08x}, {}", version_n, version_s);
@@ -198,7 +277,9 @@ fn main() {
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();
 
-    if threaded {
+    if pool {
+        pool_consume_and_print(brokers, group_id, &topics, n_partitions, n_threads);
+    } else if threaded {
         threaded_consume_and_print(brokers, group_id, &topics, n_partitions);
     } else {
         consume_and_print(brokers, group_id, &topics, n_partitions);
