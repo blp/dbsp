@@ -17,6 +17,6 @@ MONTH_FORMAT = '%Y-%m-01 00:00:00'
 KAFKA_TOPIC_NAME = "interactions_streaming_test_trial2"
 SCHEMA_NAME = "interactions_streaming_test_trial_schema1"
 
-KAFKA_SERVER = "localhost:19092"
+KAFKA_SERVER = "localhost:9092"
 #KAFKA_SERVER_FROM_PIPELINE = "redpanda:9092"
-KAFKA_SERVER_FROM_PIPELINE = "localhost:19092"
+KAFKA_SERVER_FROM_PIPELINE = "localhost:9092"

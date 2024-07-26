@@ -5,7 +5,7 @@ from sql_program import generate_program
 import time
 
 client = FelderaClient("http://localhost:8080")
-sql = SQLContext("mil", client, workers=10, storage = False)
+sql = SQLContext("mil", client, workers=10, storage = True)
 
 generate_program(sql)
 
