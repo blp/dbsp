@@ -32,7 +32,7 @@ use crate::{
 
 use crate::{
     circuit::{
-        cache::{CircuitCache, CircuitCacheMarker},
+        cache::{CircuitCache, CircuitStoreMarker},
         fingerprinter::Fingerprinter,
         metadata::OperatorMeta,
         operator_traits::{
@@ -1128,11 +1128,6 @@ where
     }
 }
 
-pub struct CircuitStoreMarker;
-
-/// Data store shared by all operators in a circuit.
-pub type CircuitStore = TypedMap<CircuitStoreMarker>;
-
 /// The circuit interface.  All DBSP computation takes place within a circuit.
 ///
 /// Circuits can nest.  The nesting hierarchy must be known statically at
@@ -1198,7 +1193,7 @@ pub trait Circuit: WithClock + Clone + 'static {
     /// See [`cache`](`crate::circuit::cache`) module documentation for details.
     fn cache_get_or_insert_with<K, F>(&self, key: K, f: F) -> RefMut<'_, K::Value>
     where
-        K: 'static + TypedMapKey<CircuitCacheMarker>,
+        K: 'static + TypedMapKey<CircuitStoreMarker>,
         F: FnMut() -> K::Value;
 
     /// Invoked by the scheduler at the end of a clock cycle, after all circuit
@@ -1221,15 +1216,15 @@ pub trait Circuit: WithClock + Clone + 'static {
     /// details.
     fn cache_insert<K>(&self, key: K, val: K::Value)
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static;
+        K: TypedMapKey<CircuitStoreMarker> + 'static;
 
     fn cache_contains<K>(&self, key: &K) -> bool
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static;
+        K: TypedMapKey<CircuitStoreMarker> + 'static;
 
     fn cache_get<K>(&self, key: &K) -> Option<K::Value>
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static,
+        K: TypedMapKey<CircuitStoreMarker> + 'static,
         K::Value: Clone;
 
     /// Connect `stream` as input to `to`.
@@ -1769,17 +1764,6 @@ pub trait Circuit: WithClock + Clone + 'static {
         I: Data,
         O: Data,
         Op: ImportOperator<I, O>;
-
-    /// Returns reference to the data store shared within the circuit.  In a
-    /// multiworker runtime, this is an independent store for each worker.
-    ///
-    /// This low-level mechanism can be used by various services that
-    /// require common state for a circuit.
-    ///
-    /// The [`CircuitStore`] type is an alias to [`TypedDashMap`], a
-    /// concurrent map type that can store key/value pairs of different
-    /// types.  See `typedmap` crate documentation for details.
-    fn circuit_store(&self) -> &CircuitStore;
 }
 
 /// A circuit consists of nodes and edges.  An edge from
@@ -1798,8 +1782,7 @@ where
     edges: Vec<Edge>,
     circuit_event_handlers: CircuitEventHandlers,
     scheduler_event_handlers: SchedulerEventHandlers,
-    cache: CircuitCache,
-    store: CircuitStore,
+    store: CircuitCache,
 }
 
 impl<P> CircuitInner<P>
@@ -1823,7 +1806,6 @@ where
             edges: Vec::new(),
             circuit_event_handlers,
             scheduler_event_handlers,
-            cache: TypedMap::new(),
             store: TypedMap::new(),
         }
     }
@@ -1842,7 +1824,7 @@ where
     fn clear(&mut self) {
         self.nodes.clear();
         self.edges.clear();
-        self.cache.clear();
+        self.store.clear();
     }
 
     fn register_circuit_event_handler<F>(&mut self, name: &str, handler: F)
@@ -2307,20 +2289,20 @@ where
 
     fn cache_get_or_insert_with<K, F>(&self, key: K, mut f: F) -> RefMut<'_, K::Value>
     where
-        K: 'static + TypedMapKey<CircuitCacheMarker>,
+        K: 'static + TypedMapKey<CircuitStoreMarker>,
         F: FnMut() -> K::Value,
     {
-        // Don't use `cache.entry()`, since `f` may need to perform
+        // Don't use `store.entry()`, since `f` may need to perform
         // its own cache lookup.
-        if self.inner().cache.contains_key(&key) {
-            return RefMut::map(self.inner_mut(), |c| c.cache.get_mut(&key).unwrap());
+        if self.inner().store.contains_key(&key) {
+            return RefMut::map(self.inner_mut(), |c| c.store.get_mut(&key).unwrap());
         }
 
         let new = f();
 
         // TODO: Use `RefMut::filter_map()` to only perform one lookup in the happy path
         //       https://github.com/rust-lang/rust/issues/81061
-        RefMut::map(self.inner_mut(), |c| c.cache.entry(key).or_insert(new))
+        RefMut::map(self.inner_mut(), |c| c.store.entry(key).or_insert(new))
     }
 
     fn connect_stream<T>(
@@ -2375,24 +2357,24 @@ where
 
     fn cache_insert<K>(&self, key: K, val: K::Value)
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static,
+        K: TypedMapKey<CircuitStoreMarker> + 'static,
     {
-        self.inner_mut().cache.insert(key, val);
+        self.inner_mut().store.insert(key, val);
     }
 
     fn cache_contains<K>(&self, key: &K) -> bool
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static,
+        K: TypedMapKey<CircuitStoreMarker> + 'static,
     {
-        self.inner_mut().cache.contains_key(key)
+        self.inner_mut().store.contains_key(key)
     }
 
     fn cache_get<K>(&self, key: &K) -> Option<K::Value>
     where
-        K: TypedMapKey<CircuitCacheMarker> + 'static,
+        K: TypedMapKey<CircuitStoreMarker> + 'static,
         K::Value: Clone,
     {
-        self.inner_mut().cache.get(key).cloned()
+        self.inner_mut().store.get(key).cloned()
     }
 
     fn register_ready_callback(&self, id: NodeId, cb: Box<dyn Fn() + Send + Sync>) {
@@ -3101,10 +3083,6 @@ where
             let output_stream = node.output_stream();
             (node, output_stream)
         })
-    }
-
-    fn circuit_store(&self) -> &CircuitStore {
-        &self.inner().store
     }
 }
 

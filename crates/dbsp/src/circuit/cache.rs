@@ -21,8 +21,8 @@
 //!
 //! This module provides a low-level mechanism that individual operators use to
 //! perform operator-specific caching.  The mechanism consists of a key-value
-//! cache associated with each circuit.  We use `TypedMap`, which supports
-//! multiple key and value types, for the cache.  An operator registers a new
+//! store associated with each circuit.  We use `TypedMap`, which supports
+//! multiple key and value types, for the store.  An operator registers a new
 //! key type and associated value type using the `circuit_cache_key` macro,
 //! e.g.,
 //!
@@ -39,10 +39,10 @@
 
 use typedmap::TypedMap;
 
-pub struct CircuitCacheMarker;
+pub struct CircuitStoreMarker;
 
 /// Per-circuit cache.
-pub type CircuitCache = TypedMap<CircuitCacheMarker>;
+pub type CircuitCache = TypedMap<CircuitStoreMarker>;
 
 /// Declare an anonymous struct type to be used as a key in the cache and
 /// associated value type.
@@ -58,7 +58,7 @@ pub type CircuitCache = TypedMap<CircuitCacheMarker>;
 #[macro_export]
 macro_rules! circuit_cache_key {
     ($constructor:ident$(<$($typearg:ident $(:$trait_bound:tt)? ),*>)?($key_type:ty => $val_type:ty)) => {
-        circuit_cache_key!(@inner pub [$crate::circuit::cache::CircuitCacheMarker] $constructor $(<$($typearg $(:$trait_bound)?),*>)?($key_type => $val_type));
+        circuit_cache_key!(@inner pub [$crate::circuit::cache::CircuitStoreMarker] $constructor $(<$($typearg $(:$trait_bound)?),*>)?($key_type => $val_type));
     };
 
     (local $vis:vis $constructor:ident$(<$($typearg:ident $(:$trait_bound:tt)?),*>)?($key_type:ty => $val_type:ty)) => {
@@ -106,7 +106,7 @@ macro_rules! circuit_cache_key {
 #[macro_export]
 macro_rules! circuit_cache_key_unsized {
     ($constructor:ident$(<$($typearg:ident),*>)?($key_type:ty => $val_type:ty)) => {
-        circuit_cache_key_unsized!(@inner pub [$crate::circuit::cache::CircuitCacheMarker] $constructor $(<$($typearg),*>)?($key_type => $val_type));
+        circuit_cache_key_unsized!(@inner pub [$crate::circuit::cache::CircuitStoreMarker] $constructor $(<$($typearg),*>)?($key_type => $val_type));
     };
 
     (local $vis:vis $constructor:ident$(<$($typearg:ident),*>)?($key_type:ty => $val_type:ty)) => {
