@@ -1,13 +1,17 @@
 //! An input adapter that generates Nexmark event input data.
 
+use std::collections::VecDeque;
 use std::io::Cursor;
 use std::mem;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::sync::{Barrier, OnceLock, Weak};
 use std::thread::{self, Thread};
 
+use crate::format::InputBuffer;
 use crate::transport::Step;
-use crate::{InputConsumer, InputEndpoint, InputReader, PipelineState, TransportInputEndpoint};
+use crate::{
+    InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
+};
 use anyhow::{anyhow, Result as AnyResult};
 use atomic::Atomic;
 use csv::{Writer as CsvWriter, WriterBuilder as CsvWriterBuilder};
@@ -39,10 +43,15 @@ impl TransportInputEndpoint for NexmarkEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(InputGenerator::new(&self.config, consumer)?))
+        Ok(Box::new(InputGenerator::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 
@@ -52,7 +61,11 @@ struct InputGenerator {
 }
 
 impl InputGenerator {
-    pub fn new(config: &NexmarkInputConfig, consumer: Box<dyn InputConsumer>) -> AnyResult<Self> {
+    pub fn new(
+        config: &NexmarkInputConfig,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> AnyResult<Self> {
         let mut guard = INNER.lock().unwrap();
         let inner = guard.upgrade().unwrap_or_else(|| {
             let inner = Inner::new();
@@ -61,7 +74,7 @@ impl InputGenerator {
         });
         drop(guard);
 
-        inner.merge(config, consumer)?;
+        inner.merge(config, consumer, parser)?;
         Ok(Self {
             table: config.table,
             inner,
@@ -85,6 +98,36 @@ impl InputReader for InputGenerator {
         self.inner.status[self.table].store(PipelineState::Terminated, Ordering::Release);
         self.inner.unpark();
     }
+
+    fn flush(&self, n: usize) -> usize {
+        if self.table != NexmarkTable::Bid {
+            return 0;
+        }
+
+        let mut total = 0;
+        while total < n {
+            // Get the oldest buffer from each.
+            let mut guard = self.inner.queue.lock().unwrap();
+            for thread_queue in guard.iter() {
+                if thread_queue.is_empty() {
+                    return total;
+                }
+            }
+            let mut buffers = Vec::with_capacity(guard.len());
+            for thread_queue in guard.iter_mut() {
+                buffers.push(thread_queue.pop_front().unwrap());
+            }
+            drop(guard);
+
+            // Flush the buffers.
+            for tables in buffers {
+                for mut table in tables {
+                    total += table.flush_all();
+                }
+            }
+        }
+        total
+    }
 }
 
 static INNER: Mutex<Weak<Inner>> = Mutex::new(Weak::new());
@@ -96,8 +139,10 @@ struct Inner {
     /// Options, which can be set from any of the tables but only from one of them.
     options: OnceLock<NexmarkInputOptions>,
 
-    /// The per-table consumers.
-    consumers: Mutex<EnumMap<NexmarkTable, Option<Box<dyn InputConsumer>>>>,
+    /// The per-table consumers and parsers.
+    cps: Mutex<EnumMap<NexmarkTable, Option<(Box<dyn InputConsumer>, Box<dyn Parser>)>>>,
+
+    queue: Mutex<Vec<VecDeque<[Box<dyn InputBuffer>; 3]>>>,
 
     /// The threads to wake up when we unpark.
     ///
@@ -113,7 +158,8 @@ impl Inner {
         let inner = Arc::new(Self {
             status: EnumMap::from_fn(|_| Atomic::new(PipelineState::Paused)),
             options: OnceLock::new(),
-            consumers: Mutex::new(EnumMap::default()),
+            cps: Mutex::new(EnumMap::default()),
+            queue: Mutex::new(Vec::new()),
             threads: Mutex::new(Vec::new()),
         });
         thread::Builder::new()
@@ -129,15 +175,16 @@ impl Inner {
         &self,
         config: &NexmarkInputConfig,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
     ) -> AnyResult<()> {
-        let mut tables = self.consumers.lock().unwrap();
+        let mut tables = self.cps.lock().unwrap();
         if tables[config.table].is_some() {
             return Err(anyhow!(
                 "more than one Nexmark input connector for {:?}",
                 config.table
             ));
         }
-        tables[config.table] = Some(consumer);
+        tables[config.table] = Some((consumer, parser));
         drop(tables);
 
         if let Some(options) = config.options.as_ref() {
@@ -207,8 +254,8 @@ impl Inner {
 
         // Grab the consumers. We know they're all there because `self.status()`
         // returned `PipelineStatus::Running`.
-        let mut guard = self.consumers.lock().unwrap();
-        let mut consumers = EnumMap::from_fn(|table| guard[table].take().unwrap());
+        let mut guard = self.cps.lock().unwrap();
+        let mut cps = EnumMap::from_fn(|table| guard[table].take().unwrap());
         drop(guard);
 
         // Start all the generator threads.
@@ -218,12 +265,15 @@ impl Inner {
             .then(|| Arc::new(Barrier::new(options.threads)));
         let generators = (0..options.threads)
             .map(|index| {
-                let consumers = EnumMap::from_fn(|table| consumers[table].clone());
+                let cps = EnumMap::from_fn(|table| {
+                    let (consumer, parser) = &cps[table];
+                    (consumer.clone(), parser.fork())
+                });
                 let barrier = barrier.clone();
                 let inner = Arc::clone(&self);
                 thread::Builder::new()
                     .name(format!("nexmark-{index}"))
-                    .spawn(move || inner.generate_thread(consumers, index, barrier))
+                    .spawn(move || inner.generate_thread(cps, index, barrier))
                     .unwrap()
             })
             .collect::<Vec<_>>();
@@ -243,14 +293,15 @@ impl Inner {
         }
 
         // Input is exhausted.
-        for (_table, consumer) in consumers.iter_mut() {
+        for (_table, (consumer, parser)) in cps.iter_mut() {
+            parser.end_of_fragments();
             consumer.eoi();
         }
     }
 
     fn generate_thread(
         self: Arc<Self>,
-        mut consumers: EnumMap<NexmarkTable, Box<dyn InputConsumer>>,
+        mut cps: EnumMap<NexmarkTable, (Box<dyn InputConsumer>, Box<dyn Parser>)>,
         index: usize,
         barrier: Option<Arc<Barrier>>,
     ) {
@@ -307,26 +358,16 @@ impl Inner {
                 }
             }
 
-            // Write the batches to the consumers.
-            //
-            // We do this in a particular order--first `Person`, then `Auction`,
-            // then `Bid`--to honor the dependency graph among the tables,
-            // because auctions refer to people and bids refer to auctions and
-            // people.
-            let mut data = writers.map(|_table, writer| writer.into_inner().unwrap().into_inner());
-            for table in [
-                NexmarkTable::Person,
-                NexmarkTable::Auction,
-                NexmarkTable::Bid,
-            ] {
-                // Submit the data to the circuit.
-                consumers[table].input_chunk(data[table].as_slice());
-
-                // Clear the data and stick it back into our collection of
-                // buffers so we can reuse the allocation for the next batch.
-                data[table].clear();
-                buffers[table] = mem::take(&mut data[table]);
-            }
+            // Queue the batch.
+            let batch = writers
+                .map(|table, writer| {
+                    let data = writer.into_inner().unwrap().into_inner();
+                    let (_consumer, parser) = &mut cps[table];
+                    parser.input_chunk(data.as_slice());
+                    parser.take_buffer().unwrap()
+                })
+                .into_array();
+            self.queue.lock().unwrap()[index].push_back(batch);
 
             // Synchronize with the other threads.
             barrier.as_ref().map(|barrier| barrier.wait());

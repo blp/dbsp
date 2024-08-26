@@ -1,4 +1,5 @@
 use crate::catalog::{ArrowStream, AvroStream};
+use crate::format::InputBuffer;
 use crate::static_compile::deinput::AvroWrapper;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
@@ -13,6 +14,7 @@ use apache_avro::types::Value as AvroValue;
 use dbsp::DBData;
 use feldera_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use std::{
+    cmp::min,
     fmt::Debug,
     mem::take,
     sync::{Arc, Mutex, MutexGuard},
@@ -63,9 +65,6 @@ impl<T: Debug, U: Debug> MockUpdate<T, U> {
 
 /// Inner state of `MockDeZSet`.
 pub struct MockDeZSetState<T, U> {
-    /// Buffered records that haven't been flushed yet.
-    pub buffered: Vec<MockUpdate<T, U>>,
-
     /// Records flushed since the last `reset`.
     pub flushed: Vec<MockUpdate<T, U>>,
 }
@@ -79,14 +78,12 @@ impl<T, U> Default for MockDeZSetState<T, U> {
 impl<T, U> MockDeZSetState<T, U> {
     pub fn new() -> Self {
         Self {
-            buffered: Vec::new(),
             flushed: Vec::new(),
         }
     }
 
     /// Clear internal state.
     pub fn reset(&mut self) {
-        self.buffered.clear();
         self.flushed.clear();
     }
 }
@@ -117,13 +114,6 @@ impl<T, U> MockDeZSet<T, U> {
 
     pub fn state(&self) -> MutexGuard<MockDeZSetState<T, U>> {
         self.0.lock().unwrap()
-    }
-
-    pub fn flush(&self) {
-        let mut state = self.0.lock().unwrap();
-
-        let mut buffered = take(&mut state.buffered);
-        state.flushed.append(&mut buffered);
     }
 }
 
@@ -177,8 +167,32 @@ where
     }
 }
 
+struct MockDeZSetStreamBuffer<T, U> {
+    updates: Vec<MockUpdate<T, U>>,
+    handle: MockDeZSet<T, U>,
+}
+
+impl<T, U> InputBuffer for MockDeZSetStreamBuffer<T, U>
+where
+    T: Send,
+    U: Send,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        let n = min(n, self.len());
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+}
+
 #[derive(Clone)]
 pub struct MockDeZSetStream<De, T, U> {
+    updates: Vec<MockUpdate<T, U>>,
+    committed_len: usize,
     handle: MockDeZSet<T, U>,
     deserializer: De,
     config: SqlSerdeConfig,
@@ -190,6 +204,8 @@ where
 {
     pub fn new(handle: MockDeZSet<T, U>, config: SqlSerdeConfig) -> Self {
         Self {
+            updates: Vec::new(),
+            committed_len: 0,
             handle,
             deserializer: De::create(config.clone()),
             config,
@@ -205,49 +221,56 @@ where
 {
     fn insert(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
-            .push(MockUpdate::Insert(val));
+        self.updates.push(MockUpdate::Insert(val));
         Ok(())
     }
 
     fn delete(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
-            .push(MockUpdate::Delete(val));
+        self.updates.push(MockUpdate::Delete(val));
         Ok(())
     }
 
     fn update(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<U>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
-            .push(MockUpdate::Update(val));
+        self.updates.push(MockUpdate::Update(val));
         Ok(())
     }
 
     fn reserve(&mut self, _reservation: usize) {}
 
-    fn flush(&mut self) {
-        self.handle.flush()
+    fn save(&mut self) {
+        self.committed_len = self.updates.len();
     }
 
-    fn clear_buffer(&mut self) {
-        self.handle.0.lock().unwrap().buffered.clear();
+    fn discard(&mut self) {
+        self.updates.truncate(self.committed_len);
     }
 
     fn fork(&self) -> Box<dyn DeCollectionStream> {
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
+    }
+
+    fn push(&mut self, n: usize) -> usize {
+        self.save();
+        let n = min(n, self.updates.len());
+        self.committed_len -= n;
+
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
+        n
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            self.committed_len = 0;
+            Some(Box::new(MockDeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -255,12 +278,13 @@ where
 /// [`MockDeZSet`].
 #[derive(Clone)]
 pub struct MockAvroStream<T, U> {
+    updates: Vec<MockUpdate<T, U>>,
     handle: MockDeZSet<T, U>,
 }
 
 impl<T, U> MockAvroStream<T, U> {
     fn new(handle: MockDeZSet<T, U>) -> Self {
-        Self { handle }
+        Self { updates: Vec::new(), handle }
     }
 }
 
@@ -272,16 +296,8 @@ where
     fn insert(&mut self, data: &AvroValue) -> AnyResult<()> {
         let v: AvroWrapper<T> = apache_avro::from_value(data)
             .map_err(|e| anyhow!("error deserializing Avro record: {e}"))?;
-
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
+        self.updates
             .push(MockUpdate::Insert(v.value));
-
-        self.handle.flush();
-
         Ok(())
     }
 
@@ -289,31 +305,48 @@ where
         let v: AvroWrapper<T> = apache_avro::from_value(data)
             .map_err(|e| anyhow!("error deserializing Avro record: {e}"))?;
 
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
+        self.updates
             .push(MockUpdate::Delete(v.value));
-
-        self.handle.flush();
         Ok(())
     }
 
     fn fork(&self) -> Box<dyn AvroStream> {
         Box::new(Self::new(self.handle.clone()))
     }
+
+    fn push(&mut self, n: usize) -> usize {
+        let n = min(n, self.updates.len());
+
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
+        n
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(MockDeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 /// Wait to receive all records in `data` in the same order.
-pub fn wait_for_output_ordered<T>(zset: &MockDeZSet<T, T>, data: &[Vec<T>])
+pub fn wait_for_output_ordered<T, F>(zset: &MockDeZSet<T, T>, data: &[Vec<T>], flush: F)
 where
     T: DBData,
+    F: Fn(),
 {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || zset.state().flushed.len() == num_records,
+        || {
+            flush();
+            zset.state().flushed.len() == num_records
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();
@@ -340,14 +373,18 @@ where
 }
 
 /// Wait to receive all records in `data` in some order.
-pub fn wait_for_output_unordered<T>(zset: &MockDeZSet<T, T>, data: &[Vec<T>])
+pub fn wait_for_output_unordered<T, F>(zset: &MockDeZSet<T, T>, data: &[Vec<T>], flush: F)
 where
     T: DBData,
+    F: Fn(),
 {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || zset.state().flushed.len() == num_records,
+        || {
+            flush();
+            zset.state().flushed.len() == num_records
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();

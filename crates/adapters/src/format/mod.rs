@@ -398,24 +398,48 @@ impl dyn InputFormat {
     }
 }
 
+pub trait InputBuffer: Send {
+    /// Sends the earliest buffered records to the circuit, up to `n` if they
+    /// are available.  Returns the number sent.
+    fn flush(&mut self, n: usize) -> usize;
+
+    fn flush_all(&mut self) -> usize {
+        self.flush(usize::MAX)
+    }
+
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Parser that converts a raw byte stream into a stream of database records.
 ///
 /// Note that the implementation can assume that either `input_fragment` or
 /// `input_chunk` will be called, but not both.
 pub trait Parser: Send {
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
+
+    /// Sends the earliest `n` buffered records to the circuit.
+    fn flush(&mut self, n: usize) -> usize;
+
+    fn flush_all(&mut self) -> usize {
+        self.flush(usize::MAX)
+    }
+
     /// Push a fragment of the input stream to the parser.
     ///
-    /// The parser breaks `data` up into records and pushes these records
-    /// to the circuit using the
-    /// [`DeCollectionHandle`](`crate::DeCollectionHandle`) API.
-    /// `data` is not guaranteed to start or end on a record boundary.
+    /// The parser breaks `data` up into records and add the records to its
+    /// buffers using the [`DeCollectionHandle`](`crate::DeCollectionHandle`)
+    /// API.  `data` is not guaranteed to start or end on a record boundary.
     /// The parser is responsible for identifying record boundaries and
-    /// buffering incomplete records to get prepended to the next
-    /// input fragment.
+    /// buffering incomplete records to get prepended to the next input
+    /// fragment.
     ///
-    /// The parser must not buffer any data, except for any incomplete records
-    /// that cannot be fully parsed until more data or an end-of-input
-    /// notification is received.
+    /// The parser must be able to buffer any incomplete records in `data` that
+    /// cannot be fully parsed until more data or an end-of-input notification
+    /// is received.
     ///
     /// This method is invoked by transport adapters, such as file, URL, and
     /// HTTP adapters (for some configurations of the adapter), where the
@@ -427,10 +451,11 @@ pub trait Parser: Send {
 
     /// Push a chunk of data to the parser.
     ///
-    /// The parser breaks `data` up into records and pushes these records
-    /// to the circuit using the
-    /// [`DeCollectionHandle`](`crate::DeCollectionHandle`) API.
-    /// The chunk is expected to contain complete records only.
+    /// The parser breaks `data` up into records and adds the records to its
+    /// buffers using the [`DeCollectionHandle`](`crate::DeCollectionHandle`)
+    /// API.  The chunk is expected to contain complete records only.
+    ///
+    /// The parser need not buffer any of `data`.
     ///
     /// Returns the number of records in the parsed representation and the list
     /// of errors encountered during parsing.
@@ -438,14 +463,15 @@ pub trait Parser: Send {
         self.input_fragment(data)
     }
 
-    /// End-of-input-stream notification.
+    /// Notifies the parser that no more data will be pushed to it.
     ///
-    /// No more data will be received from the stream.  The parser uses this
-    /// notification to complete or discard any incompletely parsed records.
-    ///
+    /// The parser should complete or discard any incompletely parsed records.
     /// Returns the number of additional records pushed to the circuit or an
     /// error if parsing fails.
-    fn eoi(&mut self) -> (usize, Vec<ParseError>);
+    ///
+    /// This shouldn't have any work to do if the data was pushed via
+    /// [Self::input_chunk], since each chunk is complete and independent.
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>);
 
     /// Create a new parser with the same configuration as `self`.
     ///

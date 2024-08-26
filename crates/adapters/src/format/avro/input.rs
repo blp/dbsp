@@ -1,6 +1,9 @@
 use crate::{
     catalog::{AvroStream, InputCollectionHandle},
-    format::avro::schema::{nullable_schema_value_schema, schema_json, validate_struct_schema},
+    format::{
+        avro::schema::{nullable_schema_value_schema, schema_json, validate_struct_schema},
+        InputBuffer,
+    },
     ControllerError, DeCollectionHandle, InputFormat, ParseError, Parser,
 };
 use actix_web::HttpRequest;
@@ -425,8 +428,19 @@ impl Parser for AvroParser {
         }
     }
 
-    fn eoi(&mut self) -> (usize, Vec<ParseError>) {
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
         (0, vec![])
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.input_stream
+            .as_mut()
+            .map(|avro| avro.take_buffer())
+            .flatten()
+    }
+
+    fn flush(&mut self, n: usize) -> usize {
+        self.input_stream.as_mut().map_or(0, |avro| avro.push(n))
     }
 
     fn fork(&self) -> Box<dyn Parser> {
