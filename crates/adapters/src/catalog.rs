@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::{collections::BTreeMap, sync::Arc};
 
+use crate::format::InputBuffer;
 use crate::{static_compile::DeScalarHandle, ControllerError};
 use anyhow::Result as AnyResult;
 #[cfg(feature = "with-avro")]
@@ -132,14 +133,22 @@ pub trait DeCollectionStream: Send {
     /// Updates queued after the last `flush` remain buffered in the handle
     /// until the next `flush` or `clear_buffer` call or until the handle
     /// is destroyed.
-    fn flush(&mut self);
+    fn save(&mut self);
 
     /// Clear all buffered updates.
     ///
     /// Clears updates pushed to the handle after the last `flush`.
     /// Flushed updates remain queued at the underlying input handle.
     // TODO: add another method to invoke `CollectionHandle::clear_input`?
-    fn clear_buffer(&mut self);
+    fn discard(&mut self);
+
+    fn push(&mut self, n: usize) -> usize;
+
+    fn push_all(&mut self) -> usize {
+        self.push(usize::MAX)
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
@@ -152,6 +161,14 @@ pub trait ArrowStream: Send {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()>;
 
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()>;
+
+    fn push(&mut self, _n: usize) -> usize;
+
+    fn push_all(&mut self) -> usize {
+        self.push(usize::MAX)
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
@@ -169,6 +186,14 @@ pub trait AvroStream: Send {
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn AvroStream>;
+
+    fn push(&mut self, _n: usize) -> usize;
+
+    fn push_all(&mut self) -> usize {
+        self.push(usize::MAX)
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 }
 
 /// A handle to an input collection that can be used to feed serialized data
