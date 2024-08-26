@@ -1,15 +1,18 @@
 //! A datagen input adapter that generates random data based on a schema and config.
 
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
+use crate::format::InputBuffer;
 use crate::transport::Step;
-use crate::{InputConsumer, InputEndpoint, InputReader, PipelineState, TransportInputEndpoint};
+use crate::{
+    InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
+};
 use anyhow::{anyhow, Result as AnyResult};
 use atomic::Atomic;
 use chrono::format::{Item, StrftimeItems};
@@ -233,11 +236,13 @@ impl TransportInputEndpoint for GeneratorEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(InputGenerator::new(
             consumer,
+            parser,
             self.config.clone(),
             schema,
         )?))
@@ -249,12 +254,14 @@ struct InputGenerator {
     config: DatagenInputConfig,
     /// Amount of records generated so far.
     generated: Arc<AtomicUsize>,
+    queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
     notifier: Arc<Notify>,
 }
 
 impl InputGenerator {
     fn new(
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         mut config: DatagenInputConfig,
         schema: Relation,
     ) -> AnyResult<Self> {
@@ -306,7 +313,7 @@ impl InputGenerator {
                 && p.limit.unwrap_or(usize::MAX) > 10_000_000
         });
 
-        //eprintln!("Starting {} workers", config.workers);
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
         for worker in 0..config.workers {
             let config = config.clone();
             let status = status.clone();
@@ -314,6 +321,8 @@ impl InputGenerator {
             let schema = schema.clone();
             let notifier = notifier.clone();
             let consumer = consumer.clone();
+            let parser = parser.fork();
+            let queue = queue.clone();
             let shared_state = shared_state.clone();
 
             if needs_blocking_tasks {
@@ -324,6 +333,8 @@ impl InputGenerator {
                         shared_state,
                         schema,
                         consumer,
+                        parser,
+                        queue,
                         notifier,
                         status,
                         generated,
@@ -336,6 +347,8 @@ impl InputGenerator {
                     shared_state,
                     schema,
                     consumer,
+                    parser,
+                    queue,
                     notifier,
                     status,
                     generated,
@@ -347,6 +360,7 @@ impl InputGenerator {
             status,
             config,
             generated,
+            queue,
             notifier,
         })
     }
@@ -378,6 +392,8 @@ impl InputGenerator {
         >,
         schema: Relation,
         mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
+        queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
         notifier: Arc<Notify>,
         status: Arc<Atomic<PipelineState>>,
         generated: Arc<AtomicUsize>,
@@ -436,7 +452,10 @@ impl InputGenerator {
 
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
-                                consumer.input_chunk(&buffer);
+                                parser.input_chunk(&buffer);
+                                if let Some(b) = parser.take() {
+                                    queue.lock().unwrap().push_back(b);
+                                }
                                 buffer.clear();
                                 buffer.extend(START_ARR);
                                 batch_idx = 0;
@@ -455,7 +474,10 @@ impl InputGenerator {
                 }
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
-                    consumer.input_chunk(&buffer);
+                    parser.input_chunk(&buffer);
+                    if let Some(b) = parser.take() {
+                        queue.lock().unwrap().push_back(b);
+                    }
                 }
                 // Update global progress after we created all records for a batch
                 //eprintln!("adding {} to generated", generate_range.len());
@@ -488,6 +510,23 @@ impl InputReader for InputGenerator {
 
         // Wake up the worker if it's paused.
         self.unpark();
+    }
+
+    fn flush(&self, mut n: usize) -> usize {
+        let mut total = 0;
+        while n > 0 {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            let flushed = buffer.flush(n);
+            total += flushed;
+            n -= flushed;
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
     }
 }
 
@@ -1525,7 +1564,9 @@ impl RecordGenerator {
 
 #[cfg(test)]
 mod test {
-    use crate::test::{mock_input_pipeline, MockDeZSet, MockInputConsumer, TestStruct2};
+    use crate::test::{
+        mock_input_pipeline, MockDeZSet, MockInputConsumer, MockInputParser, TestStruct2,
+    };
     use crate::InputReader;
     use anyhow::Result as AnyResult;
     use feldera_types::config::{InputEndpointConfig, TransportConfig};
@@ -1543,16 +1584,21 @@ mod test {
     fn mk_pipeline<T, U>(
         config_str: &str,
         fields: Vec<Field>,
-    ) -> AnyResult<(Box<dyn InputReader>, MockInputConsumer, MockDeZSet<T, U>)>
+    ) -> AnyResult<(
+        Box<dyn InputReader>,
+        MockInputConsumer,
+        MockInputParser,
+        MockDeZSet<T, U>,
+    )>
     where
         T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
         U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
     {
         let relation = Relation::new("test_input".into(), fields, true, BTreeMap::new());
-        let (endpoint, consumer, zset) =
+        let (endpoint, consumer, parser, zset) =
             mock_input_pipeline::<T, U>(serde_yaml::from_str(config_str).unwrap(), relation)?;
         endpoint.start(0)?;
-        Ok((endpoint, consumer, zset))
+        Ok((endpoint, consumer, parser, zset))
     }
 
     #[test]
@@ -1564,12 +1610,14 @@ transport:
     config:
         plan: [ { limit: 10, fields: {} } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        thread::sleep(Duration::from_millis(20));
+        endpoint.flush_all();
 
         let zst = zset.state();
         let iter = zst.flushed.iter();
@@ -1594,7 +1642,7 @@ transport:
     config:
         plan: [ { limit: 10, fields: { "id": { "strategy": "increment", "range": [10, 20], scale: 3 } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1620,7 +1668,7 @@ transport:
     config:
         plan: [ { limit: 1, fields: { "id": { "strategy": "uniform", "range": [10, 20] } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1644,7 +1692,7 @@ transport:
     config:
         plan: [ { limit: 4, fields: { "id": { values: [99, 100, 101] } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1678,7 +1726,7 @@ transport:
 "#,
             );
 
-            let (_endpoint, consumer, _zset) =
+            let (_endpoint, consumer, _parser, _zset) =
                 mk_pipeline::<TestStruct2, TestStruct2>(&config_str, TestStruct2::schema())
                     .unwrap();
 
@@ -1702,7 +1750,7 @@ transport:
 "#,
             );
 
-            let (_endpoint, consumer, _zset) =
+            let (_endpoint, consumer, _parser, _zset) =
                 mk_pipeline::<TestStruct2, TestStruct2>(&config_str, TestStruct2::schema())
                     .unwrap();
 
@@ -1726,7 +1774,7 @@ transport:
 "#,
             );
 
-            let (_endpoint, consumer, _zset) =
+            let (_endpoint, consumer, _parser, _zset) =
                 mk_pipeline::<TestStruct2, TestStruct2>(&config_str, TestStruct2::schema())
                     .unwrap();
 
@@ -1750,7 +1798,7 @@ transport:
 "#,
             );
 
-            let (_endpoint, consumer, _zset) =
+            let (_endpoint, consumer, _parser, _zset) =
                 mk_pipeline::<TestStruct2, TestStruct2>(&config_str, TestStruct2::schema())
                     .unwrap();
 
@@ -1774,7 +1822,7 @@ transport:
 "#,
             );
 
-            let (_endpoint, consumer, _zset) =
+            let (_endpoint, consumer, _parser, _zset) =
                 mk_pipeline::<TestStruct2, TestStruct2>(&config_str, TestStruct2::schema())
                     .unwrap();
 
@@ -1810,7 +1858,7 @@ transport:
     config:
         plan: [ { limit: 10, fields: { "name": { null_percentage: 100 } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1834,7 +1882,7 @@ transport:
     config:
         plan: [ { limit: 100, fields: { "name": { null_percentage: 50 } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1862,7 +1910,7 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "name": { "strategy": "word" } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1933,12 +1981,14 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "bs": { "range": [ 1, 5 ], values: [[1,2], [1,2,3]] } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<ByteStruct, ByteStruct>(config_str, ByteStruct::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        thread::sleep(Duration::from_millis(20));
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -1960,12 +2010,14 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "bs": { "range": [ 1, 2 ], value: { "range": [128, 255], "strategy": "uniform" } } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<ByteStruct, ByteStruct>(config_str, ByteStruct::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        thread::sleep(Duration::from_millis(20));
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2070,12 +2122,13 @@ transport:
     config:
         plan: [ { limit: 2, fields: {} } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2101,12 +2154,14 @@ transport:
     config:
         plan: [ { limit: 3, fields: { "ts": { "range": [1724803200000, 1724803200002] }, "dt": { "range": [19963, 19965] }, "t": { "range": [5, 7] } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        thread::sleep(Duration::from_millis(20));
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2139,12 +2194,14 @@ transport:
         plan: [ { limit: 3, fields: {  "ts": { "range": ["2024-08-28T00:00:00Z", "2024-08-28T00:00:02Z"], "scale": 1000 }, "dt": { "range": ["2024-08-28", "2024-08-30"] }, "t": { "range": ["00:00:05", "00:00:07"], "scale": 1000 } } } ]
 
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        thread::sleep(Duration::from_millis(20));
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2178,7 +2235,7 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "T": {} } } ]
 "#;
-        let (_endpoint, _consumer, _zset) =
+        let (_endpoint, _consumer, _parser, _zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
     }
 
@@ -2191,12 +2248,13 @@ transport:
     config:
         plan: [ { limit: 1, fields: { "TS": { "values": ["1970-01-01T00:00:00Z"] }, "dT": { "values": ["1970-01-02"] }, "t": { "values": ["00:00:01"] } } } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2230,7 +2288,7 @@ transport:
         workers: {workers}
 "
         );
-        let (_endpoint, consumer, _zset) =
+        let (_endpoint, consumer, _parser, _zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str.as_str(), TestStruct2::schema())
                 .unwrap();
 

@@ -639,7 +639,7 @@ impl<K: DataTrait + ?Sized, V: DataTrait + ?Sized> CollectionHandle<K, V> {
     }
 
     #[inline]
-    fn num_partitions(&self) -> usize {
+    pub fn num_partitions(&self) -> usize {
         self.input_handle.0.mailbox.len()
     }
 
@@ -728,6 +728,20 @@ impl<K: DataTrait + ?Sized, V: DataTrait + ?Sized> CollectionHandle<K, V> {
         if remainder > 0 {
             self.next_worker
                 .store(next_worker + remainder, Ordering::Release);
+        }
+    }
+
+    pub fn dyn_append_prepartitioned(&self, partitioned_vals: Vec<Box<DynPairs<K, V>>>) {
+        debug_assert_eq!(partitioned_vals.len(), self.num_partitions());
+
+        for (worker, mut vals) in partitioned_vals.into_iter().enumerate() {
+            self.input_handle.update_for_worker(worker, |tuples| {
+                if tuples.is_empty() {
+                    *tuples = vals;
+                } else {
+                    tuples.append(vals.as_vec_mut());
+                }
+            });
         }
     }
 
