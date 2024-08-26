@@ -33,6 +33,7 @@
 //! of transmitted bytes and records and updating respective performance
 //! counters in the controller.
 
+use crate::catalog::DeCollectionBuffer;
 use crate::transport::InputReader;
 use crate::transport::Step;
 use crate::transport::{
@@ -614,8 +615,17 @@ impl Controller {
                         }
 
                         start = None;
-                        // Reset all counters of buffered records and bytes to 0.
-                        controller.status.consume_buffered_inputs();
+                        let mut total_consumed = 0;
+                        for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
+                            let num_records = endpoint.buffer.flush(endpoint.max_batch_size);
+                            controller.status.inputs.read().unwrap()[id]
+                                .consume_buffered(num_records);
+                            total_consumed += num_records;
+                        }
+                        controller
+                            .status
+                            .global_metrics
+                            .consume_buffered_inputs(total_consumed);
 
                         // All input records accumulated so far (and possibly some more) will
                         // be fully processed after the `step()` call returns.
@@ -807,13 +817,22 @@ impl Controller {
 struct InputEndpointDescr {
     endpoint_name: String,
     reader: Box<dyn InputReader>,
+    buffer: Box<dyn DeCollectionBuffer>,
+    max_batch_size: u64,
 }
 
 impl InputEndpointDescr {
-    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>) -> Self {
+    pub fn new(
+        endpoint_name: &str,
+        reader: Box<dyn InputReader>,
+        buffer: Box<dyn DeCollectionBuffer>,
+        max_batch_size: u64,
+    ) -> Self {
         Self {
             endpoint_name: endpoint_name.to_owned(),
             reader,
+            buffer,
+            max_batch_size,
         }
     }
 }
@@ -1176,7 +1195,8 @@ impl ControllerInner {
         // Create probe.
         let endpoint_id = inputs.keys().next_back().map(|k| k + 1).unwrap_or(0);
 
-        let reader = match endpoint {
+        let max_batch_size = endpoint_config.connector_config.max_batch_size;
+        let (reader, buffer) = match endpoint {
             Some(endpoint) => {
                 // Create parser.
                 let format_config = if endpoint_config.connector_config.transport.name()
@@ -1211,7 +1231,7 @@ impl ControllerInner {
                         ControllerError::unknown_input_format(endpoint_name, &format_config.name)
                     })?;
 
-                let parser =
+                let (parser, buffer) =
                     format.new_parser(endpoint_name, input_handle, &format_config.config)?;
                 let probe = Box::new(InputProbe::new(
                     endpoint_id,
@@ -1228,9 +1248,10 @@ impl ControllerInner {
                     endpoint.is_fault_tolerant(),
                 );
 
-                endpoint
+                let reader = endpoint
                     .open(probe, 0, input_handle.schema.clone())
-                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
+                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
+                (reader, buffer)
             }
             None => {
                 let endpoint = create_integrated_input_endpoint(
@@ -1260,7 +1281,10 @@ impl ControllerInner {
                 .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
         }
 
-        inputs.insert(endpoint_id, InputEndpointDescr::new(endpoint_name, reader));
+        inputs.insert(
+            endpoint_id,
+            InputEndpointDescr::new(endpoint_name, reader, buffer, max_batch_size),
+        );
 
         drop(inputs);
 

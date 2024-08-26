@@ -44,7 +44,7 @@ impl MockInputConsumerState {
 
     pub fn from_handle(input_handle: &InputCollectionHandle, format_config: &FormatConfig) -> Self {
         let format = <dyn InputFormat>::get_format(&format_config.name).unwrap();
-        let parser = format
+        let (parser, _buffer) = format
             .new_parser("mock_input_endpoint", input_handle, &format_config.config)
             .unwrap();
         Self::new(parser)
@@ -84,7 +84,6 @@ impl MockInputConsumer {
     }
 
     fn input(&mut self, data: &[u8], fragment: bool) -> Vec<ParseError> {
-        // println!("input");
         let mut state = self.state();
 
         state.data.extend_from_slice(data);

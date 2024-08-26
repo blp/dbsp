@@ -696,7 +696,7 @@ mod test {
         .unwrap();
 
         let input_map_handle = catalog.input_collection_handle("iNpUt_map").unwrap();
-        let mut input_stream_handle = input_map_handle
+        let (mut input_stream_handle, mut input_buffer) = input_map_handle
             .handle
             .configure_deserializer(RECORD_FORMAT.clone())
             .unwrap();
@@ -712,6 +712,7 @@ mod test {
             .insert(br#"{"id": 2, "b": true, "s": "2"}"#)
             .unwrap();
         input_stream_handle.flush();
+        input_buffer.flush_all();
 
         set_num_quantiles(output_stream_handles, 5);
         set_neighborhood_descr(output_stream_handles, &TestStruct::default(), 5, 5);
@@ -748,6 +749,7 @@ mod test {
             .insert(br#"{"id": 1, "b": true, "s": "1-modified"}"#)
             .unwrap();
         input_stream_handle.flush();
+        input_buffer.flush_all();
 
         set_num_quantiles(output_stream_handles, 5);
 
@@ -773,6 +775,7 @@ mod test {
 
         input_stream_handle.delete(br#"2"#).unwrap();
         input_stream_handle.flush();
+        input_buffer.flush_all();
         set_num_quantiles(output_stream_handles, 5);
 
         circuit.step().unwrap();

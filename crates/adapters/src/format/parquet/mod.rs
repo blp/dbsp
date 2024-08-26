@@ -18,7 +18,7 @@ use serde_arrow::ArrayBuilder;
 use serde_urlencoded::Deserializer as UrlDeserializer;
 use serde_yaml::Value as YamlValue;
 
-use crate::catalog::{CursorWithPolarity, SerBatchReader};
+use crate::catalog::{CursorWithPolarity, DeCollectionBuffer, SerBatchReader};
 use crate::format::MAX_DUPLICATES;
 use crate::{
     catalog::{DeCollectionStream, InputCollectionHandle, RecordFormat},
@@ -56,11 +56,14 @@ impl InputFormat for ParquetInputFormat {
         _endpoint_name: &str,
         input_stream: &InputCollectionHandle,
         _config: &YamlValue,
-    ) -> Result<Box<dyn Parser>, ControllerError> {
-        let input_stream = input_stream
+    ) -> Result<(Box<dyn Parser>, Box<dyn DeCollectionBuffer>), ControllerError> {
+        let (input_stream, input_buffer) = input_stream
             .handle
             .configure_deserializer(RecordFormat::Json(JsonFlavor::ParquetConverter))?;
-        Ok(Box::new(ParquetParser::new(input_stream)) as Box<dyn Parser>)
+        Ok((
+            Box::new(ParquetParser::new(input_stream)) as Box<dyn Parser>,
+            input_buffer,
+        ))
     }
 }
 

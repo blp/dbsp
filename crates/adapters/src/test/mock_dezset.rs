@@ -1,9 +1,8 @@
-use crate::catalog::ArrowStream;
+use crate::catalog::{ArrowStream, DeCollectionBuffer};
+use crate::static_compile::deinput::JsonDeserializerFromBytes;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
-    static_compile::deinput::{
-        CsvDeserializerFromBytes, DeserializerFromBytes, JsonDeserializerFromBytes,
-    },
+    static_compile::deinput::{CsvDeserializerFromBytes, DeserializerFromBytes},
     ControllerError, DeCollectionHandle,
 };
 use anyhow::Result as AnyResult;
@@ -125,23 +124,21 @@ where
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<Box<dyn DeCollectionStream>, ControllerError> {
-        match record_format {
-            RecordFormat::Csv => Ok(Box::new(MockDeZSetStream::<
-                CsvDeserializerFromBytes<_>,
-                T,
-                U,
-            >::new(
-                self.clone(), SqlSerdeConfig::default()
-            ))),
-            RecordFormat::Json(flavor) => Ok(Box::new(MockDeZSetStream::<
+    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
+        let stream: Box<dyn DeCollectionStream> = match record_format {
+            RecordFormat::Csv => {
+                Box::new(MockDeZSetStream::<CsvDeserializerFromBytes<_>, T, U>::new(
+                    self.clone(),
+                    SqlSerdeConfig::default(),
+                ))
+            }
+            RecordFormat::Json(flavor) => Box::new(MockDeZSetStream::<
                 JsonDeserializerFromBytes<SqlSerdeConfig>,
                 T,
                 U,
             >::new(
-                self.clone(),
-                SqlSerdeConfig::from(flavor),
-            ))),
+                self.clone(), SqlSerdeConfig::from(flavor)
+            )),
             RecordFormat::Parquet(_) => {
                 todo!()
             }
@@ -149,13 +146,23 @@ where
             RecordFormat::Avro => {
                 todo!()
             }
-        }
+        };
+        Ok((stream, Box::new(MockDeZSetBuffer)))
     }
 
     fn configure_arrow_deserializer(
         &self,
         _config: SqlSerdeConfig,
-    ) -> Result<Box<dyn ArrowStream>, ControllerError> {
+    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
+        todo!()
+    }
+}
+
+#[derive(Clone)]
+pub struct MockDeZSetBuffer;
+
+impl DeCollectionBuffer for MockDeZSetBuffer {
+    fn flush(&mut self, _num_records: u64) -> u64 {
         todo!()
     }
 }

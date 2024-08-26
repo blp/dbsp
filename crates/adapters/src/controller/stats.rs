@@ -138,8 +138,8 @@ impl GlobalControllerMetrics {
             .fetch_add(num_records, Ordering::AcqRel)
     }
 
-    fn consume_buffered_inputs(&self) {
-        self.buffered_input_records.store(0, Ordering::Release);
+    pub(crate) fn consume_buffered_inputs(&self, num_records: u64) {
+        self.buffered_input_records.fetch_sub(num_records, Ordering::Release);
         self.step_requested.store(false, Ordering::Release);
     }
 
@@ -209,7 +209,7 @@ pub struct ControllerStatus {
 
     /// Input endpoint configs and metrics.
     #[serde(serialize_with = "serialize_inputs")]
-    inputs: InputsStatus,
+    pub(crate) inputs: InputsStatus,
 
     /// Output endpoint configs and metrics.
     #[serde(serialize_with = "serialize_outputs")]
@@ -510,18 +510,6 @@ impl ControllerStatus {
                 .metrics
                 .buffered_records
                 .load(Ordering::Acquire),
-        }
-    }
-
-    /// Reset all buffered record and byte counters to zero.
-    ///
-    /// This method is invoked before `DBSPHandle::step` to indicate that all
-    /// buffered data is about to be consumed.  See module-level documentation
-    /// for details.
-    pub fn consume_buffered_inputs(&self) {
-        self.global_metrics.consume_buffered_inputs();
-        for endpoint_stats in self.inputs.read().unwrap().values() {
-            endpoint_stats.consume_buffered();
         }
     }
 
@@ -906,9 +894,9 @@ impl InputEndpointStatus {
         }
     }
 
-    fn consume_buffered(&self) {
+    pub(crate) fn consume_buffered(&self, num_records: u64) {
         self.metrics.buffered_bytes.store(0, Ordering::Release);
-        self.metrics.buffered_records.store(0, Ordering::Release);
+        self.metrics.buffered_records.fetch_sub(num_records, Ordering::Release);
     }
 
     /// Increment the number of buffered bytes and records; return

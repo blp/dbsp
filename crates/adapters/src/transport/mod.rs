@@ -47,7 +47,7 @@ mod nexmark;
 #[cfg(feature = "with-pubsub")]
 mod pubsub;
 
-use crate::catalog::InputCollectionHandle;
+use crate::catalog::{DeCollectionBuffer, InputCollectionHandle};
 use pipeline_types::config::TransportConfig;
 use pipeline_types::program_schema::Relation;
 
@@ -188,7 +188,7 @@ pub trait IntegratedInputEndpoint: InputEndpoint {
         &self,
         input_handle: &InputCollectionHandle,
         start_step: Step,
-    ) -> AnyResult<Box<dyn InputReader>>;
+    ) -> AnyResult<(Box<dyn InputReader>, Box<dyn DeCollectionBuffer>)>;
 }
 
 /// Reads data from an endpoint.

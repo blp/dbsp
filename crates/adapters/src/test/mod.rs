@@ -231,7 +231,7 @@ where
     // Input parsers don't care about schema yet.
     let schema = Relation::new("mock_schema", false, vec![], false, BTreeMap::new());
 
-    let mut parser = format
+    let (mut parser, _buffer) = format
         .new_parser(
             "BaseConsumer",
             &InputCollectionHandle::new(schema, buffer.clone()),

@@ -248,7 +248,7 @@ impl BufferConsumer {
         // Input parsers don't care about schema yet.
         let schema = Relation::new("mock_schema", false, vec![], false, BTreeMap::new());
 
-        let mut parser = format
+        let (mut parser, mut input_buffer) = format
             .new_parser(
                 "BaseConsumer",
                 &InputCollectionHandle::new(schema, buffer.clone()),
@@ -300,6 +300,7 @@ impl BufferConsumer {
 
                             if let Some(payload) = message.payload() {
                                 parser.input_chunk(payload);
+                                input_buffer.flush_all();
                             }
                         }
                     }

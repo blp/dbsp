@@ -146,6 +146,14 @@ pub trait DeCollectionStream: Send {
     fn fork(&self) -> Box<dyn DeCollectionStream>;
 }
 
+pub trait DeCollectionBuffer: Send {
+    fn flush(&mut self, n: u64) -> u64;
+
+    fn flush_all(&mut self) -> u64 {
+        self.flush(u64::MAX)
+    }
+}
+
 pub trait ArrowStream: Send {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()>;
 
@@ -164,12 +172,12 @@ pub trait DeCollectionHandle: Send {
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<Box<dyn DeCollectionStream>, ControllerError>;
+    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError>;
 
     fn configure_arrow_deserializer(
         &self,
         config: SqlSerdeConfig,
-    ) -> Result<Box<dyn ArrowStream>, ControllerError>;
+    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError>;
 }
 
 /// A type-erased batch whose contents can be serialized.

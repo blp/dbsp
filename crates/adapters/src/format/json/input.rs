@@ -1,7 +1,7 @@
 //! JSON format parser.
 
 use super::{DebeziumUpdate, InsDelUpdate, WeightedUpdate};
-use crate::catalog::InputCollectionHandle;
+use crate::catalog::{DeCollectionBuffer, InputCollectionHandle};
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     format::{InputFormat, ParseError, Parser},
@@ -176,7 +176,7 @@ impl InputFormat for JsonInputFormat {
         endpoint_name: &str,
         input_handle: &InputCollectionHandle,
         config: &YamlValue,
-    ) -> Result<Box<dyn Parser>, ControllerError> {
+    ) -> Result<(Box<dyn Parser>, Box<dyn DeCollectionBuffer>), ControllerError> {
         let config = JsonParserConfig::deserialize(config).map_err(|e| {
             ControllerError::parser_config_parse_error(
                 endpoint_name,
@@ -185,10 +185,13 @@ impl InputFormat for JsonInputFormat {
             )
         })?;
         validate_parser_config(&config, endpoint_name)?;
-        let input_stream = input_handle
+        let (input_stream, input_buffer) = input_handle
             .handle
             .configure_deserializer(RecordFormat::Json(config.json_flavor.clone()))?;
-        Ok(Box::new(JsonParser::new(input_stream, config)) as Box<dyn Parser>)
+        Ok((
+            Box::new(JsonParser::new(input_stream, config)) as Box<dyn Parser>,
+            input_buffer,
+        ))
     }
 
     fn config_from_http_request(
