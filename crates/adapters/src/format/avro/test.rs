@@ -4,12 +4,12 @@ use super::{
     serializer::{avro_ser_config, AvroSchemaSerializer},
 };
 use crate::{
+    format::{InputBuffer, Parser},
     static_compile::seroutput::SerBatchImpl,
     test::{
         generate_test_batches_with_weights, mock_parser_pipeline, MockOutputConsumer, MockUpdate,
         TestStruct, TestStruct2,
     },
-    transport::InputConsumer,
     Encoder, FormatConfig, ParseError, SerBatch,
 };
 use apache_avro::{schema::ResolvedSchema, to_avro_datum, Schema as AvroSchema};
@@ -297,13 +297,14 @@ where
             config: serde_yaml::to_value(test.config).unwrap(),
         };
 
-        let (mut consumer, outputs) = mock_parser_pipeline(&format_config).unwrap();
+        let (consumer, mut parser, outputs) = mock_parser_pipeline(&format_config).unwrap();
         consumer.on_error(Some(Box::new(|_, _| {})));
         for (avro, expected_result) in test.input_batches {
-            let res = consumer.input_chunk(&avro);
-            assert_eq!(&res, &expected_result);
+            let res = parser.input_chunk(&avro);
+            assert_eq!(&res.1, &expected_result);
         }
-        consumer.eoi();
+        parser.end_of_fragments();
+        parser.flush_all();
         assert_eq!(&test.expected_output, &outputs.state().flushed);
     }
 }

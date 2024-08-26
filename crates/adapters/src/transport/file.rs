@@ -1,12 +1,13 @@
 use super::{
     InputConsumer, InputEndpoint, InputReader, OutputEndpoint, Step, TransportInputEndpoint,
 };
-use crate::PipelineState;
+use crate::{Parser, PipelineState};
 use anyhow::{bail, Error as AnyError, Result as AnyResult};
 use atomic::Atomic;
 use crossbeam::sync::{Parker, Unparker};
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::file::{FileInputConfig, FileOutputConfig};
+use std::sync::Mutex;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
@@ -37,20 +38,30 @@ impl TransportInputEndpoint for FileInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(FileInputReader::new(&self.config, consumer)?))
+        Ok(Box::new(FileInputReader::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 
 struct FileInputReader {
     status: Arc<Atomic<PipelineState>>,
     unparker: Option<Unparker>,
+    parser: Arc<Mutex<Box<dyn Parser>>>,
 }
 
 impl FileInputReader {
-    fn new(config: &FileInputConfig, consumer: Box<dyn InputConsumer>) -> AnyResult<Self> {
+    fn new(
+        config: &FileInputConfig,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> AnyResult<Self> {
         let file = File::open(&config.path).map_err(|e| {
             AnyError::msg(format!("Failed to open input file '{}': {e}", config.path))
         })?;
@@ -60,14 +71,21 @@ impl FileInputReader {
         };
 
         let parker = Parker::new();
+        let parser = Arc::new(Mutex::new(parser));
         let unparker = Some(parker.unparker().clone());
         let status = Arc::new(Atomic::new(PipelineState::Paused));
-        let status_clone = status.clone();
-        let follow = config.follow;
-        let _worker =
-            spawn(move || Self::worker_thread(reader, consumer, parker, status_clone, follow));
+        spawn({
+            let follow = config.follow;
+            let status = status.clone();
+            let parser = parser.clone();
+            move || Self::worker_thread(reader, consumer, parser, parker, status, follow)
+        });
 
-        Ok(Self { status, unparker })
+        Ok(Self {
+            status,
+            unparker,
+            parser,
+        })
     }
 
     fn unpark(&self) {
@@ -79,6 +97,7 @@ impl FileInputReader {
     fn worker_thread(
         mut reader: BufReader<File>,
         mut consumer: Box<dyn InputConsumer>,
+        parser: Arc<Mutex<Box<dyn Parser>>>,
         parker: Parker,
         status: Arc<Atomic<PipelineState>>,
         follow: bool,
@@ -95,7 +114,8 @@ impl FileInputReader {
                         }
                         Ok([]) => {
                             if !follow {
-                                let _ = consumer.eoi();
+                                let _ = parser.lock().unwrap().end_of_fragments();
+                                consumer.eoi();
                                 return;
                             } else {
                                 sleep(Duration::from_millis(SLEEP_MS));
@@ -106,7 +126,7 @@ impl FileInputReader {
 
                             // Leave it to the controller to handle errors.  There is noone we can
                             // forward the error to upstream.
-                            let _ = consumer.input_fragment(data);
+                            let _ = parser.lock().unwrap().input_fragment(data);
                             let len = data.len();
                             reader.consume(len);
                         }
@@ -140,6 +160,10 @@ impl InputReader for FileInputReader {
 
         // Wake up the worker if it's paused.
         self.unpark();
+    }
+
+    fn flush(&self, n: usize) -> usize {
+        self.parser.lock().unwrap().flush(n)
     }
 }
 
@@ -255,7 +279,7 @@ format:
         }
         writer.flush().unwrap();
 
-        let (endpoint, consumer, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+        let (endpoint, consumer, _parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
             serde_yaml::from_str(&config_str).unwrap(),
             Relation::empty(),
         )
@@ -264,13 +288,15 @@ format:
         sleep(Duration::from_millis(10));
 
         // No outputs should be produced at this point.
-        assert!(consumer.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
         endpoint.start(0).unwrap();
         wait(
-            || zset.state().flushed.len() == test_data.len(),
+            || {
+                endpoint.flush_all();
+                zset.state().flushed.len() == test_data.len()
+            },
             DEFAULT_TIMEOUT_MS,
         )
         .unwrap();
@@ -310,7 +336,7 @@ format:
             .has_headers(false)
             .from_writer(temp_file.as_file());
 
-        let (endpoint, consumer, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+        let (endpoint, consumer, parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
             serde_yaml::from_str(&config_str).unwrap(),
             Relation::empty(),
         )
@@ -325,13 +351,15 @@ format:
             sleep(Duration::from_millis(10));
 
             // No outputs should be produced at this point.
-            assert!(consumer.state().data.is_empty());
             assert!(!consumer.state().eoi);
 
             // Unpause the endpoint, wait for the data to appear at the output.
             endpoint.start(0).unwrap();
             wait(
-                || zset.state().flushed.len() == test_data.len(),
+                || {
+                    endpoint.flush_all();
+                    zset.state().flushed.len() == test_data.len()
+                },
                 DEFAULT_TIMEOUT_MS,
             )
             .unwrap();
@@ -347,13 +375,15 @@ format:
         drop(writer);
 
         consumer.on_error(Some(Box::new(|_, _| {})));
+        parser.on_error(Some(Box::new(|_, _| {})));
         temp_file.as_file().write_all(b"xxx\n").unwrap();
         temp_file.as_file().flush().unwrap();
 
         endpoint.start(0).unwrap();
         wait(
             || {
-                let state = consumer.state();
+                endpoint.flush_all();
+                let state = parser.state();
                 // println!("result: {:?}", state.parser_result);
                 state.parser_result.is_some() && !state.parser_result.as_ref().unwrap().1.is_empty()
             },
@@ -361,7 +391,6 @@ format:
         )
         .unwrap();
 
-        assert!(zset.state().buffered.is_empty());
         assert!(zset.state().flushed.is_empty());
 
         endpoint.disconnect();
