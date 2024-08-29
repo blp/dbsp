@@ -20,11 +20,12 @@ CREATE TABLE person (
                 "options": {{
                     "events": {events},
                     "threads": {cores},
-                    "batch_size": 10000,
+                    "batch_size": 1000,
                     "synchronize_threads": true
                 }}
             }}
-        }}
+        }},
+	"max_batch_size": 10000
     }}
 ]');
 CREATE TABLE auction (
@@ -49,7 +50,8 @@ CREATE TABLE auction (
             "config": {{
                 "table": "auction"
             }}
-        }}
+        }},
+	"max_batch_size": 10000
     }}
 ]');
 CREATE TABLE bid (
@@ -71,7 +73,8 @@ CREATE TABLE bid (
             "config": {{
                 "table": "bid"
             }}
-        }}
+        }},
+	"max_batch_size": 10000
     }}
 ]');
 CREATE TABLE side_input (
@@ -93,4 +96,4 @@ CREATE TABLE side_input (
         ]
       }}
     }}
-}}]');;
+}}]');

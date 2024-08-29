@@ -12,8 +12,14 @@ use dbsp::{
 };
 use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use serde_arrow::Deserializer as ArrowDeserializer;
-use std::sync::Mutex;
-use std::{collections::VecDeque, marker::PhantomData, ops::Neg, sync::Arc};
+use std::{
+    cmp::min,
+    collections::VecDeque,
+    marker::PhantomData,
+    mem::take,
+    ops::Neg,
+    sync::{Arc, Mutex},
+};
 
 /// A deserializer that parses byte arrays into a strongly typed representation.
 pub trait DeserializerFromBytes<C> {
@@ -265,7 +271,8 @@ where
 }
 
 pub struct DeZSetBuffer<K> {
-    updates: Arc<Mutex<VecDeque<Tup2<K, ZWeight>>>>,
+    updates: Arc<Mutex<Vec<Vec<Tup2<K, ZWeight>>>>>,
+    collected: VecDeque<Vec<Tup2<K, ZWeight>>>,
     handle: ZSetHandle<K>,
 }
 
@@ -273,17 +280,24 @@ impl<K> DeCollectionBuffer for DeZSetBuffer<K>
 where
     K: DBData,
 {
-    fn flush(&mut self, mut num_records: u64) -> u64 {
-        let mut records = Vec::new();
-        for index in 0..num_records {
-            let Some(record) = self.updates.lock().unwrap().pop_front() else {
-                num_records = index;
-                break;
-            };
-            records.push(record);
+    fn flush(&mut self, num_records: u64) -> u64 {
+        let num_records = num_records as usize;
+
+        // Grab new updates and append them to our collection.
+        let mut new_updates = take(&mut *self.updates.lock().unwrap());
+        self.collected.extend(new_updates.drain(..));
+
+        let mut n_flushed = 0;
+        while n_flushed < num_records && !self.collected.is_empty() {
+            let mut records = self.collected.pop_front().unwrap();
+            let chunk = min(records.len(), num_records - n_flushed);
+            if chunk < records.len() {
+                self.collected.push_front(records.split_off(chunk));
+            }
+            n_flushed += chunk;
+            self.handle.append(&mut records);
         }
-        self.handle.append(&mut records);
-        num_records
+        n_flushed as u64
     }
 }
 
@@ -291,7 +305,8 @@ impl<K> DeZSetBuffer<K> {
     pub fn new(handle: ZSetHandle<K>) -> Self {
         Self {
             handle,
-            updates: Arc::new(Mutex::new(VecDeque::new())),
+            updates: Arc::new(Mutex::new(Vec::new())),
+            collected: VecDeque::new(),
         }
     }
 }
@@ -370,7 +385,7 @@ where
 /// update for the underlying `CollectionHandle`.
 pub struct DeZSetStream<De, K, D, C> {
     updates: Vec<Tup2<K, ZWeight>>,
-    buffer: Arc<Mutex<VecDeque<Tup2<K, ZWeight>>>>,
+    buffer: Arc<Mutex<Vec<Vec<Tup2<K, ZWeight>>>>>,
     deserializer: De,
     config: C,
     phantom: PhantomData<D>,
@@ -381,7 +396,7 @@ where
     De: DeserializerFromBytes<C>,
     C: Clone,
 {
-    pub fn new(buffer: Arc<Mutex<VecDeque<Tup2<K, ZWeight>>>>, config: C) -> Self {
+    pub fn new(buffer: Arc<Mutex<Vec<Vec<Tup2<K, ZWeight>>>>>, config: C) -> Self {
         Self {
             updates: Vec::new(),
             buffer,
@@ -422,13 +437,11 @@ where
     }
 
     fn flush(&mut self) {
-        self.buffer.lock().unwrap().extend(self.updates.drain(..));
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
+        self.buffer.lock().unwrap().push(take(&mut self.updates));
     }
 
     fn clear_buffer(&mut self) {
         self.updates.clear();
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
     }
 
     fn fork(&self) -> Box<dyn DeCollectionStream> {
@@ -437,18 +450,37 @@ where
 }
 
 pub struct ArrowZSetStream<K, D, C> {
-    buffer: Arc<Mutex<VecDeque<Tup2<K, ZWeight>>>>,
+    buffer: Arc<Mutex<Vec<Vec<Tup2<K, ZWeight>>>>>,
     config: C,
     phantom: PhantomData<D>,
 }
 
 impl<K, D, C> ArrowZSetStream<K, D, C> {
-    pub fn new(buffer: Arc<Mutex<VecDeque<Tup2<K, ZWeight>>>>, config: C) -> Self {
+    pub fn new(buffer: Arc<Mutex<Vec<Vec<Tup2<K, ZWeight>>>>>, config: C) -> Self {
         Self {
             buffer,
             config,
             phantom: PhantomData,
         }
+    }
+}
+
+impl<K, D, C> ArrowZSetStream<K, D, C>
+where
+    K: DBData + From<D>,
+    D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
+    C: Clone + Send + 'static,
+{
+    fn update(&mut self, data: &RecordBatch, weight: ZWeight) -> AnyResult<()> {
+        let deserializer = ArrowDeserializer::from_record_batch(data)?;
+        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
+        let updates = records
+            .into_iter()
+            .map(|r| Tup2(K::from(r), weight))
+            .collect::<Vec<_>>();
+        self.buffer.lock().unwrap().push(updates);
+
+        Ok(())
     }
 }
 
@@ -459,25 +491,11 @@ where
     C: Clone + Send + 'static,
 {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
-        let deserializer = ArrowDeserializer::from_record_batch(data)?;
-        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| Tup2(K::from(r), 1)));
-
-        Ok(())
+        self.update(data, 1)
     }
 
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
-        let deserializer = ArrowDeserializer::from_record_batch(data)?;
-        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| Tup2(K::from(r), -1)));
-
-        Ok(())
+        self.update(data, -1)
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
