@@ -70,6 +70,25 @@ where
 
         self.handle.dyn_append(&mut vals.erase_box())
     }
+
+    pub fn append_prepartitioned(&self, partitioned_vals: Vec<Vec<Tup2<K, ZWeight>>>) {
+        debug_assert_eq!(partitioned_vals.len(), self.num_partitions());
+
+        let partitioned_vals = partitioned_vals.into_iter().map(|vals| {
+            // SAFETY: `()` is a zero-sized type, more precisely it's a 1-ZST.
+            // According to the Rust spec adding it to a tuple doesn't change
+            // its memory layout.
+            let vals: Vec<Tup2<Tup2<K, ()>, ZWeight>> = unsafe { transmute(vals) };
+            let vals  = Box::new(LeanVec::from(vals));
+            vals.erase_box()
+        }).collect::<Vec<_>>();
+
+        self.handle.dyn_append_prepartitioned(partitioned_vals);
+    }
+
+    pub fn num_partitions(&self) -> usize {
+        self.handle.num_partitions()
+    }
 }
 
 #[derive(Clone)]
