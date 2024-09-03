@@ -295,7 +295,7 @@ fn to_s3_config(config: &Arc<S3InputConfig>) -> aws_sdk_s3::Config {
 #[cfg(test)]
 mod test {
     use crate::{
-        test::{mock_parser_pipeline, wait, MockDeZSet, MockInputConsumer},
+        test::{mock_parser_pipeline, wait, MockDeZSet, MockInputConsumer, MockInputParser},
         transport::s3::{S3InputConfig, S3InputReader},
     };
     use aws_sdk_s3::{
@@ -365,6 +365,7 @@ format:
     ) -> (
         Box<dyn crate::InputReader>,
         MockInputConsumer,
+        MockInputParser,
         MockDeZSet<TestStruct, TestStruct>,
     ) {
         let config: InputEndpointConfig = serde_yaml::from_str(&config_str).unwrap();
@@ -375,7 +376,7 @@ format:
                 panic!("Expected S3Input transport configuration");
             }
         };
-        let (consumer, input_handle) = mock_parser_pipeline::<TestStruct, TestStruct>(
+        let (consumer, parser, input_handle) = mock_parser_pipeline::<TestStruct, TestStruct>(
             &config.connector_config.format.unwrap(),
         )
         .unwrap();
@@ -383,17 +384,17 @@ format:
         let reader = Box::new(S3InputReader::new_inner(
             &transport_config,
             Box::new(consumer.clone()),
-            Box::new(consumer.clone()),
+            Box::new(parser.clone()),
             Box::new(mock),
         )) as Box<dyn crate::InputReader>;
-        (reader, consumer, input_handle)
+        (reader, consumer, parser, input_handle)
     }
 
     fn run_test(config_str: &str, mock: super::MockS3Client, test_data: Vec<TestStruct>) {
-        let (reader, consumer, input_handle) = test_setup(config_str, mock);
+        let (reader, consumer, parser, input_handle) = test_setup(config_str, mock);
         let _ = reader.pause();
         // No outputs should be produced at this point.
-        assert!(consumer.state().data.is_empty());
+        assert!(parser.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
@@ -493,7 +494,7 @@ format:
             .with(eq("test-bucket"), eq(""), eq(&None))
             .return_once(|_, _, _| Ok((objs, None)));
         let test_data: Vec<TestStruct> = (0..1000).map(|i| TestStruct { i }).collect();
-        let (reader, _, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
+        let (reader, _, _, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
         reader.start(0).unwrap();
         // Pause after 50 rows are recorded.
         wait(|| input_handle.state().flushed.len() > 50, 10000).unwrap();
@@ -527,7 +528,7 @@ format:
             .return_once(|_, _, _| {
                 Err(ListObjectsV2Error::NoSuchBucket(NoSuchBucketBuilder::default().build()).into())
             });
-        let (reader, consumer, _) = test_setup(MULTI_KEY_CONFIG_STR, mock);
+        let (reader, consumer, _parser, _) = test_setup(MULTI_KEY_CONFIG_STR, mock);
         let (tx, rx) = std::sync::mpsc::channel();
         consumer.on_error(Some(Box::new(move |fatal, err| {
             tx.send((fatal, format!("{err}"))).unwrap()

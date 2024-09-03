@@ -674,7 +674,7 @@ format:
 "#
     );
 
-    let (reader, consumer, _input_handle) = mock_input_pipeline::<TestStruct, TestStruct>(
+    let (reader, consumer, parser, _input_handle) = mock_input_pipeline::<TestStruct, TestStruct>(
         serde_yaml::from_str(&config_str).unwrap(),
         Relation::empty(),
     )
@@ -701,7 +701,7 @@ format:
     name: csv
 "#;
 
-    let (reader, consumer, _input_handle) = mock_input_pipeline::<TestStruct, TestStruct>(
+    let (reader, consumer, parser, _input_handle) = mock_input_pipeline::<TestStruct, TestStruct>(
         serde_yaml::from_str(config_str).unwrap(),
         Relation::empty(),
     )
@@ -730,7 +730,7 @@ format:
 
     info!("proptest_kafka_input: Building input pipeline");
 
-    let (endpoint, _consumer, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+    let (endpoint, _consumer, parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
         serde_yaml::from_str(&config_str).unwrap(),
         Relation::empty(),
     )

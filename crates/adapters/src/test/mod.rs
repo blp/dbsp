@@ -43,7 +43,7 @@ pub use data::{
 use dbsp::circuit::CircuitConfig;
 use dbsp::utils::Tup2;
 pub use mock_dezset::{wait_for_output_ordered, wait_for_output_unordered, MockDeZSet, MockUpdate};
-pub use mock_input_consumer::MockInputConsumer;
+pub use mock_input_consumer::{MockInputConsumer, MockInputParser};
 pub use mock_output_consumer::MockOutputConsumer;
 use pipeline_types::format::json::{JsonFlavor, JsonParserConfig, JsonUpdateFormat};
 use pipeline_types::program_schema::{Field, Relation};
@@ -95,7 +95,7 @@ where
 /// ```
 pub fn mock_parser_pipeline<T, U>(
     config: &FormatConfig,
-) -> AnyResult<(MockInputConsumer, MockDeZSet<T, U>)>
+) -> AnyResult<(MockInputConsumer, MockInputParser, MockDeZSet<T, U>)>
 where
     T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
     U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
@@ -103,11 +103,12 @@ where
     let input_handle = <MockDeZSet<T, U>>::new();
     // Input parsers don't care about schema yet.
     let schema = Relation::empty();
-    let consumer = MockInputConsumer::from_handle(
+    let consumer = MockInputConsumer::new();
+    let parser = MockInputParser::from_handle(
         &InputCollectionHandle::new(schema, input_handle.clone()),
         config,
     );
-    Ok((consumer, input_handle))
+    Ok((consumer, parser, input_handle))
 }
 
 /// Build an input pipeline that allows testing a transport endpoint and parser
@@ -125,7 +126,12 @@ where
 pub fn mock_input_pipeline<T, U>(
     config: InputEndpointConfig,
     relation: Relation,
-) -> AnyResult<(Box<dyn InputReader>, MockInputConsumer, MockDeZSet<T, U>)>
+) -> AnyResult<(
+    Box<dyn InputReader>,
+    MockInputConsumer,
+    MockInputParser,
+    MockDeZSet<T, U>,
+)>
 where
     T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
     U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
@@ -140,7 +146,7 @@ where
         .unwrap(),
     };
 
-    let (consumer, input_handle) = mock_parser_pipeline(
+    let (consumer, parser, input_handle) = mock_parser_pipeline(
         config
             .connector_config
             .format
@@ -153,12 +159,12 @@ where
 
     let reader = endpoint.open(
         Box::new(consumer.clone()),
-        Box::new(consumer.clone()),
+        Box::new(parser.clone()),
         0,
         relation,
     )?;
 
-    Ok((reader, consumer, input_handle))
+    Ok((reader, consumer, parser, input_handle))
 }
 
 /// Create a simple test circuit that passes the input stream right through to

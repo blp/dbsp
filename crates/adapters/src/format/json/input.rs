@@ -547,20 +547,21 @@ mod test {
                 config: serde_yaml::to_value(test.config).unwrap(),
             };
 
-            let (mut consumer, outputs) = mock_parser_pipeline(&format_config).unwrap();
+            let (mut consumer, mut parser, outputs) = mock_parser_pipeline(&format_config).unwrap();
             consumer.on_error(Some(Box::new(|_, _| {})));
+            parser.on_error(Some(Box::new(|_, _| {})));
             for (json, expected_result) in test.input_batches {
                 let res = if test.chunks {
-                    consumer.input_chunk(json.as_bytes())
+                    parser.input_chunk(json.as_bytes())
                 } else {
-                    consumer.input_fragment(json.as_bytes())
+                    parser.input_fragment(json.as_bytes())
                 };
                 assert_eq!(&res.1, &expected_result);
             }
-            let res = consumer.end_of_fragments();
+            let res = parser.end_of_fragments();
             assert_eq!(&res.1, &test.final_result);
             consumer.eoi();
-            consumer.flush_all();
+            parser.flush_all();
             assert_eq!(&test.expected_output, &outputs.state().flushed);
         }
     }

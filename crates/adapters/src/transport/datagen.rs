@@ -412,6 +412,10 @@ impl InputReader for InputGenerator {
         // Wake up the worker if it's paused.
         self.unpark();
     }
+
+    fn flush(&self, _n: u64) -> u64 {
+        todo!()
+    }
 }
 
 impl Drop for InputGenerator {
@@ -1449,7 +1453,7 @@ mod test {
         U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
     {
         let relation = Relation::new("test_input", false, fields, true, BTreeMap::new());
-        let (endpoint, consumer, zset) =
+        let (endpoint, consumer, parser, zset) =
             mock_input_pipeline::<T, U>(serde_yaml::from_str(config_str).unwrap(), relation)?;
         endpoint.start(0)?;
         Ok((endpoint, consumer, zset))
@@ -1854,12 +1858,13 @@ transport:
     config:
         plan: [ { limit: 2, fields: {} } ]
 "#;
-        let (_endpoint, consumer, zset) =
+        let (endpoint, consumer, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
+        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();

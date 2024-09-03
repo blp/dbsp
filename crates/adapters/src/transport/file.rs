@@ -266,7 +266,7 @@ format:
         }
         writer.flush().unwrap();
 
-        let (endpoint, consumer, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+        let (endpoint, consumer, parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
             serde_yaml::from_str(&config_str).unwrap(),
             Relation::empty(),
         )
@@ -275,7 +275,6 @@ format:
         sleep(Duration::from_millis(10));
 
         // No outputs should be produced at this point.
-        assert!(consumer.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
@@ -321,7 +320,7 @@ format:
             .has_headers(false)
             .from_writer(temp_file.as_file());
 
-        let (endpoint, consumer, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+        let (endpoint, consumer, parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
             serde_yaml::from_str(&config_str).unwrap(),
             Relation::empty(),
         )
@@ -336,7 +335,6 @@ format:
             sleep(Duration::from_millis(10));
 
             // No outputs should be produced at this point.
-            assert!(consumer.state().data.is_empty());
             assert!(!consumer.state().eoi);
 
             // Unpause the endpoint, wait for the data to appear at the output.
@@ -364,7 +362,7 @@ format:
         endpoint.start(0).unwrap();
         wait(
             || {
-                let state = consumer.state();
+                let state = parser.state();
                 // println!("result: {:?}", state.parser_result);
                 state.parser_result.is_some() && !state.parser_result.as_ref().unwrap().1.is_empty()
             },

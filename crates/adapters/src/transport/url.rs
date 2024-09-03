@@ -268,7 +268,10 @@ impl Drop for UrlInputReader {
 #[cfg(test)]
 mod test {
     use crate::{
-        test::{mock_input_pipeline, wait, MockDeZSet, MockInputConsumer, DEFAULT_TIMEOUT_MS},
+        test::{
+            mock_input_pipeline, wait, MockDeZSet, MockInputConsumer, MockInputParser,
+            DEFAULT_TIMEOUT_MS,
+        },
         transport::InputReader,
     };
     use actix::System;
@@ -315,6 +318,7 @@ mod test {
     ) -> (
         Box<dyn InputReader>,
         MockInputConsumer,
+        MockInputParser,
         MockDeZSet<TestStruct, TestStruct>,
     )
     where
@@ -370,7 +374,7 @@ format:
             TestStruct::new("bar".to_string(), false, -10),
         ];
 
-        let (endpoint, consumer, zset) = setup_test(
+        let (endpoint, consumer, parser, zset) = setup_test(
             || async {
                 "\
 foo,true,10
@@ -387,7 +391,7 @@ bar,false,-10
         sleep(Duration::from_millis(10));
 
         // No outputs should be produced at this point.
-        assert!(consumer.state().data.is_empty());
+        assert!(parser.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
@@ -402,7 +406,7 @@ bar,false,-10
     /// Test connection failure.
     #[actix_web::test]
     async fn test_failure() -> Result<()> {
-        let (endpoint, consumer, _zset) = setup_test(|| async { "" }, "nonexistent", 60).await;
+        let (endpoint, consumer, parser, _zset) = setup_test(|| async { "" }, "nonexistent", 60).await;
 
         // Disable panic on error so we can detect it gracefully below.
         consumer.on_error(Some(Box::new(|_, _| ())));
@@ -411,7 +415,7 @@ bar,false,-10
 
         // No outputs should be produced at this point.
         assert!(consumer.state().endpoint_error.is_none());
-        assert!(consumer.state().data.is_empty());
+        assert!(parser.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the error.
@@ -434,7 +438,8 @@ bar,false,-10
             })
             .collect();
 
-        let (endpoint, consumer, zset) = setup_test(
+        let (endpoint, consumer, parser,
+                                 zset) = setup_test(
             || async {
                 let stream = stream! {
                     for i in 0..100 {
@@ -455,7 +460,7 @@ bar,false,-10
         sleep(Duration::from_millis(10));
 
         // No outputs should be produced at this point.
-        assert!(consumer.state().data.is_empty());
+        assert!(parser.state().data.is_empty());
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint.  Outputs should start arriving, one record

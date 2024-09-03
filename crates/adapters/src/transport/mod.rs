@@ -217,8 +217,10 @@ pub trait InputReader: Send {
     fn complete(&self, _step: Step) {}
 
     /// Requests the reader to write up to `n`  records.
-    fn flush(&self, _n: u64) -> u64 {
-        todo!()
+    fn flush(&self, _n: u64) -> u64;
+
+    fn flush_all(&self) -> u64 {
+        self.flush(u64::MAX)
     }
 
     /// Disconnect the endpoint.

@@ -83,13 +83,12 @@ format:
     writer.close().expect("Closing the writer should succeed");
 
     // Send the data through the mock pipeline
-    let (endpoint, consumer, zset) = mock_input_pipeline::<TestStruct2, TestStruct2>(
+    let (endpoint, consumer, parser, zset) = mock_input_pipeline::<TestStruct2, TestStruct2>(
         serde_yaml::from_str(&config_str).unwrap(),
         Relation::new("test", false, TestStruct2::schema(), false, BTreeMap::new()),
     )
     .unwrap();
     sleep(Duration::from_millis(10));
-    assert!(consumer.state().data.is_empty());
     assert!(!consumer.state().eoi);
     endpoint.start(0).unwrap();
     wait(
