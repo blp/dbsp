@@ -6,7 +6,7 @@ use crate::{
         mock_input_pipeline, test_circuit, wait, MockDeZSet, TestStruct, DEFAULT_TIMEOUT_MS,
     },
     transport::Step,
-    Controller, InputConsumer, ParseError, PipelineConfig,
+    Controller, InputConsumer, PipelineConfig,
 };
 use anyhow::Error as AnyError;
 use crossbeam::sync::{Parker, Unparker};
@@ -510,37 +510,12 @@ impl DummyInputConsumer {
 }
 
 impl InputConsumer for DummyInputConsumer {
-    fn start_step(&mut self, step: Step) {
-        self.called(ConsumerCall::StartStep(step));
-    }
-    fn input_fragment(&mut self, data: &[u8]) -> Vec<ParseError> {
-        self.called(ConsumerCall::InputFragment(
-            String::from_utf8(data.into()).unwrap(),
-        ));
-        vec![]
-    }
-    fn input_chunk(&mut self, data: &[u8]) -> Vec<ParseError> {
-        self.called(ConsumerCall::InputChunk(
-            String::from_utf8(data.into()).unwrap(),
-        ));
-        vec![]
-    }
     fn error(&mut self, fatal: bool, error: AnyError) {
         info!("error: {error}");
         self.called(ConsumerCall::Error(fatal));
     }
-    fn eoi(&mut self) -> Vec<ParseError> {
+    fn eoi(&mut self) {
         self.called(ConsumerCall::Eoi);
-        vec![]
-    }
-    fn committed(&mut self, step: Step) {
-        info!("step {step} committed");
-        let mut completed = self.0.committed.lock().unwrap();
-        if let Some(committed) = *completed {
-            assert_eq!(committed + 1, step);
-        }
-        *completed = Some(step);
-        self.0.unparker.unpark();
     }
 }
 

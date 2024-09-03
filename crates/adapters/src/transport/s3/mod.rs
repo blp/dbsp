@@ -7,7 +7,7 @@ use tokio::sync::{
     watch::{channel, Receiver, Sender},
 };
 
-use crate::{InputConsumer, InputReader, PipelineState, TransportInputEndpoint};
+use crate::{InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint};
 use dbsp::circuit::tokio::TOKIO;
 #[cfg(test)]
 use mockall::automock;
@@ -38,10 +38,11 @@ impl TransportInputEndpoint for S3InputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn crate::InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: super::Step,
         _schema: Relation,
     ) -> anyhow::Result<Box<dyn crate::InputReader>> {
-        Ok(Box::new(S3InputReader::new(&self.config, consumer)))
+        Ok(Box::new(S3InputReader::new(&self.config, consumer, parser)))
     }
 }
 
@@ -142,17 +143,18 @@ impl Drop for S3InputReader {
 }
 
 impl S3InputReader {
-    fn new(config: &Arc<S3InputConfig>, consumer: Box<dyn InputConsumer>) -> S3InputReader {
+    fn new(config: &Arc<S3InputConfig>, consumer: Box<dyn InputConsumer>, parser: Box<dyn Parser>) -> S3InputReader {
         let s3_config = to_s3_config(config);
         let client = Box::new(S3Client {
             inner: aws_sdk_s3::Client::from_conf(s3_config),
         }) as Box<dyn S3Api>;
-        Self::new_inner(config, consumer, client)
+        Self::new_inner(config, consumer, parser, client)
     }
 
     fn new_inner(
         config: &Arc<S3InputConfig>,
-        mut consumer: Box<dyn InputConsumer>,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         s3_client: Box<dyn S3Api>,
     ) -> S3InputReader {
         let (sender, receiver) = channel(PipelineState::Paused);
@@ -161,7 +163,7 @@ impl S3InputReader {
         std::thread::spawn(move || {
             TOKIO.block_on(async {
                 let _ =
-                    Self::worker_task(s3_client, config_clone, &mut consumer, receiver_clone).await;
+                    Self::worker_task(s3_client, config_clone, consumer, parser, receiver_clone).await;
             })
         });
         S3InputReader { sender }
@@ -170,7 +172,8 @@ impl S3InputReader {
     async fn worker_task(
         client: Box<dyn S3Api>,
         config: Arc<S3InputConfig>,
-        consumer: &mut Box<dyn InputConsumer>,
+        mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
         mut receiver: Receiver<PipelineState>,
     ) -> anyhow::Result<()> {
         // The worker thread fetches objects in the background while already retrieved
@@ -228,7 +231,7 @@ impl S3InputReader {
                                     match consume_strategy {
                                         ConsumeStrategy::Fragment => match object.body.next().await {
                                             Some(Ok(bytes)) => {
-                                                consumer.input_fragment(&bytes);
+                                                parser.input_fragment(&bytes);
                                             }
                                             None => break,
                                             Some(Err(e)) => consumer.error(false, e.into())
@@ -236,7 +239,7 @@ impl S3InputReader {
                                         ConsumeStrategy::Object =>
                                             match object.body.collect().await.map(|c| c.into_bytes()) {
                                                 Ok(bytes) => {
-                                                    consumer.input_chunk(&bytes);
+                                                    parser.input_chunk(&bytes);
                                                 }
                                                 Err(e) => consumer.error(false, e.into())
                                         }

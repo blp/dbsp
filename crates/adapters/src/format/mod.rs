@@ -1,4 +1,4 @@
-use crate::catalog::{DeCollectionBuffer, InputCollectionHandle, SerBatchReader};
+use crate::catalog::{InputCollectionHandle, SerBatchReader};
 use crate::format::parquet::{ParquetInputFormat, ParquetOutputFormat};
 use crate::{transport::Step, ControllerError};
 use actix_web::HttpRequest;
@@ -384,7 +384,7 @@ pub trait InputFormat: Send + Sync {
         endpoint_name: &str,
         input_stream: &InputCollectionHandle,
         config: &YamlValue,
-    ) -> Result<(Box<dyn Parser>, Box<dyn DeCollectionBuffer>), ControllerError>;
+    ) -> Result<Box<dyn Parser>, ControllerError>;
 }
 
 impl dyn InputFormat {
@@ -399,6 +399,9 @@ impl dyn InputFormat {
 /// Note that the implementation can assume that either `input_fragment` or
 /// `input_chunk` will be called, but not both.
 pub trait Parser: Send {
+    /// Sends the earliest `n` buffered records to the circuit.
+    //fn flush(&mut self, n: usize);
+
     /// Push a fragment of the input stream to the parser.
     ///
     /// The parser breaks `data` up into records and add the records to its
@@ -434,14 +437,15 @@ pub trait Parser: Send {
         self.input_fragment(data)
     }
 
-    /// End-of-input-stream notification.
+    /// Notifies the parser that no more data will be pushed to it.
     ///
-    /// No more data will be received from the stream.  The parser uses this
-    /// notification to complete or discard any incompletely parsed records.
-    ///
+    /// The parser should complete or discard any incompletely parsed records.
     /// Returns the number of additional records pushed to the circuit or an
     /// error if parsing fails.
-    fn eoi(&mut self) -> (usize, Vec<ParseError>);
+    ///
+    /// This shouldn't have any work to do if the data was pushed via
+    /// [Self::input_chunk], since each chunk is complete and independent.
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>);
 
     /// Create a new parser with the same configuration as `self`.
     ///

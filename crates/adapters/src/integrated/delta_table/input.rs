@@ -1,4 +1,4 @@
-use crate::catalog::{ArrowStream, DeCollectionBuffer, InputCollectionHandle};
+use crate::catalog::{ArrowStream, InputCollectionHandle};
 use crate::controller::{ControllerInner, EndpointId};
 use crate::integrated::delta_table::{delta_input_serde_config, register_storage_handlers};
 use crate::transport::{InputEndpoint, IntegratedInputEndpoint, Step};
@@ -87,9 +87,11 @@ impl IntegratedInputEndpoint for DeltaTableInputEndpoint {
         &self,
         input_handle: &InputCollectionHandle,
         _start_step: Step,
-    ) -> AnyResult<(Box<dyn InputReader>, Box<dyn DeCollectionBuffer>)> {
-        let (reader, buffer) = DeltaTableInputReader::new(&self.inner, input_handle)?;
-        Ok((Box::new(reader), buffer))
+    ) -> AnyResult<Box<dyn InputReader>> {
+        Ok(Box::new(DeltaTableInputReader::new(
+            &self.inner,
+            input_handle,
+        )?))
     }
 }
 
@@ -101,7 +103,7 @@ impl DeltaTableInputReader {
     fn new(
         endpoint: &Arc<DeltaTableInputEndpointInner>,
         input_handle: &InputCollectionHandle,
-    ) -> AnyResult<(Self, Box<dyn DeCollectionBuffer>)> {
+    ) -> AnyResult<Self> {
         let (sender, receiver) = channel(PipelineState::Paused);
         let endpoint_clone = endpoint.clone();
         let receiver_clone = receiver.clone();
@@ -110,7 +112,7 @@ impl DeltaTableInputReader {
         let (init_status_sender, mut init_status_receiver) =
             mpsc::channel::<Result<(), ControllerError>>(1);
 
-        let (input_stream, input_buffer) = input_handle
+        let input_stream = input_handle
             .handle
             .configure_arrow_deserializer(delta_input_serde_config())?;
 
@@ -134,7 +136,7 @@ impl DeltaTableInputReader {
             )
         })??;
 
-        Ok((Self { sender }, input_buffer))
+        Ok(Self { sender })
     }
 
     async fn worker_task(
@@ -243,7 +245,7 @@ impl DeltaTableInputReader {
                 }
             }
         } else if let Some(controller) = endpoint.controller.upgrade() {
-            controller.eoi(endpoint.endpoint_id, 0)
+            controller.eoi(endpoint.endpoint_id)
         }
     }
 }

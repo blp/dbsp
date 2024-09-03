@@ -132,26 +132,20 @@ pub trait DeCollectionStream: Send {
     /// Updates queued after the last `flush` remain buffered in the handle
     /// until the next `flush` or `clear_buffer` call or until the handle
     /// is destroyed.
-    fn flush(&mut self);
+    fn save(&mut self);
 
     /// Clear all buffered updates.
     ///
     /// Clears updates pushed to the handle after the last `flush`.
     /// Flushed updates remain queued at the underlying input handle.
     // TODO: add another method to invoke `CollectionHandle::clear_input`?
-    fn clear_buffer(&mut self);
+    fn discard(&mut self);
+
+    fn push(&mut self, n: usize);
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn DeCollectionStream>;
-}
-
-pub trait DeCollectionBuffer: Send {
-    fn flush(&mut self, n: u64) -> u64;
-
-    fn flush_all(&mut self) -> u64 {
-        self.flush(u64::MAX)
-    }
 }
 
 pub trait ArrowStream: Send {
@@ -172,12 +166,12 @@ pub trait DeCollectionHandle: Send {
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError>;
+    ) -> Result<Box<dyn DeCollectionStream>, ControllerError>;
 
     fn configure_arrow_deserializer(
         &self,
         config: SqlSerdeConfig,
-    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError>;
+    ) -> Result<Box<dyn ArrowStream>, ControllerError>;
 }
 
 /// A type-erased batch whose contents can be serialized.

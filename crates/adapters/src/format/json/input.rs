@@ -1,7 +1,7 @@
 //! JSON format parser.
 
 use super::{DebeziumUpdate, InsDelUpdate, WeightedUpdate};
-use crate::catalog::{DeCollectionBuffer, InputCollectionHandle};
+use crate::catalog::InputCollectionHandle;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     format::{InputFormat, ParseError, Parser},
@@ -176,7 +176,7 @@ impl InputFormat for JsonInputFormat {
         endpoint_name: &str,
         input_handle: &InputCollectionHandle,
         config: &YamlValue,
-    ) -> Result<(Box<dyn Parser>, Box<dyn DeCollectionBuffer>), ControllerError> {
+    ) -> Result<Box<dyn Parser>, ControllerError> {
         let config = JsonParserConfig::deserialize(config).map_err(|e| {
             ControllerError::parser_config_parse_error(
                 endpoint_name,
@@ -185,13 +185,10 @@ impl InputFormat for JsonInputFormat {
             )
         })?;
         validate_parser_config(&config, endpoint_name)?;
-        let (input_stream, input_buffer) = input_handle
+        let input_stream = input_handle
             .handle
             .configure_deserializer(RecordFormat::Json(config.json_flavor.clone()))?;
-        Ok((
-            Box::new(JsonParser::new(input_stream, config)) as Box<dyn Parser>,
-            input_buffer,
-        ))
+        Ok(Box::new(JsonParser::new(input_stream, config)) as Box<dyn Parser>)
     }
 
     fn config_from_http_request(
@@ -250,11 +247,11 @@ impl JsonParser {
     }
 
     fn flush(&mut self) {
-        self.input_stream.flush();
+        self.input_stream.save();
     }
 
     fn clear(&mut self) {
-        self.input_stream.clear_buffer();
+        self.input_stream.discard();
     }
 
     fn delete(&mut self, val: &RawValue) -> Result<(), ParseError> {
@@ -428,7 +425,7 @@ impl Parser for JsonParser {
         self.input_from_slice(data)
     }
 
-    fn eoi(&mut self) -> (usize, Vec<ParseError>) {
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
         /*println!(
             "eoi: leftover: {}",
             std::str::from_utf8(&self.leftover).unwrap()

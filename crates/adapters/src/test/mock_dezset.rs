@@ -1,8 +1,9 @@
-use crate::catalog::{ArrowStream, DeCollectionBuffer};
-use crate::static_compile::deinput::JsonDeserializerFromBytes;
+use crate::catalog::ArrowStream;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
-    static_compile::deinput::{CsvDeserializerFromBytes, DeserializerFromBytes},
+    static_compile::deinput::{
+        CsvDeserializerFromBytes, DeserializerFromBytes, JsonDeserializerFromBytes,
+    },
     ControllerError, DeCollectionHandle,
 };
 use anyhow::Result as AnyResult;
@@ -59,9 +60,6 @@ impl<T: Debug, U: Debug> MockUpdate<T, U> {
 
 /// Inner state of `MockDeZSet`.
 pub struct MockDeZSetState<T, U> {
-    /// Buffered records that haven't been flushed yet.
-    pub buffered: Vec<MockUpdate<T, U>>,
-
     /// Records flushed since the last `reset`.
     pub flushed: Vec<MockUpdate<T, U>>,
 }
@@ -75,14 +73,12 @@ impl<T, U> Default for MockDeZSetState<T, U> {
 impl<T, U> MockDeZSetState<T, U> {
     pub fn new() -> Self {
         Self {
-            buffered: Vec::new(),
             flushed: Vec::new(),
         }
     }
 
     /// Clear internal state.
     pub fn reset(&mut self) {
-        self.buffered.clear();
         self.flushed.clear();
     }
 }
@@ -124,21 +120,23 @@ where
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let stream: Box<dyn DeCollectionStream> = match record_format {
-            RecordFormat::Csv => {
-                Box::new(MockDeZSetStream::<CsvDeserializerFromBytes<_>, T, U>::new(
-                    self.clone(),
-                    SqlSerdeConfig::default(),
-                ))
-            }
-            RecordFormat::Json(flavor) => Box::new(MockDeZSetStream::<
+    ) -> Result<Box<dyn DeCollectionStream>, ControllerError> {
+        match record_format {
+            RecordFormat::Csv => Ok(Box::new(MockDeZSetStream::<
+                CsvDeserializerFromBytes<_>,
+                T,
+                U,
+            >::new(
+                self.clone(), SqlSerdeConfig::default()
+            ))),
+            RecordFormat::Json(flavor) => Ok(Box::new(MockDeZSetStream::<
                 JsonDeserializerFromBytes<SqlSerdeConfig>,
                 T,
                 U,
             >::new(
-                self.clone(), SqlSerdeConfig::from(flavor)
-            )),
+                self.clone(),
+                SqlSerdeConfig::from(flavor),
+            ))),
             RecordFormat::Parquet(_) => {
                 todo!()
             }
@@ -146,29 +144,21 @@ where
             RecordFormat::Avro => {
                 todo!()
             }
-        };
-        Ok((stream, Box::new(MockDeZSetBuffer)))
+        }
     }
 
     fn configure_arrow_deserializer(
         &self,
         _config: SqlSerdeConfig,
-    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        todo!()
-    }
-}
-
-#[derive(Clone)]
-pub struct MockDeZSetBuffer;
-
-impl DeCollectionBuffer for MockDeZSetBuffer {
-    fn flush(&mut self, _num_records: u64) -> u64 {
+    ) -> Result<Box<dyn ArrowStream>, ControllerError> {
         todo!()
     }
 }
 
 #[derive(Clone)]
 pub struct MockDeZSetStream<De, T, U> {
+    updates: Vec<MockUpdate<T, U>>,
+    committed_len: usize,
     handle: MockDeZSet<T, U>,
     deserializer: De,
     config: SqlSerdeConfig,
@@ -181,6 +171,7 @@ where
     pub fn new(handle: MockDeZSet<T, U>, config: SqlSerdeConfig) -> Self {
         Self {
             handle,
+            committed_len: 0,
             deserializer: De::create(config.clone()),
             config,
         }
@@ -195,52 +186,43 @@ where
 {
     fn insert(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
-            .push(MockUpdate::Insert(val));
+            self.updates.push(MockUpdate::Insert(val));
         Ok(())
     }
 
     fn delete(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
+        self.updates
             .push(MockUpdate::Delete(val));
         Ok(())
     }
 
     fn update(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<U>(&mut self.deserializer, data)?;
-        self.handle
-            .0
-            .lock()
-            .unwrap()
-            .buffered
-            .push(MockUpdate::Update(val));
+        self.updates.push(MockUpdate::Update(val));
         Ok(())
     }
 
     fn reserve(&mut self, _reservation: usize) {}
 
-    fn flush(&mut self) {
-        let mut state = self.handle.0.lock().unwrap();
-
-        let mut buffered = take(&mut state.buffered);
-        state.flushed.append(&mut buffered);
+    fn save(&mut self) {
+        self.committed_len = self.updates.len();
     }
 
-    fn clear_buffer(&mut self) {
-        self.handle.0.lock().unwrap().buffered.clear();
+    fn discard(&mut self) {
+        self.updates.truncate(self.committed_len);
     }
 
     fn fork(&self) -> Box<dyn DeCollectionStream> {
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
+    }
+
+    fn push(&mut self, n: usize) {
+        debug_assert!(n <= self.updates.len());
+        self.committed_len -= n;
+
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
     }
 }
 

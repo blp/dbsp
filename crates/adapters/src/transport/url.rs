@@ -1,5 +1,5 @@
 use super::{InputConsumer, InputEndpoint, InputReader, Step, TransportInputEndpoint};
-use crate::{ensure_default_crypto_provider, PipelineState};
+use crate::{ensure_default_crypto_provider, Parser, PipelineState};
 use actix::System;
 use actix_web::http::header::{ByteRangeSpec, ContentRangeSpec, Range, CONTENT_RANGE};
 use anyhow::{anyhow, Result as AnyResult};
@@ -36,10 +36,15 @@ impl TransportInputEndpoint for UrlInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(UrlInputReader::new(&self.config, consumer)?))
+        Ok(Box::new(UrlInputReader::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 
@@ -48,13 +53,18 @@ struct UrlInputReader {
 }
 
 impl UrlInputReader {
-    fn new(config: &Arc<UrlInputConfig>, mut consumer: Box<dyn InputConsumer>) -> AnyResult<Self> {
+    fn new(
+        config: &Arc<UrlInputConfig>,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> AnyResult<Self> {
         let (sender, receiver) = channel(PipelineState::Paused);
         let config = config.clone();
         let receiver_clone = receiver.clone();
         let _worker = spawn(move || {
             System::new().block_on(async move {
-                if let Err(error) = Self::worker_thread(config, &mut consumer, receiver_clone).await
+                if let Err(error) =
+                    Self::worker_thread(config, consumer, parser, receiver_clone).await
                 {
                     consumer.error(true, error);
                 } else {
@@ -68,7 +78,8 @@ impl UrlInputReader {
 
     async fn worker_thread(
         config: Arc<UrlInputConfig>,
-        consumer: &mut Box<dyn InputConsumer>,
+        _consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
         mut receiver: Receiver<PipelineState>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();
@@ -215,7 +226,7 @@ impl UrlInputReader {
                                     };
                                     if !chunk.is_empty() {
                                         consumed_bytes += chunk.len() as u64;
-                                        let _ = consumer.input_fragment(chunk);
+                                        let _ = parser.input_fragment(chunk);
                                     }
                                     offset += data_len;
                                 },

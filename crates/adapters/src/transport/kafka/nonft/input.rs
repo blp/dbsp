@@ -1,4 +1,5 @@
 use crate::transport::InputEndpoint;
+use crate::Parser;
 use crate::{
     transport::{
         kafka::{rdkafka_loglevel_from, refine_kafka_error, DeferredLogging},
@@ -124,6 +125,7 @@ impl KafkaInputReaderInner {
     fn poll(
         self: &Arc<Self>,
         consumer: &mut Box<dyn InputConsumer>,
+        parser: &mut Box<dyn Parser>,
         feedback: &Sender<HelperFeedback>,
     ) {
         match self.kafka_consumer.poll(POLL_TIMEOUT) {
@@ -146,7 +148,7 @@ impl KafkaInputReaderInner {
                 if let Some(payload) = message.payload() {
                     // Leave it to the controller to handle errors.  There is noone we can
                     // forward the error to upstream.
-                    let _ = consumer.input_chunk(payload);
+                    let _ = parser.input_chunk(payload);
                 }
             }
         }
@@ -208,6 +210,7 @@ impl KafkaInputReader {
     fn new(
         config: &Arc<KafkaInputConfig>,
         mut consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         // Create Kafka consumer configuration.
         debug!("Starting Kafka input endpoint: {:?}", config);
@@ -277,7 +280,7 @@ impl KafkaInputReader {
                     if let Some(payload) = message.payload() {
                         // Leave it to the controller to handle errors.  There is noone we can
                         // forward the error to upstream.
-                        let _ = consumer.input_chunk(payload);
+                        let _ = parser.input_chunk(payload);
                     }
                 }
                 _ => (),
@@ -308,13 +311,18 @@ impl KafkaInputReader {
         }
 
         let endpoint_clone = inner.clone();
-        let poller = spawn(move || KafkaInputReader::poller_thread(endpoint_clone, consumer));
+        let poller =
+            spawn(move || KafkaInputReader::poller_thread(endpoint_clone, consumer, parser));
         Ok(KafkaInputReader(inner, poller))
     }
 
     /// The main poller thread for a Kafka input. Polls `endpoint` as long as
     /// the pipeline is running, and passes the data to `consumer`.
-    fn poller_thread(endpoint: Arc<KafkaInputReaderInner>, mut consumer: Box<dyn InputConsumer>) {
+    fn poller_thread(
+        endpoint: Arc<KafkaInputReaderInner>,
+        mut consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) {
         // Figure out the number of threads based on configuration, defaults,
         // and system resources.
         let max_threads = available_parallelism().map_or(16, NonZeroUsize::get);
@@ -336,6 +344,7 @@ impl KafkaInputReader {
             threads.push(HelperThread::new(
                 Arc::clone(&endpoint),
                 consumer.clone(),
+                parser.fork(),
                 Arc::clone(&should_exit),
                 feedback_sender.clone(),
             ));
@@ -387,7 +396,7 @@ impl KafkaInputReader {
             // Keep polling even while the consumer is paused as `BaseConsumer`
             // processes control messages (including rebalancing and errors)
             // within the polling thread.
-            endpoint.poll(&mut consumer, &feedback_sender);
+            endpoint.poll(&mut consumer, &mut parser, &feedback_sender);
 
             for feedback in feedback_receiver.try_iter() {
                 match feedback {
@@ -501,10 +510,15 @@ impl TransportInputEndpoint for KafkaInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(KafkaInputReader::new(&self.config, consumer)?))
+        Ok(Box::new(KafkaInputReader::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 

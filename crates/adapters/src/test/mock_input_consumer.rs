@@ -1,6 +1,6 @@
 use crate::catalog::InputCollectionHandle;
 use crate::{
-    controller::FormatConfig, transport::Step, InputConsumer, InputFormat, ParseError, Parser,
+    controller::FormatConfig, InputConsumer, InputFormat, ParseError, Parser,
 };
 use anyhow::{anyhow, Error as AnyError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -44,7 +44,7 @@ impl MockInputConsumerState {
 
     pub fn from_handle(input_handle: &InputCollectionHandle, format_config: &FormatConfig) -> Self {
         let format = <dyn InputFormat>::get_format(&format_config.name).unwrap();
-        let (parser, _buffer) = format
+        let parser = format
             .new_parser("mock_input_endpoint", input_handle, &format_config.config)
             .unwrap();
         Self::new(parser)
@@ -108,14 +108,6 @@ impl MockInputConsumer {
 }
 
 impl InputConsumer for MockInputConsumer {
-    fn input_fragment(&mut self, data: &[u8]) -> Vec<ParseError> {
-        self.input(data, true)
-    }
-
-    fn input_chunk(&mut self, data: &[u8]) -> Vec<ParseError> {
-        self.input(data, false)
-    }
-
     fn error(&mut self, fatal: bool, error: AnyError) {
         let mut state = self.state();
 
@@ -134,7 +126,7 @@ impl InputConsumer for MockInputConsumer {
         let mut state = self.state();
         state.eoi = true;
 
-        let (_num_records, errors) = state.parser.eoi();
+        let (_num_records, errors) = state.parser.end_of_fragments();
         for error in errors.iter() {
             if let Some(error_cb) = &mut state.error_cb {
                 error_cb(false, &anyhow!(error.clone()));
@@ -144,8 +136,4 @@ impl InputConsumer for MockInputConsumer {
         }
         errors
     }
-
-    fn start_step(&mut self, _step: Step) {}
-
-    fn committed(&mut self, _step: Step) {}
 }

@@ -1,4 +1,4 @@
-use crate::catalog::{ArrowStream, DeCollectionBuffer};
+use crate::catalog::ArrowStream;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     format::byte_record_deserializer,
@@ -12,15 +12,7 @@ use dbsp::{
 };
 use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use serde_arrow::Deserializer as ArrowDeserializer;
-use std::iter::repeat_with;
-use std::mem::replace;
-use std::{
-    collections::VecDeque,
-    marker::PhantomData,
-    mem::take,
-    ops::Neg,
-    sync::{Arc, Mutex},
-};
+use std::{collections::VecDeque, marker::PhantomData, ops::Neg};
 
 /// A deserializer that parses byte arrays into a strongly typed representation.
 pub trait DeserializerFromBytes<C> {
@@ -271,48 +263,6 @@ where
     }
 }
 
-pub struct DeZSetBuffer<K> {
-    updates: Arc<Mutex<Vec<Vec<Vec<Tup2<K, ZWeight>>>>>>,
-    collected: VecDeque<Vec<Vec<Tup2<K, ZWeight>>>>,
-    handle: ZSetHandle<K>,
-}
-
-impl<K> DeCollectionBuffer for DeZSetBuffer<K>
-where
-    K: DBData,
-{
-    fn flush(&mut self, num_records: u64) -> u64 {
-        let num_records = num_records as usize;
-
-        // Grab new updates and append them to our collection.
-        let mut new_updates = take(&mut *self.updates.lock().unwrap());
-        self.collected.extend(new_updates.drain(..));
-
-        let mut n_flushed = 0;
-        while n_flushed < num_records && !self.collected.is_empty() {
-            let partitioned_records = self.collected.pop_front().unwrap();
-            let count = partitioned_records
-                .iter()
-                .map(|records| records.len())
-                .sum::<usize>();
-            println!("{count}");
-            n_flushed += count;
-            self.handle.append_prepartitioned(partitioned_records);
-        }
-        n_flushed as u64
-    }
-}
-
-impl<K> DeZSetBuffer<K> {
-    pub fn new(handle: ZSetHandle<K>) -> Self {
-        Self {
-            handle,
-            updates: Arc::new(Mutex::new(Vec::new())),
-            collected: VecDeque::new(),
-        }
-    }
-}
-
 pub struct DeZSetHandle<K, D> {
     handle: ZSetHandle<K>,
     phantom: PhantomData<D>,
@@ -335,24 +285,25 @@ where
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeZSetBuffer::new(self.handle.clone()));
-        let stream: Box<dyn DeCollectionStream> = match record_format {
+    ) -> Result<Box<dyn DeCollectionStream>, ControllerError> {
+        match record_format {
             RecordFormat::Csv => {
                 let config = SqlSerdeConfig::default();
-                Box::new(DeZSetStream::<CsvDeserializerFromBytes<_>, K, D, _>::new(
-                    buffer.updates.clone(),
-                    self.handle.num_partitions(),
-                    config,
+                Ok(Box::new(
+                    DeZSetStream::<CsvDeserializerFromBytes<_>, K, D, _>::new(
+                        self.handle.clone(),
+                        config,
+                    ),
                 ))
             }
             RecordFormat::Json(flavor) => {
                 let config = SqlSerdeConfig::from(flavor);
-                Box::new(DeZSetStream::<JsonDeserializerFromBytes<_>, K, D, _>::new(
-                    buffer.updates.clone(),
-                    self.handle.num_partitions(),
-                    config,
-                ))
+                Ok(Box::new(DeZSetStream::<
+                    JsonDeserializerFromBytes<_>,
+                    K,
+                    D,
+                    _,
+                >::new(self.handle.clone(), config)))
             }
             RecordFormat::Parquet(_) => {
                 todo!()
@@ -361,23 +312,14 @@ where
             RecordFormat::Avro => {
                 todo!()
             }
-        };
-        Ok((stream, buffer))
+        }
     }
 
     fn configure_arrow_deserializer(
         &self,
         config: SqlSerdeConfig,
-    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeZSetBuffer::new(self.handle.clone()));
-        Ok((
-            Box::new(ArrowZSetStream::new(
-                buffer.updates.clone(),
-                self.handle.num_partitions(),
-                config,
-            )),
-            buffer,
-        ))
+    ) -> Result<Box<dyn ArrowStream>, ControllerError> {
+        Ok(Box::new(ArrowZSetStream::new(self.handle.clone(), config)))
     }
 }
 
@@ -392,10 +334,9 @@ where
 /// The [`delete`](`Self::delete`) method of this handle buffers a `(k, -1)`
 /// update for the underlying `CollectionHandle`.
 pub struct DeZSetStream<De, K, D, C> {
-    updates: Vec<Vec<Tup2<K, ZWeight>>>,
-    buffer: Arc<Mutex<Vec<Vec<Vec<Tup2<K, ZWeight>>>>>>,
-    next_partition: usize,
-    num_partitions: usize,
+    updates: Vec<Tup2<K, ZWeight>>,
+    committed_len: usize,
+    handle: ZSetHandle<K>,
     deserializer: De,
     config: C,
     phantom: PhantomData<D>,
@@ -406,42 +347,15 @@ where
     De: DeserializerFromBytes<C>,
     C: Clone,
 {
-    pub fn new(
-        buffer: Arc<Mutex<Vec<Vec<Vec<Tup2<K, ZWeight>>>>>>,
-        num_partitions: usize,
-        config: C,
-    ) -> Self {
+    pub fn new(handle: ZSetHandle<K>, config: C) -> Self {
         Self {
-            updates: Self::empty_updates(num_partitions),
-            buffer,
-            next_partition: 0,
-            num_partitions,
+            updates: Vec::new(),
+            committed_len: 0,
+            handle,
             deserializer: De::create(config.clone()),
             config,
             phantom: PhantomData,
         }
-    }
-
-    fn empty_updates(num_partitions: usize) -> Vec<Vec<Tup2<K, ZWeight>>> {
-        repeat_with(|| Vec::new()).take(num_partitions).collect()
-    }
-}
-
-impl<De, K, D, C> DeZSetStream<De, K, D, C>
-where
-    De: DeserializerFromBytes<C> + Send + 'static,
-    C: Clone + Send + 'static,
-    K: DBData + From<D>,
-    D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
-{
-    fn update(&mut self, data: &[u8], weight: ZWeight) -> AnyResult<()> {
-        let key = <K as From<D>>::from(self.deserializer.deserialize::<D>(data)?);
-        self.updates[self.next_partition].push(Tup2(key, weight));
-        self.next_partition += 1;
-        if self.next_partition >= self.num_partitions {
-            self.next_partition = 0;
-        }
-        Ok(())
     }
 }
 
@@ -453,11 +367,17 @@ where
     D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
 {
     fn insert(&mut self, data: &[u8]) -> AnyResult<()> {
-        self.update(data, ZWeight::one())
+        let key = <K as From<D>>::from(self.deserializer.deserialize::<D>(data)?);
+
+        self.updates.push(Tup2(key, ZWeight::one()));
+        Ok(())
     }
 
     fn delete(&mut self, data: &[u8]) -> AnyResult<()> {
-        self.update(data, ZWeight::one().neg())
+        let key = <K as From<D>>::from(self.deserializer.deserialize::<D>(data)?);
+
+        self.updates.push(Tup2(key, ZWeight::one().neg()));
+        Ok(())
     }
 
     fn update(&mut self, _data: &[u8]) -> AnyResult<()> {
@@ -468,72 +388,39 @@ where
         self.updates.reserve(reservation);
     }
 
-    fn flush(&mut self) {
-        if self.updates.iter().any(|update| !update.is_empty()) {
-            let updates = replace(&mut self.updates, Self::empty_updates(self.num_partitions));
-            self.buffer.lock().unwrap().push(updates);
-        }
-    }
-
-    fn clear_buffer(&mut self) {
-        self.updates = Self::empty_updates(self.num_partitions);
-    }
-
     fn fork(&self) -> Box<dyn DeCollectionStream> {
-        Box::new(Self::new(
-            self.buffer.clone(),
-            self.num_partitions,
-            self.config.clone(),
-        ))
+        Box::new(Self::new(self.handle.clone(), self.config.clone()))
+    }
+
+    fn save(&mut self) {
+        self.committed_len = self.updates.len();
+    }
+
+    fn discard(&mut self) {
+        self.updates.truncate(self.committed_len);
+    }
+
+    fn push(&mut self, n: usize) {
+        debug_assert!(n <= self.committed_len);
+        self.committed_len -= n;
+        let head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
     }
 }
 
 pub struct ArrowZSetStream<K, D, C> {
-    buffer: Arc<Mutex<Vec<Vec<Vec<Tup2<K, ZWeight>>>>>>,
-    num_partitions: usize,
+    handle: ZSetHandle<K>,
     config: C,
     phantom: PhantomData<D>,
 }
 
 impl<K, D, C> ArrowZSetStream<K, D, C> {
-    pub fn new(
-        buffer: Arc<Mutex<Vec<Vec<Vec<Tup2<K, ZWeight>>>>>>,
-        num_partitions: usize,
-        config: C,
-    ) -> Self {
+    pub fn new(handle: ZSetHandle<K>, config: C) -> Self {
         Self {
-            buffer,
-            num_partitions,
+            handle,
             config,
             phantom: PhantomData,
         }
-    }
-}
-
-impl<K, D, C> ArrowZSetStream<K, D, C>
-where
-    K: DBData + From<D>,
-    D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
-    C: Clone + Send + 'static,
-{
-    fn update(&mut self, data: &RecordBatch, weight: ZWeight) -> AnyResult<()> {
-        let deserializer = ArrowDeserializer::from_record_batch(data)?;
-        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        let mut partitioned_updates =
-            repeat_with(|| Vec::with_capacity(records.len().div_ceil(self.num_partitions)))
-                .take(self.num_partitions)
-                .collect::<Vec<_>>();
-        let mut i = 0;
-        for update in records {
-            partitioned_updates[i].push(Tup2(K::from(update), weight));
-            i += 1;
-            if i >= self.num_partitions {
-                i = 0;
-            }
-        }
-        self.buffer.lock().unwrap().push(partitioned_updates);
-
-        Ok(())
     }
 }
 
@@ -544,19 +431,25 @@ where
     C: Clone + Send + 'static,
 {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
-        self.update(data, 1)
+        let deserializer = ArrowDeserializer::from_record_batch(data)?;
+        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
+        self.handle
+            .append(&mut records.into_iter().map(|r| Tup2(K::from(r), 1)).collect());
+
+        Ok(())
     }
 
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
-        self.update(data, -1)
+        let deserializer = ArrowDeserializer::from_record_batch(data)?;
+        let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
+        self.handle
+            .append(&mut records.into_iter().map(|r| Tup2(K::from(r), -1)).collect());
+
+        Ok(())
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
-        Box::new(Self::new(
-            self.buffer.clone(),
-            self.num_partitions,
-            self.config.clone(),
-        ))
+        Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
 }
 
@@ -582,19 +475,20 @@ where
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeSetBuffer::new(self.handle.clone()));
-        let stream: Box<dyn DeCollectionStream> = match record_format {
-            RecordFormat::Csv => {
-                Box::new(DeSetStream::<CsvDeserializerFromBytes<_>, K, D, _>::new(
-                    buffer.updates.clone(),
+    ) -> Result<Box<dyn DeCollectionStream>, ControllerError> {
+        match record_format {
+            RecordFormat::Csv => Ok(Box::new(
+                DeSetStream::<CsvDeserializerFromBytes<_>, K, D, _>::new(
+                    self.handle.clone(),
                     SqlSerdeConfig::default(),
-                ))
-            }
+                ),
+            )),
             RecordFormat::Json(flavor) => {
-                Box::new(DeSetStream::<JsonDeserializerFromBytes<_>, K, D, _>::new(
-                    buffer.updates.clone(),
-                    SqlSerdeConfig::from(flavor),
+                Ok(Box::new(
+                    DeSetStream::<JsonDeserializerFromBytes<_>, K, D, _>::new(
+                        self.handle.clone(),
+                        SqlSerdeConfig::from(flavor),
+                    ),
                 ))
             }
             RecordFormat::Parquet(_) => {
@@ -604,51 +498,14 @@ where
             RecordFormat::Avro => {
                 todo!()
             }
-        };
-        Ok((stream, buffer))
+        }
     }
 
     fn configure_arrow_deserializer(
         &self,
         config: SqlSerdeConfig,
-    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeSetBuffer::new(self.handle.clone()));
-        Ok((
-            Box::new(ArrowSetStream::new(buffer.updates.clone(), config)),
-            buffer,
-        ))
-    }
-}
-
-pub struct DeSetBuffer<K> {
-    updates: Arc<Mutex<VecDeque<Tup2<K, bool>>>>,
-    handle: SetHandle<K>,
-}
-
-impl<K> DeCollectionBuffer for DeSetBuffer<K>
-where
-    K: DBData,
-{
-    fn flush(&mut self, mut num_records: u64) -> u64 {
-        let mut records = Vec::new();
-        for index in 0..num_records {
-            let Some(record) = self.updates.lock().unwrap().pop_front() else {
-                num_records = index;
-                break;
-            };
-            records.push(record);
-        }
-        self.handle.append(&mut records);
-        num_records
-    }
-}
-
-impl<K> DeSetBuffer<K> {
-    pub fn new(handle: SetHandle<K>) -> Self {
-        Self {
-            handle,
-            updates: Arc::new(Mutex::new(VecDeque::new())),
-        }
+    ) -> Result<Box<dyn ArrowStream>, ControllerError> {
+        Ok(Box::new(ArrowSetStream::new(self.handle.clone(), config)))
     }
 }
 
@@ -665,7 +522,8 @@ impl<K> DeSetBuffer<K> {
 /// `SetHandle`.
 pub struct DeSetStream<De, K, D, C> {
     updates: Vec<Tup2<K, bool>>,
-    buffer: Arc<Mutex<VecDeque<Tup2<K, bool>>>>,
+    committed_len: usize,
+    handle: SetHandle<K>,
     deserializer: De,
     config: C,
     phantom: PhantomData<fn(D)>,
@@ -676,10 +534,11 @@ where
     De: DeserializerFromBytes<C>,
     C: Clone,
 {
-    pub fn new(buffer: Arc<Mutex<VecDeque<Tup2<K, bool>>>>, config: C) -> Self {
+    pub fn new(handle: SetHandle<K>, config: C) -> Self {
         Self {
             updates: Vec::new(),
-            buffer,
+            committed_len: 0,
+            handle,
             deserializer: De::create(config.clone()),
             config,
             phantom: PhantomData,
@@ -716,31 +575,37 @@ where
         self.updates.reserve(reservation);
     }
 
-    fn flush(&mut self) {
-        self.buffer.lock().unwrap().extend(self.updates.drain(..));
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
-    }
-
-    fn clear_buffer(&mut self) {
-        self.updates.clear();
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
-    }
-
     fn fork(&self) -> Box<dyn DeCollectionStream> {
-        Box::new(Self::new(self.buffer.clone(), self.config.clone()))
+        Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
+
+    fn save(&mut self) {
+        self.committed_len = self.updates.len();
+    }
+
+    fn discard(&mut self) {
+        self.updates.truncate(self.committed_len);
+    }
+
+    fn push(&mut self, n: usize) {
+        debug_assert!(n <= self.committed_len);
+        self.committed_len -= n;
+        let head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+    }
+
 }
 
 pub struct ArrowSetStream<K, D, C> {
-    buffer: Arc<Mutex<VecDeque<Tup2<K, bool>>>>,
+    handle: SetHandle<K>,
     config: C,
     phantom: PhantomData<D>,
 }
 
 impl<K, D, C> ArrowSetStream<K, D, C> {
-    pub fn new(buffer: Arc<Mutex<VecDeque<Tup2<K, bool>>>>, config: C) -> Self {
+    pub fn new(handle: SetHandle<K>, config: C) -> Self {
         Self {
-            buffer,
+            handle,
             config,
             phantom: PhantomData,
         }
@@ -756,10 +621,12 @@ where
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| Tup2(K::from(r), true)));
+        self.handle.append(
+            &mut records
+                .into_iter()
+                .map(|r| Tup2(K::from(r), true))
+                .collect(),
+        );
 
         Ok(())
     }
@@ -767,16 +634,18 @@ where
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| Tup2(K::from(r), false)));
+        self.handle.append(
+            &mut records
+                .into_iter()
+                .map(|r| Tup2(K::from(r), false))
+                .collect(),
+        );
 
         Ok(())
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
-        Box::new(Self::new(self.buffer.clone(), self.config.clone()))
+        Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
 }
 
@@ -820,10 +689,9 @@ where
     fn configure_deserializer(
         &self,
         record_format: RecordFormat,
-    ) -> Result<(Box<dyn DeCollectionStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeMapBuffer::new(self.handle.clone()));
-        let stream: Box<dyn DeCollectionStream> = match record_format {
-            RecordFormat::Csv => Box::new(DeMapStream::<
+    ) -> Result<Box<dyn DeCollectionStream>, ControllerError> {
+        match record_format {
+            RecordFormat::Csv => Ok(Box::new(DeMapStream::<
                 CsvDeserializerFromBytes<_>,
                 K,
                 KD,
@@ -835,12 +703,12 @@ where
                 UF,
                 _,
             >::new(
-                buffer.updates.clone(),
+                self.handle.clone(),
                 self.value_key_func.clone(),
                 self.update_key_func.clone(),
                 SqlSerdeConfig::default(),
-            )),
-            RecordFormat::Json(flavor) => Box::new(DeMapStream::<
+            ))),
+            RecordFormat::Json(flavor) => Ok(Box::new(DeMapStream::<
                 JsonDeserializerFromBytes<_>,
                 K,
                 KD,
@@ -852,11 +720,11 @@ where
                 UF,
                 _,
             >::new(
-                buffer.updates.clone(),
+                self.handle.clone(),
                 self.value_key_func.clone(),
                 self.update_key_func.clone(),
                 SqlSerdeConfig::from(flavor),
-            )),
+            ))),
             RecordFormat::Parquet(_) => {
                 todo!()
             }
@@ -864,65 +732,18 @@ where
             RecordFormat::Avro => {
                 todo!()
             }
-        };
-        Ok((stream, buffer))
+        }
     }
 
     fn configure_arrow_deserializer(
         &self,
         config: SqlSerdeConfig,
-    ) -> Result<(Box<dyn ArrowStream>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let buffer = Box::new(DeMapBuffer::new(self.handle.clone()));
-        Ok((
-            Box::new(ArrowMapStream::new(
-                buffer.updates.clone(),
-                self.value_key_func.clone(),
-                config,
-            )),
-            buffer,
-        ))
-    }
-}
-
-pub struct DeMapBuffer<K, V, U>
-where
-    V: DBData,
-    U: DBData,
-{
-    updates: Arc<Mutex<VecDeque<Tup2<K, Update<V, U>>>>>,
-    handle: MapHandle<K, V, U>,
-}
-
-impl<K, V, U> DeCollectionBuffer for DeMapBuffer<K, V, U>
-where
-    K: DBData,
-    V: DBData,
-    U: DBData,
-{
-    fn flush(&mut self, mut num_records: u64) -> u64 {
-        let mut records = Vec::new();
-        for index in 0..num_records {
-            let Some(record) = self.updates.lock().unwrap().pop_front() else {
-                num_records = index;
-                break;
-            };
-            records.push(record);
-        }
-        self.handle.append(&mut records);
-        num_records
-    }
-}
-
-impl<K, V, U> DeMapBuffer<K, V, U>
-where
-    V: DBData,
-    U: DBData,
-{
-    pub fn new(handle: MapHandle<K, V, U>) -> Self {
-        Self {
-            handle,
-            updates: Arc::new(Mutex::new(VecDeque::new())),
-        }
+    ) -> Result<Box<dyn ArrowStream>, ControllerError> {
+        Ok(Box::new(ArrowMapStream::new(
+            self.handle.clone(),
+            self.value_key_func.clone(),
+            config,
+        )))
     }
 }
 
@@ -944,9 +765,10 @@ where
     U: DBData,
 {
     updates: Vec<Tup2<K, Update<V, U>>>,
+    committed_len: usize,
     value_key_func: VF,
     update_key_func: UF,
-    buffer: Arc<Mutex<VecDeque<Tup2<K, Update<V, U>>>>>,
+    handle: MapHandle<K, V, U>,
     config: C,
     deserializer: De,
     phantom: PhantomData<fn(KD, VD, UD)>,
@@ -960,16 +782,17 @@ where
     C: Clone,
 {
     pub fn new(
-        buffer: Arc<Mutex<VecDeque<Tup2<K, Update<V, U>>>>>,
+        handle: MapHandle<K, V, U>,
         value_key_func: VF,
         update_key_func: UF,
         config: C,
     ) -> Self {
         Self {
             updates: Vec::new(),
+            committed_len: 0,
             value_key_func,
             update_key_func,
-            buffer,
+            handle,
             deserializer: De::create(config.clone()),
             config,
             phantom: PhantomData,
@@ -1018,23 +841,28 @@ where
         self.updates.reserve(reservation);
     }
 
-    fn flush(&mut self) {
-        self.buffer.lock().unwrap().extend(self.updates.drain(..));
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
-    }
-
-    fn clear_buffer(&mut self) {
-        self.updates.clear();
-        self.updates.shrink_to(MAX_REUSABLE_CAPACITY);
-    }
-
     fn fork(&self) -> Box<dyn DeCollectionStream> {
         Box::new(Self::new(
-            self.buffer.clone(),
+            self.handle.clone(),
             self.value_key_func.clone(),
             self.update_key_func.clone(),
             self.config.clone(),
         ))
+    }
+
+    fn save(&mut self) {
+        self.committed_len = self.updates.len();
+    }
+
+    fn discard(&mut self) {
+        self.updates.truncate(self.committed_len);
+    }
+
+    fn push(&mut self, n: usize) {
+        debug_assert!(n <= self.committed_len);
+        self.committed_len -= n;
+        let head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
     }
 }
 
@@ -1044,7 +872,7 @@ where
     U: DBData,
 {
     value_key_func: VF,
-    buffer: Arc<Mutex<VecDeque<Tup2<K, Update<V, U>>>>>,
+    handle: MapHandle<K, V, U>,
     config: C,
     phantom: PhantomData<fn(KD, VD)>,
 }
@@ -1055,14 +883,10 @@ where
     U: DBData,
     C: Clone,
 {
-    pub fn new(
-        buffer: Arc<Mutex<VecDeque<Tup2<K, Update<V, U>>>>>,
-        value_key_func: VF,
-        config: C,
-    ) -> Self {
+    pub fn new(handle: MapHandle<K, V, U>, value_key_func: VF, config: C) -> Self {
         Self {
             value_key_func,
-            buffer,
+            handle,
             config,
             phantom: PhantomData,
         }
@@ -1082,13 +906,15 @@ where
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<VD>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| {
-                let v = V::from(r);
-                Tup2((self.value_key_func)(&v), Update::Insert(v))
-            }));
+        self.handle.append(
+            &mut records
+                .into_iter()
+                .map(|r| {
+                    let v = V::from(r);
+                    Tup2((self.value_key_func)(&v), Update::Insert(v))
+                })
+                .collect(),
+        );
 
         Ok(())
     }
@@ -1096,20 +922,22 @@ where
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<VD>::deserialize_with_context(deserializer, &self.config)?;
-        self.buffer
-            .lock()
-            .unwrap()
-            .extend(records.into_iter().map(|r| {
-                let v = V::from(r);
-                Tup2((self.value_key_func)(&v), Update::Delete)
-            }));
+        self.handle.append(
+            &mut records
+                .into_iter()
+                .map(|r| {
+                    let v = V::from(r);
+                    Tup2((self.value_key_func)(&v), Update::Delete)
+                })
+                .collect(),
+        );
 
         Ok(())
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
         Box::new(Self::new(
-            self.buffer.clone(),
+            self.handle.clone(),
             self.value_key_func.clone(),
             self.config.clone(),
         ))
@@ -1295,15 +1123,15 @@ mod test {
         output_handles: &OutputHandles,
         inputs: &[TestStruct],
     ) {
-        let (mut zset_stream, mut zset_buffer) = input_handles
+        let mut zset_stream = input_handles
             .0
             .configure_deserializer(RecordFormat::Csv)
             .unwrap();
-        let (mut set_stream, mut set_buffer) = input_handles
+        let mut set_stream = input_handles
             .1
             .configure_deserializer(RecordFormat::Csv)
             .unwrap();
-        let (mut map_stream, mut map_buffer) = input_handles
+        let mut map_stream = input_handles
             .2
             .configure_deserializer(RecordFormat::Csv)
             .unwrap();
@@ -1372,10 +1200,6 @@ mod test {
         set_stream.flush();
         map_stream.flush();
 
-        zset_buffer.flush_all();
-        set_buffer.flush_all();
-        map_buffer.flush_all();
-
         dbsp.step().unwrap();
 
         assert_eq!(zset_output.consolidate(), zset);
@@ -1390,15 +1214,15 @@ mod test {
         output_handles: &OutputHandles,
         inputs: &[TestStruct],
     ) {
-        let (mut zset_input, mut zset_buffer) = input_handles
+        let mut zset_input = input_handles
             .0
             .configure_deserializer(RecordFormat::Json(JsonFlavor::Default))
             .unwrap();
-        let (mut set_input, mut set_buffer) = input_handles
+        let mut set_input = input_handles
             .1
             .configure_deserializer(RecordFormat::Json(JsonFlavor::Default))
             .unwrap();
-        let (mut map_input, mut map_buffer) = input_handles
+        let mut map_input = input_handles
             .2
             .configure_deserializer(RecordFormat::Json(JsonFlavor::Default))
             .unwrap();
@@ -1436,10 +1260,6 @@ mod test {
             map_input.delete(input_id.as_bytes()).unwrap();
             map_input.flush();
         }
-
-        zset_buffer.flush_all();
-        set_buffer.flush_all();
-        map_buffer.flush_all();
 
         dbsp.step().unwrap();
 

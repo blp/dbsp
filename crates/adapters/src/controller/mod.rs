@@ -33,7 +33,6 @@
 //! of transmitted bytes and records and updating respective performance
 //! counters in the controller.
 
-use crate::catalog::DeCollectionBuffer;
 use crate::transport::InputReader;
 use crate::transport::Step;
 use crate::transport::{
@@ -617,7 +616,7 @@ impl Controller {
                         start = None;
                         let mut total_consumed = 0;
                         for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
-                            let num_records = endpoint.buffer.flush(endpoint.max_batch_size);
+                            let num_records = endpoint.reader.flush(endpoint.max_batch_size);
                             controller.status.inputs.read().unwrap()[id]
                                 .consume_buffered(num_records);
                             total_consumed += num_records;
@@ -817,21 +816,14 @@ impl Controller {
 struct InputEndpointDescr {
     endpoint_name: String,
     reader: Box<dyn InputReader>,
-    buffer: Box<dyn DeCollectionBuffer>,
     max_batch_size: u64,
 }
 
 impl InputEndpointDescr {
-    pub fn new(
-        endpoint_name: &str,
-        reader: Box<dyn InputReader>,
-        buffer: Box<dyn DeCollectionBuffer>,
-        max_batch_size: u64,
-    ) -> Self {
+    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>, max_batch_size: u64) -> Self {
         Self {
             endpoint_name: endpoint_name.to_owned(),
             reader,
-            buffer,
             max_batch_size,
         }
     }
@@ -1196,7 +1188,7 @@ impl ControllerInner {
         let endpoint_id = inputs.keys().next_back().map(|k| k + 1).unwrap_or(0);
 
         let max_batch_size = endpoint_config.connector_config.max_batch_size;
-        let (reader, buffer) = match endpoint {
+        let reader = match endpoint {
             Some(endpoint) => {
                 // Create parser.
                 let format_config = if endpoint_config.connector_config.transport.name()
@@ -1231,7 +1223,7 @@ impl ControllerInner {
                         ControllerError::unknown_input_format(endpoint_name, &format_config.name)
                     })?;
 
-                let (parser, buffer) =
+                let parser =
                     format.new_parser(endpoint_name, input_handle, &format_config.config)?;
                 let probe = Box::new(InputProbe::new(
                     endpoint_id,
@@ -1248,10 +1240,9 @@ impl ControllerInner {
                     endpoint.is_fault_tolerant(),
                 );
 
-                let reader = endpoint
-                    .open(probe, 0, input_handle.schema.clone())
-                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
-                (reader, buffer)
+                endpoint
+                    .open(probe, parser, 0, input_handle.schema.clone())
+                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
             }
             None => {
                 let endpoint = create_integrated_input_endpoint(
@@ -1271,7 +1262,8 @@ impl ControllerInner {
 
                 endpoint
                     .open(input_handle, 0)
-                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
+                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
+                todo!()
             }
         };
 
@@ -1283,7 +1275,7 @@ impl ControllerInner {
 
         inputs.insert(
             endpoint_id,
-            InputEndpointDescr::new(endpoint_name, reader, buffer, max_batch_size),
+            InputEndpointDescr::new(endpoint_name, reader, max_batch_size),
         );
 
         drop(inputs);
@@ -1734,9 +1726,8 @@ impl ControllerInner {
     /// endpoint.
     ///
     /// See [`ControllerStatus::eoi`].
-    pub fn eoi(&self, endpoint_id: EndpointId, num_records: usize) {
-        self.status
-            .eoi(endpoint_id, num_records, &self.circuit_thread_unparker)
+    pub fn eoi(&self, endpoint_id: EndpointId) {
+        self.status.eoi(endpoint_id, &self.circuit_thread_unparker)
     }
 
     pub fn start_step(&self, endpoint_id: EndpointId, step: Step) {
@@ -1794,7 +1785,7 @@ impl InputProbe {
         data: &[u8],
         num_records: usize,
         errors: Vec<ParseError>,
-    ) -> Vec<ParseError> {
+    ) -> (usize, Vec<ParseError>) {
         for error in errors.iter() {
             self.controller
                 .parse_error(self.endpoint_id, &self.endpoint_name, error.clone());
@@ -1802,48 +1793,50 @@ impl InputProbe {
         self.controller
             .input_batch(self.endpoint_id, data.len(), num_records);
 
-        errors
+        (num_records, errors)
     }
 }
 
 /// `InputConsumer` interface exposed to the transport endpoint.
-impl InputConsumer for InputProbe {
-    fn input_fragment(&mut self, data: &[u8]) -> Vec<ParseError> {
+impl Parser for InputProbe {
+    fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
         let (num_records, errors) = self.parser.input_fragment(data);
         self.input_common(data, num_records, errors)
     }
 
-    fn input_chunk(&mut self, data: &[u8]) -> Vec<ParseError> {
+    fn input_chunk(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
         let (num_records, errors) = self.parser.input_chunk(data);
         self.input_common(data, num_records, errors)
     }
 
-    fn eoi(&mut self) -> Vec<ParseError> {
-        // The endpoint reached end-of-file.  Notify and flush the parser (even though
-        // no new data has been received, the parser may contain some partially
-        // parsed data and may be waiting for, e.g., and end-of-line or
-        // end-of-file to finish parsing it).
-        let (num_records, errors) = self.parser.eoi();
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
+        let (num_records, errors) = self.parser.end_of_fragments();
         for error in errors.iter() {
             self.controller
                 .parse_error(self.endpoint_id, &self.endpoint_name, error.clone());
         }
-        self.controller.eoi(self.endpoint_id, num_records);
 
-        errors
+        (num_records, errors)
     }
 
+    fn fork(&self) -> Box<dyn Parser> {
+        Box::new(Self::new(
+            self.endpoint_id,
+            &self.endpoint_name,
+            self.parser.fork(),
+            self.controller.clone(),
+        ))
+    }
+}
+
+impl InputConsumer for InputProbe {
     fn error(&mut self, fatal: bool, error: AnyError) {
         self.controller
             .input_transport_error(self.endpoint_id, &self.endpoint_name, fatal, error);
     }
 
-    fn start_step(&mut self, step: Step) {
-        self.controller.start_step(self.endpoint_id, step);
-    }
-
-    fn committed(&mut self, step: Step) {
-        self.controller.committed(self.endpoint_id, step);
+    fn eoi(&mut self) {
+        self.controller.eoi(self.endpoint_id);
     }
 }
 

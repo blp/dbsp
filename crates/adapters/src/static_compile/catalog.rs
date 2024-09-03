@@ -711,7 +711,7 @@ mod test {
         input_stream_handle
             .insert(br#"{"id": 2, "b": true, "s": "2"}"#)
             .unwrap();
-        input_stream_handle.flush();
+        input_stream_handle.save();
         input_buffer.flush_all();
 
         set_num_quantiles(output_stream_handles, 5);
@@ -748,7 +748,7 @@ mod test {
         input_stream_handle
             .insert(br#"{"id": 1, "b": true, "s": "1-modified"}"#)
             .unwrap();
-        input_stream_handle.flush();
+        input_stream_handle.save();
         input_buffer.flush_all();
 
         set_num_quantiles(output_stream_handles, 5);
@@ -774,7 +774,7 @@ mod test {
         // Step 3: delete an entry.
 
         input_stream_handle.delete(br#"2"#).unwrap();
-        input_stream_handle.flush();
+        input_stream_handle.save();
         input_buffer.flush_all();
         set_num_quantiles(output_stream_handles, 5);
 

@@ -1,7 +1,7 @@
 use super::{
     InputConsumer, InputEndpoint, InputReader, OutputEndpoint, Step, TransportInputEndpoint,
 };
-use crate::PipelineState;
+use crate::{Parser, PipelineState};
 use anyhow::{bail, Error as AnyError, Result as AnyResult};
 use atomic::Atomic;
 use crossbeam::sync::{Parker, Unparker};
@@ -37,6 +37,7 @@ impl TransportInputEndpoint for FileInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {

@@ -1,6 +1,5 @@
 use crate::{
-    transport::Step, InputConsumer, InputEndpoint, InputReader, PipelineState,
-    TransportInputEndpoint,
+    transport::Step, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
 use chrono::DateTime;
@@ -50,10 +49,11 @@ impl TransportInputEndpoint for PubSubInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(PubSubReader::new(self.config.clone(), consumer)?))
+        Ok(Box::new(PubSubReader::new(self.config.clone(), consumer, parser)?))
     }
 }
 
@@ -65,13 +65,15 @@ impl PubSubReader {
     fn new(
         config: Arc<PubSubInputConfig>,
         mut consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         let (state_sender, state_receiver) = channel(PipelineState::Paused);
         let subscription = TOKIO.block_on(Self::subscribe(&config))?;
         thread::spawn(move || {
             let consumer_clone = consumer.clone();
+            let parser = parser.fork();
             TOKIO.block_on(async {
-                Self::worker_task(subscription, consumer_clone, state_receiver)
+                Self::worker_task(subscription, consumer_clone, parser, state_receiver)
                     .await
                     .unwrap_or_else(|e| consumer.error(true, e));
             })
@@ -117,6 +119,7 @@ impl PubSubReader {
     async fn worker_task(
         subscription: Subscription,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         mut state_receiver: Receiver<PipelineState>,
     ) -> Result<(), AnyError> {
         let mut state = PipelineState::Paused;
@@ -145,14 +148,15 @@ impl PubSubReader {
                         .await
                         .map_err(|e| anyhow!("error subscribing to messages: {e}"))?;
 
-                    let mut consumer_clone = consumer.clone();
+                    let mut consumer = consumer.clone();
+                    let mut parser = parser.fork();
                     let token = stream.cancellable();
                     let handle = tokio::spawn(async move {
                         // None if the stream is cancelled
                         while let Some(message) = stream.next().await {
-                            consumer_clone.input_chunk(&message.message.data);
+                            parser.input_chunk(&message.message.data);
                             message.ack().await.unwrap_or_else(|e| {
-                                consumer_clone.error(
+                                consumer.error(
                                     false,
                                     anyhow!("gRPC error acknowledging Pub/Sub message: {e}"),
                                 )

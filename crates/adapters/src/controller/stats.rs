@@ -600,22 +600,9 @@ impl ControllerStatus {
     pub fn eoi(
         &self,
         endpoint_id: EndpointId,
-        num_records: usize,
         circuit_thread_unparker: &Unparker,
     ) {
-        let num_records = num_records as u64;
-
-        // Increment `buffered_input_records` and `total_input_records`; unpark
-        // circuit thread if `min_batch_size_records` exceeded.
-        //
-        // Note: we increment `total_input_records` _before_ setting the `eoi` flag on
-        // the endpoint to guarantee that `total_input_records` reflects the
-        // final number of inputs records when all endpoints are marked as
-        // finished.
-        let old = self.global_metrics.input_batch(num_records);
-        if old == 0
-            || old <= self.pipeline_config.global.min_batch_size_records
-                && old + num_records > self.pipeline_config.global.min_batch_size_records
+        if self.global_metrics.num_buffered_input_records() == 0
         {
             circuit_thread_unparker.unpark();
         }
@@ -624,7 +611,7 @@ impl ControllerStatus {
         // won't see any more inputs from this endpoint.
         let inputs = self.inputs.read().unwrap();
         if let Some(endpoint_stats) = inputs.get(&endpoint_id) {
-            endpoint_stats.eoi(num_records);
+            endpoint_stats.eoi();
         };
     }
 
@@ -921,8 +908,7 @@ impl InputEndpointStatus {
             .fetch_add(num_records, Ordering::AcqRel)
     }
 
-    fn eoi(&self, num_records: u64) {
-        self.add_buffered(0, num_records);
+    fn eoi(&self) {
         self.metrics.end_of_input.store(true, Ordering::Release);
     }
 

@@ -1,4 +1,5 @@
 use crate::transport::InputEndpoint;
+use crate::Parser;
 use crate::{
     server::{PipelineError, MAX_REPORTED_PARSE_ERRORS},
     transport::{InputReader, Step},
@@ -58,7 +59,7 @@ struct HttpInputEndpointInner {
     name: String,
     state: Atomic<PipelineState>,
     status_notifier: watch::Sender<()>,
-    consumer: Mutex<Option<Box<dyn InputConsumer>>>,
+    cp: Mutex<Option<(Box<dyn InputConsumer>, Box<dyn Parser>)>>,
     /// Ingest data even if the pipeline is paused.
     force: bool,
 }
@@ -73,7 +74,7 @@ impl HttpInputEndpointInner {
                 PipelineState::Paused
             }),
             status_notifier: watch::channel(()).0,
-            consumer: Mutex::new(None),
+            cp: Mutex::new(None),
             force,
         }
     }
@@ -106,25 +107,25 @@ impl HttpInputEndpoint {
 
     fn push_bytes(&self, bytes: &[u8]) -> Vec<ParseError> {
         self.inner
-            .consumer
+            .cp
             .lock()
             .unwrap()
             .as_mut()
-            .unwrap()
+            .unwrap().1
             .input_fragment(bytes)
     }
 
     fn eoi(&self) -> Vec<ParseError> {
-        self.inner.consumer.lock().unwrap().as_mut().unwrap().eoi()
+        self.inner.cp.lock().unwrap().as_mut().unwrap().eoi()
     }
 
     fn error(&self, fatal: bool, error: AnyError) {
         self.inner
-            .consumer
+            .cp
             .lock()
             .unwrap()
             .as_mut()
-            .unwrap()
+            .unwrap().0
             .error(fatal, error);
     }
 
@@ -206,10 +207,11 @@ impl TransportInputEndpoint for HttpInputEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        *self.inner.consumer.lock().unwrap() = Some(consumer);
+        *self.inner.cp.lock().unwrap() = Some((consumer, parser));
         Ok(Box::new(self.clone()))
     }
 }

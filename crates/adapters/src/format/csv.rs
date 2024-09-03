@@ -1,7 +1,5 @@
 use crate::{
-    catalog::{
-        CursorWithPolarity, DeCollectionBuffer, DeCollectionStream, RecordFormat, SerCursor,
-    },
+    catalog::{CursorWithPolarity, DeCollectionStream, RecordFormat, SerCursor},
     format::{Encoder, InputFormat, OutputFormat, ParseError, Parser},
     util::truncate_ellipse,
     ControllerError, OutputConsumer,
@@ -49,14 +47,11 @@ impl InputFormat for CsvInputFormat {
         _endpoint_name: &str,
         input_stream: &InputCollectionHandle,
         _config: &YamlValue,
-    ) -> Result<(Box<dyn Parser>, Box<dyn DeCollectionBuffer>), ControllerError> {
-        let (input_stream, input_buffer) = input_stream
+    ) -> Result<Box<dyn Parser>, ControllerError> {
+        let input_stream = input_stream
             .handle
             .configure_deserializer(RecordFormat::Csv)?;
-        Ok((
-            Box::new(CsvParser::new(input_stream)) as Box<dyn Parser>,
-            input_buffer,
-        ))
+        Ok(Box::new(CsvParser::new(input_stream)) as Box<dyn Parser>)
     }
 }
 
@@ -130,7 +125,7 @@ impl CsvParser {
             self.last_event_number += 1;
             buffer = rest;
         }
-        self.input_stream.flush();
+        self.input_stream.save();
         (buffer, res)
     }
 }
@@ -151,13 +146,13 @@ impl Parser for CsvParser {
         }
     }
 
-    fn eoi(&mut self) -> (usize, Vec<ParseError>) {
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
         let mut res = (0, Vec::new());
         let leftover = take(&mut self.leftover);
         if !leftover.is_empty() {
             self.parse_record(leftover.as_slice(), &mut res);
         }
-        self.input_stream.flush();
+        self.input_stream.save();
         res
     }
 

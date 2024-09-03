@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use crate::transport::Step;
-use crate::{InputConsumer, InputEndpoint, InputReader, PipelineState, TransportInputEndpoint};
+use crate::{InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint};
 use anyhow::{anyhow, Result as AnyResult};
 use atomic::Atomic;
 use chrono::format::{Item, StrftimeItems};
@@ -167,11 +167,13 @@ impl TransportInputEndpoint for GeneratorEndpoint {
     fn open(
         &self,
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         _start_step: Step,
         schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(InputGenerator::new(
             consumer,
+            parser,
             self.config.clone(),
             schema,
         )?))
@@ -189,6 +191,7 @@ struct InputGenerator {
 impl InputGenerator {
     fn new(
         consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
         config: DatagenInputConfig,
         schema: Relation,
     ) -> AnyResult<Self> {
@@ -228,6 +231,7 @@ impl InputGenerator {
             let schema = schema.clone();
             let notifier = notifier.clone();
             let consumer = consumer.clone();
+            let parser = parser.fork();
             let shared_state = shared_state.clone();
 
             if needs_blocking_tasks {
@@ -238,6 +242,7 @@ impl InputGenerator {
                         shared_state,
                         schema,
                         consumer,
+                        parser,
                         notifier,
                         status,
                         generated,
@@ -249,7 +254,7 @@ impl InputGenerator {
                     config,
                     shared_state,
                     schema,
-                    consumer,
+                    consumer,parser,
                     notifier,
                     status,
                     generated,
@@ -292,6 +297,7 @@ impl InputGenerator {
         >,
         schema: Relation,
         mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
         notifier: Arc<Notify>,
         status: Arc<Atomic<PipelineState>>,
         generated: Arc<AtomicUsize>,
@@ -349,7 +355,7 @@ impl InputGenerator {
 
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
-                                consumer.input_chunk(&buffer);
+                                parser.input_chunk(&buffer);
                                 buffer.clear();
                                 buffer.extend(START_ARR);
                                 batch_idx = 0;
@@ -368,7 +374,7 @@ impl InputGenerator {
                 }
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
-                    consumer.input_chunk(&buffer);
+                    parser.input_chunk(&buffer);
                 }
                 // Update global progress after we created all records for a batch
                 //eprintln!("adding {} to generated", generate_range.len());
