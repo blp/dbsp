@@ -1,7 +1,6 @@
 use crate::catalog::InputCollectionHandle;
-use crate::{
-    controller::FormatConfig, InputConsumer, InputFormat, ParseError, Parser,
-};
+use crate::transport::Step;
+use crate::{controller::FormatConfig, InputConsumer, InputFormat, ParseError, Parser};
 use anyhow::{anyhow, Error as AnyError};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -83,7 +82,7 @@ impl MockInputConsumer {
         self.state().error_cb = error_cb;
     }
 
-    fn input(&mut self, data: &[u8], fragment: bool) -> Vec<ParseError> {
+    fn input(&mut self, data: &[u8], fragment: bool) -> (usize, Vec<ParseError>) {
         let mut state = self.state();
 
         state.data.extend_from_slice(data);
@@ -103,7 +102,7 @@ impl MockInputConsumer {
         }
 
         state.parser_result = Some((num_records, errors.clone()));
-        errors
+        (num_records, errors)
     }
 }
 
@@ -122,11 +121,28 @@ impl InputConsumer for MockInputConsumer {
         state.endpoint_error = Some(error);
     }
 
-    fn eoi(&mut self) -> Vec<ParseError> {
+    fn eoi(&mut self) {
         let mut state = self.state();
         state.eoi = true;
+    }
 
-        let (_num_records, errors) = state.parser.end_of_fragments();
+    fn start_step(&mut self, _step: Step) {}
+
+    fn committed(&mut self, _step: Step) {}
+}
+
+impl Parser for MockInputConsumer {
+    fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
+        self.input(data, true)
+    }
+
+    fn input_chunk(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
+        self.input(data, false)
+    }
+
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
+        let mut state = self.state();
+        let (num_records, errors) = state.parser.end_of_fragments();
         for error in errors.iter() {
             if let Some(error_cb) = &mut state.error_cb {
                 error_cb(false, &anyhow!(error.clone()));
@@ -134,6 +150,10 @@ impl InputConsumer for MockInputConsumer {
                 panic!("mock_input_consumer: parse error '{error}'");
             }
         }
-        errors
+        (num_records, errors)
+    }
+
+    fn fork(&self) -> Box<dyn Parser> {
+        todo!()
     }
 }

@@ -7,7 +7,9 @@ use std::sync::{Barrier, OnceLock, Weak};
 use std::thread::{self, Thread};
 
 use crate::transport::Step;
-use crate::{InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint};
+use crate::{
+    InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
+};
 use anyhow::{anyhow, Result as AnyResult};
 use atomic::Atomic;
 use csv::{Writer as CsvWriter, WriterBuilder as CsvWriterBuilder};
@@ -43,7 +45,11 @@ impl TransportInputEndpoint for NexmarkEndpoint {
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(InputGenerator::new(&self.config, consumer)?))
+        Ok(Box::new(InputGenerator::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 
@@ -53,7 +59,11 @@ struct InputGenerator {
 }
 
 impl InputGenerator {
-    pub fn new(config: &NexmarkInputConfig, consumer: Box<dyn InputConsumer>, parser: Box<dyn Parser>) -> AnyResult<Self> {
+    pub fn new(
+        config: &NexmarkInputConfig,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> AnyResult<Self> {
         let mut guard = INNER.lock().unwrap();
         let inner = guard.upgrade().unwrap_or_else(|| {
             let inner = Inner::new();
@@ -220,7 +230,10 @@ impl Inner {
             .then(|| Arc::new(Barrier::new(options.threads)));
         let generators = (0..options.threads)
             .map(|index| {
-                let cps = EnumMap::from_fn(|table| cps[table].clone());
+                let cps = EnumMap::from_fn(|table| {
+                    let (consumer, parser) = &cps[table];
+                    (consumer.clone(), parser.fork())
+                });
                 let barrier = barrier.clone();
                 let inner = Arc::clone(&self);
                 thread::Builder::new()
@@ -245,8 +258,9 @@ impl Inner {
         }
 
         // Input is exhausted.
-        for (_table, consumer) in cps.iter_mut() {
-            cps.0.eoi();
+        for (_table, (consumer, parser)) in cps.iter_mut() {
+            parser.end_of_fragments();
+            consumer.eoi();
         }
     }
 

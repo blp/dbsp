@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use crate::transport::Step;
-use crate::{InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint};
+use crate::{
+    InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
+};
 use anyhow::{anyhow, Result as AnyResult};
 use atomic::Atomic;
 use chrono::format::{Item, StrftimeItems};
@@ -254,7 +256,8 @@ impl InputGenerator {
                     config,
                     shared_state,
                     schema,
-                    consumer,parser,
+                    consumer,
+                    parser,
                     notifier,
                     status,
                     generated,

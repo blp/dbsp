@@ -151,7 +151,12 @@ where
     let endpoint =
         input_transport_config_to_endpoint(config.connector_config.transport.clone())?.unwrap();
 
-    let reader = endpoint.open(Box::new(consumer.clone()), 0, relation)?;
+    let reader = endpoint.open(
+        Box::new(consumer.clone()),
+        Box::new(consumer.clone()),
+        0,
+        relation,
+    )?;
 
     Ok((reader, consumer, input_handle))
 }

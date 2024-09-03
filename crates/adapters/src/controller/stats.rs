@@ -139,7 +139,8 @@ impl GlobalControllerMetrics {
     }
 
     pub(crate) fn consume_buffered_inputs(&self, num_records: u64) {
-        self.buffered_input_records.fetch_sub(num_records, Ordering::Release);
+        self.buffered_input_records
+            .fetch_sub(num_records, Ordering::Release);
         self.step_requested.store(false, Ordering::Release);
     }
 
@@ -597,13 +598,8 @@ impl ControllerStatus {
     /// * `circuit_thread_unparker` - unparker used to wake up the circuit
     ///   thread if the total number of buffered records exceeds
     ///   `min_batch_size_records`.
-    pub fn eoi(
-        &self,
-        endpoint_id: EndpointId,
-        circuit_thread_unparker: &Unparker,
-    ) {
-        if self.global_metrics.num_buffered_input_records() == 0
-        {
+    pub fn eoi(&self, endpoint_id: EndpointId, circuit_thread_unparker: &Unparker) {
+        if self.global_metrics.num_buffered_input_records() == 0 {
             circuit_thread_unparker.unpark();
         }
 
@@ -883,7 +879,9 @@ impl InputEndpointStatus {
 
     pub(crate) fn consume_buffered(&self, num_records: u64) {
         self.metrics.buffered_bytes.store(0, Ordering::Release);
-        self.metrics.buffered_records.fetch_sub(num_records, Ordering::Release);
+        self.metrics
+            .buffered_records
+            .fetch_sub(num_records, Ordering::Release);
     }
 
     /// Increment the number of buffered bytes and records; return

@@ -143,6 +143,10 @@ pub trait DeCollectionStream: Send {
 
     fn push(&mut self, n: usize);
 
+    fn push_all(&mut self) {
+        self.push(usize::MAX)
+    }
+
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn DeCollectionStream>;

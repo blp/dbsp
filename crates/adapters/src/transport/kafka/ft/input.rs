@@ -189,7 +189,12 @@ impl Drop for Reader {
 }
 
 impl Reader {
-    fn new(config: &Arc<Config>, start_step: Step, consumer: Box<dyn InputConsumer>, parser: Box<dyn Parser>) -> Self {
+    fn new(
+        config: &Arc<Config>,
+        start_step: Step,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> Self {
         let parker = Parker::new();
         let unparker = parker.unparker().clone();
         let action = Arc::new(Mutex::new(Ok(OkAction::Pause)));
@@ -228,7 +233,7 @@ impl PollerThread {
                 .name("poller(kafka-ft)".into())
                 .spawn({
                     let consumer = consumer.clone();
-                    let receiver = cp.clone();
+                    let cp = cp.clone();
                     let exit_request = exit_request.clone();
                     move || Self::run(consumer, cp, exit_request)
                 })
@@ -458,7 +463,7 @@ impl WorkerThread {
         let mut next_partition = 0;
         let mut saved_message = None;
         for step in self.start_step.. {
-            self.cp.lock().unwrap().start_step(step);
+            self.cp.lock().unwrap().0.start_step(step);
             self.wait_for_pipeline_start(step)?;
             check_fatal_errors(consumer.client()).context("Consumer reported fatal error")?;
             check_fatal_errors(producer.client()).context("Producer reported fatal error")?;
@@ -514,7 +519,7 @@ impl WorkerThread {
                         continue;
                     }
                     if let Some(payload) = data_message.payload() {
-                        let _ = self.cp.lock().unwrap().input_chunk(payload);
+                        let _ = self.cp.lock().unwrap().1.input_chunk(payload);
                     }
                     p.next_offset = data_message.offset() + 1;
                 }
@@ -563,7 +568,7 @@ impl WorkerThread {
                             // step).
 
                             if let Some(payload) = data_message.payload() {
-                                let _ = self.cp.lock().unwrap().input_chunk(payload);
+                                let _ = self.cp.lock().unwrap().1.input_chunk(payload);
                             }
                             n_messages += 1;
                             n_bytes += data_message.payload_len();
@@ -637,7 +642,7 @@ impl WorkerThread {
                 }
             } else {
                 // This is a fully pre-existing step that has already committed.
-                self.cp.lock().unwrap().committed(step);
+                self.cp.lock().unwrap().0.committed(step);
             }
         }
         unreachable!()
@@ -698,7 +703,7 @@ impl TransportInputEndpoint for Endpoint {
 }
 
 struct IndexProducerContext {
-    consumer: Arc<Mutex<Box<dyn InputConsumer>>>,
+    cp: Arc<Mutex<(Box<dyn InputConsumer>, Box<dyn Parser>)>>,
 
     /// Maps from a step number to the number of messages that remain to be
     /// delivered before that step is considered committed.
@@ -707,11 +712,11 @@ struct IndexProducerContext {
 
 impl IndexProducerContext {
     fn new(
-        consumer: &Arc<Mutex<Box<dyn InputConsumer>>>,
+        cp: &Arc<Mutex<(Box<dyn InputConsumer>, Box<dyn Parser>)>>,
         expected_deliveries: &Arc<Mutex<HashMap<Step, usize>>>,
     ) -> Self {
         Self {
-            consumer: consumer.clone(),
+            cp: cp.clone(),
             expected_deliveries: expected_deliveries.clone(),
         }
     }
@@ -723,9 +728,10 @@ impl ClientContext for IndexProducerContext {
             .rdkafka_error_code()
             .is_some_and(|code| code == RDKafkaErrorCode::Fatal);
         if !fatal {
-            self.consumer
+            self.cp
                 .lock()
                 .unwrap()
+                .0
                 .error(false, anyhow!(reason.to_string()));
         } else {
             // The caller will detect this later and bail out with it as its
@@ -755,7 +761,7 @@ impl ProducerContext for IndexProducerContext {
 
                 // We do this after the above to avoid holding the lock on
                 // `expected_deliveries`.
-                self.consumer.lock().unwrap().committed(*step);
+                self.cp.lock().unwrap().0.committed(*step);
             }
             Err(_) => {
                 // If there's an error, we don't want to ever report that the

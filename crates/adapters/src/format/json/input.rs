@@ -448,6 +448,7 @@ impl Parser for JsonParser {
 #[cfg(test)]
 mod test {
     use crate::{
+        format::Parser,
         test::{init_test_logger, mock_parser_pipeline, MockUpdate},
         transport::InputConsumer,
         FormatConfig, ParseError,
@@ -550,10 +551,11 @@ mod test {
                 } else {
                     consumer.input_fragment(json.as_bytes())
                 };
-                assert_eq!(&res, &expected_result);
+                assert_eq!(&res.1, &expected_result);
             }
-            let res = consumer.eoi();
-            assert_eq!(&res, &test.final_result);
+            let res = consumer.end_of_fragments();
+            assert_eq!(&res.1, &test.final_result);
+            consumer.eoi();
             assert_eq!(&test.expected_output, &outputs.state().flushed);
         }
     }

@@ -41,7 +41,11 @@ impl TransportInputEndpoint for FileInputEndpoint {
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(FileInputReader::new(&self.config, consumer)?))
+        Ok(Box::new(FileInputReader::new(
+            &self.config,
+            consumer,
+            parser,
+        )?))
     }
 }
 
@@ -51,7 +55,11 @@ struct FileInputReader {
 }
 
 impl FileInputReader {
-    fn new(config: &FileInputConfig, consumer: Box<dyn InputConsumer>) -> AnyResult<Self> {
+    fn new(
+        config: &FileInputConfig,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> AnyResult<Self> {
         let file = File::open(&config.path).map_err(|e| {
             AnyError::msg(format!("Failed to open input file '{}': {e}", config.path))
         })?;
@@ -65,8 +73,9 @@ impl FileInputReader {
         let status = Arc::new(Atomic::new(PipelineState::Paused));
         let status_clone = status.clone();
         let follow = config.follow;
-        let _worker =
-            spawn(move || Self::worker_thread(reader, consumer, parker, status_clone, follow));
+        let _worker = spawn(move || {
+            Self::worker_thread(reader, consumer, parser, parker, status_clone, follow)
+        });
 
         Ok(Self { status, unparker })
     }
@@ -80,6 +89,7 @@ impl FileInputReader {
     fn worker_thread(
         mut reader: BufReader<File>,
         mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
         parker: Parker,
         status: Arc<Atomic<PipelineState>>,
         follow: bool,
@@ -107,7 +117,7 @@ impl FileInputReader {
 
                             // Leave it to the controller to handle errors.  There is noone we can
                             // forward the error to upstream.
-                            let _ = consumer.input_fragment(data);
+                            let _ = parser.input_fragment(data);
                             let len = data.len();
                             reader.consume(len);
                         }
@@ -362,7 +372,6 @@ format:
         )
         .unwrap();
 
-        assert!(zset.state().buffered.is_empty());
         assert!(zset.state().flushed.is_empty());
 
         endpoint.disconnect();

@@ -55,20 +55,19 @@ struct UrlInputReader {
 impl UrlInputReader {
     fn new(
         config: &Arc<UrlInputConfig>,
-        consumer: Box<dyn InputConsumer>,
-        parser: Box<dyn Parser>,
+        mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         let (sender, receiver) = channel(PipelineState::Paused);
         let config = config.clone();
         let receiver_clone = receiver.clone();
         let _worker = spawn(move || {
             System::new().block_on(async move {
-                if let Err(error) =
-                    Self::worker_thread(config, consumer, parser, receiver_clone).await
-                {
+                if let Err(error) = Self::worker_thread(config, &mut parser, receiver_clone).await {
                     consumer.error(true, error);
                 } else {
-                    let _ = consumer.eoi();
+                    let _ = parser.end_of_fragments();
+                    consumer.eoi();
                 };
             });
         });
@@ -78,8 +77,7 @@ impl UrlInputReader {
 
     async fn worker_thread(
         config: Arc<UrlInputConfig>,
-        _consumer: Box<dyn InputConsumer>,
-        mut parser: Box<dyn Parser>,
+        parser: &mut Box<dyn Parser>,
         mut receiver: Receiver<PipelineState>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();

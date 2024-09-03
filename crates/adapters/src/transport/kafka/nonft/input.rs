@@ -209,8 +209,8 @@ impl KafkaInputReaderInner {
 impl KafkaInputReader {
     fn new(
         config: &Arc<KafkaInputConfig>,
-        mut consumer: Box<dyn InputConsumer>,
-        parser: Box<dyn Parser>,
+        consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         // Create Kafka consumer configuration.
         debug!("Starting Kafka input endpoint: {:?}", config);
@@ -321,7 +321,7 @@ impl KafkaInputReader {
     fn poller_thread(
         endpoint: Arc<KafkaInputReaderInner>,
         mut consumer: Box<dyn InputConsumer>,
-        parser: Box<dyn Parser>,
+        mut parser: Box<dyn Parser>,
     ) {
         // Figure out the number of threads based on configuration, defaults,
         // and system resources.
@@ -448,6 +448,7 @@ impl HelperThread {
     fn new(
         endpoint: Arc<KafkaInputReaderInner>,
         mut consumer: Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
         should_exit: Arc<AtomicBool>,
         feedback_sender: Sender<HelperFeedback>,
     ) -> Self {
@@ -457,7 +458,7 @@ impl HelperThread {
                 Some(spawn(move || {
                     while !should_exit.load(Ordering::Acquire) {
                         if endpoint.state() == PipelineState::Running {
-                            endpoint.poll(&mut consumer, &feedback_sender);
+                            endpoint.poll(&mut consumer, &mut parser, &feedback_sender);
                         } else {
                             thread::park();
                         }

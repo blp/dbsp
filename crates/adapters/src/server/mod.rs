@@ -27,7 +27,9 @@ use env_logger::Env;
 use futures_util::FutureExt;
 use log::{debug, error, info, log, trace, warn, Level};
 use minitrace::collector::Config;
-use pipeline_types::{config::default_max_batch_size, format::json::JsonFlavor, transport::http::EgressMode};
+use pipeline_types::{
+    config::default_max_batch_size, format::json::JsonFlavor, transport::http::EgressMode,
+};
 use pipeline_types::{query::OutputQuery, transport::http::SERVER_PORT_FILE};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};

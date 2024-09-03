@@ -47,7 +47,7 @@ mod nexmark;
 #[cfg(feature = "with-pubsub")]
 mod pubsub;
 
-use crate::catalog::{InputCollectionHandle};
+use crate::catalog::InputCollectionHandle;
 use pipeline_types::config::TransportConfig;
 use pipeline_types::program_schema::Relation;
 
@@ -217,7 +217,9 @@ pub trait InputReader: Send {
     fn complete(&self, _step: Step) {}
 
     /// Requests the reader to write up to `n`  records.
-    fn flush(&self, _n: u64) -> u64 { todo!() }
+    fn flush(&self, _n: u64) -> u64 {
+        todo!()
+    }
 
     /// Disconnect the endpoint.
     ///
@@ -252,6 +254,13 @@ pub trait InputReader: Send {
 ///     indicates that `step`, and all prior steps, have committed by calling
 ///     `InputConsumer::committed(step)`.
 pub trait InputConsumer: Send + DynClone {
+    /// Indicates that upcoming calls are for `step`.
+    fn start_step(&mut self, step: Step);
+
+    /// Steps numbered less than `step` been durably recorded.  (If recording a
+    /// step fails, then [`InputConsumer::error`] is called instead.)
+    fn committed(&mut self, step: Step);
+
     /// Endpoint failed.
     ///
     /// Endpoint failed; no more data will be received from this endpoint.

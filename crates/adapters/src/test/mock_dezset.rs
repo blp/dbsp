@@ -11,7 +11,6 @@ use dbsp::DBData;
 use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use std::{
     fmt::Debug,
-    mem::take,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -170,8 +169,9 @@ where
 {
     pub fn new(handle: MockDeZSet<T, U>, config: SqlSerdeConfig) -> Self {
         Self {
-            handle,
+            updates: Vec::new(),
             committed_len: 0,
+            handle,
             deserializer: De::create(config.clone()),
             config,
         }
@@ -186,14 +186,13 @@ where
 {
     fn insert(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-            self.updates.push(MockUpdate::Insert(val));
+        self.updates.push(MockUpdate::Insert(val));
         Ok(())
     }
 
     fn delete(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.updates
-            .push(MockUpdate::Delete(val));
+        self.updates.push(MockUpdate::Delete(val));
         Ok(())
     }
 
@@ -218,6 +217,7 @@ where
     }
 
     fn push(&mut self, n: usize) {
+        self.save();
         debug_assert!(n <= self.updates.len());
         self.committed_len -= n;
 

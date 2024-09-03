@@ -83,14 +83,6 @@ impl<C> DeserializerFromBytes<C> for JsonDeserializerFromBytes<C> {
     }
 }
 
-/// Maximal buffer size reused across buffer flushes.
-///
-/// Input handles in this module use an internal buffer for input records.
-/// We want to reuse the allocation across batches, but we
-/// limit the max amount of capacity we reuse so that a very large
-/// transaction does not leave a huge unused memory buffer.
-const MAX_REUSABLE_CAPACITY: usize = 100_000;
-
 /// An input handle that allows pushing serialized data to an
 /// [`InputHandle`].
 pub trait DeScalarHandle: Send {
@@ -401,9 +393,10 @@ where
     }
 
     fn push(&mut self, n: usize) {
+        self.save();
         debug_assert!(n <= self.committed_len);
         self.committed_len -= n;
-        let head = self.updates.drain(..n).collect();
+        let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
     }
 }
@@ -588,12 +581,12 @@ where
     }
 
     fn push(&mut self, n: usize) {
+        self.save();
         debug_assert!(n <= self.committed_len);
         self.committed_len -= n;
-        let head = self.updates.drain(..n).collect();
+        let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
     }
-
 }
 
 pub struct ArrowSetStream<K, D, C> {
@@ -859,9 +852,10 @@ where
     }
 
     fn push(&mut self, n: usize) {
+        self.save();
         debug_assert!(n <= self.committed_len);
         self.committed_len -= n;
-        let head = self.updates.drain(..n).collect();
+        let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
     }
 }
@@ -1196,9 +1190,9 @@ mod test {
             }
         }
 
-        zset_stream.flush();
-        set_stream.flush();
-        map_stream.flush();
+        zset_stream.push_all();
+        set_stream.push_all();
+        map_stream.push_all();
 
         dbsp.step().unwrap();
 
@@ -1251,14 +1245,14 @@ mod test {
             let input = to_json_string(input).unwrap();
 
             zset_input.delete(input.as_bytes()).unwrap();
-            zset_input.flush();
+            zset_input.push_all();
 
             set_input.delete(input.as_bytes()).unwrap();
-            set_input.flush();
+            set_input.push_all();
 
             let input_id = to_json_string(&id).unwrap();
             map_input.delete(input_id.as_bytes()).unwrap();
-            map_input.flush();
+            map_input.push_all();
         }
 
         dbsp.step().unwrap();

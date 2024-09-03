@@ -8,6 +8,7 @@ use crate::{
     transport::Step,
     Controller, InputConsumer, PipelineConfig,
 };
+use crate::{ParseError, Parser};
 use anyhow::Error as AnyError;
 use crossbeam::sync::{Parker, Unparker};
 use env_logger::Env;
@@ -263,7 +264,7 @@ config:
     info!("trying to read read step 0 (should time out)");
     let receiver = DummyInputReceiver::new();
     let reader = endpoint
-        .open(receiver.consumer(), 0, Relation::empty())
+        .open(receiver.consumer(), receiver.parser(), 0, Relation::empty())
         .unwrap();
     reader.start(Step::MAX).unwrap();
     receiver.expect(vec![ConsumerCall::StartStep(0)]);
@@ -297,7 +298,12 @@ config:
     // available.
     let receiver2 = DummyInputReceiver::new();
     let reader2 = endpoint
-        .open(receiver2.consumer(), 0, Relation::empty())
+        .open(
+            receiver2.consumer(),
+            receiver2.parser(),
+            0,
+            Relation::empty(),
+        )
         .unwrap();
     reader2.start(step + 1).unwrap();
     for step in 0..=step {
@@ -338,7 +344,7 @@ config:
     info!("trying to read read step 0 (should time out)");
     let receiver = DummyInputReceiver::new();
     let reader = endpoint
-        .open(receiver.consumer(), 0, Relation::empty())
+        .open(receiver.consumer(), receiver.parser(), 0, Relation::empty())
         .unwrap();
     reader.start(0).unwrap();
     receiver.expect(vec![ConsumerCall::StartStep(0)]);
@@ -496,6 +502,10 @@ impl DummyInputReceiver {
     pub fn consumer(&self) -> Box<dyn InputConsumer> {
         Box::new(DummyInputConsumer(self.inner.clone()))
     }
+
+    pub fn parser(&self) -> Box<dyn Parser> {
+        Box::new(DummyInputConsumer(self.inner.clone()))
+    }
 }
 
 #[derive(Clone)]
@@ -510,12 +520,47 @@ impl DummyInputConsumer {
 }
 
 impl InputConsumer for DummyInputConsumer {
+    fn start_step(&mut self, step: Step) {
+        self.called(ConsumerCall::StartStep(step));
+    }
     fn error(&mut self, fatal: bool, error: AnyError) {
         info!("error: {error}");
         self.called(ConsumerCall::Error(fatal));
     }
     fn eoi(&mut self) {
         self.called(ConsumerCall::Eoi);
+    }
+    fn committed(&mut self, step: Step) {
+        info!("step {step} committed");
+        let mut completed = self.0.committed.lock().unwrap();
+        if let Some(committed) = *completed {
+            assert_eq!(committed + 1, step);
+        }
+        *completed = Some(step);
+        self.0.unparker.unpark();
+    }
+}
+
+impl Parser for DummyInputConsumer {
+    fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
+        self.called(ConsumerCall::InputFragment(
+            String::from_utf8(data.into()).unwrap(),
+        ));
+        (0, vec![])
+    }
+    fn input_chunk(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
+        self.called(ConsumerCall::InputChunk(
+            String::from_utf8(data.into()).unwrap(),
+        ));
+        (0, vec![])
+    }
+    fn end_of_fragments(&mut self) -> (usize, Vec<ParseError>) {
+        self.called(ConsumerCall::Eoi);
+        (0, vec![])
+    }
+
+    fn fork(&self) -> Box<dyn Parser> {
+        todo!()
     }
 }
 

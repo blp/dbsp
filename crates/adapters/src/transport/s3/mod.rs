@@ -143,7 +143,11 @@ impl Drop for S3InputReader {
 }
 
 impl S3InputReader {
-    fn new(config: &Arc<S3InputConfig>, consumer: Box<dyn InputConsumer>, parser: Box<dyn Parser>) -> S3InputReader {
+    fn new(
+        config: &Arc<S3InputConfig>,
+        consumer: Box<dyn InputConsumer>,
+        parser: Box<dyn Parser>,
+    ) -> S3InputReader {
         let s3_config = to_s3_config(config);
         let client = Box::new(S3Client {
             inner: aws_sdk_s3::Client::from_conf(s3_config),
@@ -163,7 +167,8 @@ impl S3InputReader {
         std::thread::spawn(move || {
             TOKIO.block_on(async {
                 let _ =
-                    Self::worker_task(s3_client, config_clone, consumer, parser, receiver_clone).await;
+                    Self::worker_task(s3_client, config_clone, consumer, parser, receiver_clone)
+                        .await;
             })
         });
         S3InputReader { sender }
@@ -377,6 +382,7 @@ format:
         consumer.on_error(Some(Box::new(|_, _| ())));
         let reader = Box::new(S3InputReader::new_inner(
             &transport_config,
+            Box::new(consumer.clone()),
             Box::new(consumer.clone()),
             Box::new(mock),
         )) as Box<dyn crate::InputReader>;

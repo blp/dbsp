@@ -1,5 +1,6 @@
 use crate::{
-    transport::Step, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint
+    transport::Step, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState,
+    TransportInputEndpoint,
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
 use chrono::DateTime;
@@ -53,7 +54,11 @@ impl TransportInputEndpoint for PubSubInputEndpoint {
         _start_step: Step,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
-        Ok(Box::new(PubSubReader::new(self.config.clone(), consumer, parser)?))
+        Ok(Box::new(PubSubReader::new(
+            self.config.clone(),
+            consumer,
+            parser,
+        )?))
     }
 }
 

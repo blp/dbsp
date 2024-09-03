@@ -111,12 +111,22 @@ impl HttpInputEndpoint {
             .lock()
             .unwrap()
             .as_mut()
-            .unwrap().1
+            .unwrap()
+            .1
             .input_fragment(bytes)
+            .1
     }
 
     fn eoi(&self) -> Vec<ParseError> {
-        self.inner.cp.lock().unwrap().as_mut().unwrap().eoi()
+        self.inner
+            .cp
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .1
+            .end_of_fragments()
+            .1
     }
 
     fn error(&self, fatal: bool, error: AnyError) {
@@ -125,7 +135,8 @@ impl HttpInputEndpoint {
             .lock()
             .unwrap()
             .as_mut()
-            .unwrap().0
+            .unwrap()
+            .0
             .error(fatal, error);
     }
 

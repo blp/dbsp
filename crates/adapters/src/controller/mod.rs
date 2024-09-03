@@ -1241,7 +1241,7 @@ impl ControllerInner {
                 );
 
                 endpoint
-                    .open(probe, parser, 0, input_handle.schema.clone())
+                    .open(probe.clone(), probe, 0, input_handle.schema.clone())
                     .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
             }
             None => {
@@ -1837,6 +1837,14 @@ impl InputConsumer for InputProbe {
 
     fn eoi(&mut self) {
         self.controller.eoi(self.endpoint_id);
+    }
+
+    fn start_step(&mut self, step: Step) {
+        self.controller.start_step(self.endpoint_id, step);
+    }
+
+    fn committed(&mut self, step: Step) {
+        self.controller.committed(self.endpoint_id, step);
     }
 }
 
