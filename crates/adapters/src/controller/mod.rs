@@ -1799,6 +1799,7 @@ impl InputProbe {
 
 /// `InputConsumer` interface exposed to the transport endpoint.
 impl Parser for InputProbe {
+    
     fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
         let (num_records, errors) = self.parser.input_fragment(data);
         self.input_common(data, num_records, errors)
@@ -1826,6 +1827,10 @@ impl Parser for InputProbe {
             self.parser.fork(),
             self.controller.clone(),
         ))
+    }
+
+    fn flush(&mut self, n: usize) {
+        self.parser.flush(n)
     }
 }
 

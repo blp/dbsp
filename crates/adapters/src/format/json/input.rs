@@ -443,6 +443,10 @@ impl Parser for JsonParser {
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(Self::new(self.input_stream.fork(), self.config.clone()))
     }
+
+    fn flush(&mut self, n: usize) {
+        self.input_stream.push(n)
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +560,7 @@ mod test {
             let res = consumer.end_of_fragments();
             assert_eq!(&res.1, &test.final_result);
             consumer.eoi();
+            consumer.flush_all();
             assert_eq!(&test.expected_output, &outputs.state().flushed);
         }
     }

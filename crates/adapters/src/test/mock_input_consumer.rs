@@ -156,4 +156,9 @@ impl Parser for MockInputConsumer {
     fn fork(&self) -> Box<dyn Parser> {
         todo!()
     }
+
+    fn flush(&mut self, n: usize) {
+        let mut state = self.state();
+        state.parser.flush(n)
+    }
 }

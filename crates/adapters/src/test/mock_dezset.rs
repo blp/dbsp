@@ -10,6 +10,7 @@ use anyhow::Result as AnyResult;
 use dbsp::DBData;
 use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use std::{
+    cmp::min,
     fmt::Debug,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -218,7 +219,7 @@ where
 
     fn push(&mut self, n: usize) {
         self.save();
-        debug_assert!(n <= self.updates.len());
+        let n = min(n, self.updates.len());
         self.committed_len -= n;
 
         let mut state = self.handle.0.lock().unwrap();

@@ -562,6 +562,10 @@ impl Parser for DummyInputConsumer {
     fn fork(&self) -> Box<dyn Parser> {
         todo!()
     }
+
+    fn flush(&mut self, _n: usize) {
+        todo!()
+    }
 }
 
 #[test]

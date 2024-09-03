@@ -159,6 +159,10 @@ impl Parser for CsvParser {
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(Self::new(self.input_stream.fork()))
     }
+
+    fn flush(&mut self, n: usize) {
+        self.input_stream.push(n)
+    }
 }
 
 /// CSV format encoder.
