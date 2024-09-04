@@ -19,11 +19,12 @@ use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig}
 use pretty_assertions::assert_eq;
 use tempfile::NamedTempFile;
 
-use crate::catalog::SerBatchReader;
-use crate::format::parquet::ParquetEncoder;
-use crate::format::Encoder;
-use crate::static_compile::seroutput::SerBatchImpl;
-use crate::test::{mock_input_pipeline, wait, MockOutputConsumer, TestStruct2, DEFAULT_TIMEOUT_MS};
+use crate::{
+    catalog::SerBatchReader,
+    format::{parquet::ParquetEncoder, Encoder, Parser},
+    static_compile::seroutput::SerBatchImpl,
+    test::{mock_input_pipeline, wait, MockOutputConsumer, TestStruct2, DEFAULT_TIMEOUT_MS},
+};
 
 /// Parse Parquet file into an array of `T`.
 pub fn load_parquet_file<T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig>>(
@@ -89,10 +90,14 @@ format:
     )
     .unwrap();
     sleep(Duration::from_millis(10));
+    assert!(parser.state().data.is_empty());
     assert!(!consumer.state().eoi);
     endpoint.start(0).unwrap();
     wait(
-        || zset.state().flushed.len() == test_data.len(),
+        || {
+            endpoint.flush_all();
+            zset.state().flushed.len() == test_data.len()
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();

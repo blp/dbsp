@@ -153,7 +153,8 @@ impl ParquetParser {
 }
 
 impl Parser for ParquetParser {
-    /// In the fragment case, we will wait until eoi() is called to parse any data.
+    /// In the fragment case, we will wait until end_of_fragments() is called to
+    /// parse any data.
     ///
     /// Happens for example with the file connector.
     fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {

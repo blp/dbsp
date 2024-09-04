@@ -114,7 +114,8 @@ impl FileInputReader {
                         }
                         Ok([]) => {
                             if !follow {
-                                let _ = consumer.eoi();
+                                let _ = parser.lock().unwrap().end_of_fragments();
+                                consumer.eoi();
                                 return;
                             } else {
                                 sleep(Duration::from_millis(SLEEP_MS));
