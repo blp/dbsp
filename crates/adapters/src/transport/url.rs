@@ -1,5 +1,5 @@
 use super::{InputConsumer, InputEndpoint, InputReader, Step, TransportInputEndpoint};
-use crate::{ensure_default_crypto_provider, Parser, PipelineState};
+use crate::{ensure_default_crypto_provider, format::InputBuffer, Parser, PipelineState};
 use actix::System;
 use actix_web::http::header::{ByteRangeSpec, ContentRangeSpec, Range, CONTENT_RANGE};
 use anyhow::{anyhow, Result as AnyResult};
@@ -7,7 +7,14 @@ use awc::{Client, Connector};
 use futures::StreamExt;
 use pipeline_types::program_schema::Relation;
 use pipeline_types::transport::url::UrlInputConfig;
-use std::{cmp::Ordering, str::FromStr, sync::Arc, thread::spawn, time::Duration};
+use std::{
+    cmp::Ordering,
+    collections::VecDeque,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    thread::spawn,
+    time::Duration,
+};
 use tokio::{
     select,
     sync::watch::{channel, Receiver, Sender},
@@ -50,6 +57,7 @@ impl TransportInputEndpoint for UrlInputEndpoint {
 
 struct UrlInputReader {
     sender: Sender<PipelineState>,
+    queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
 }
 
 impl UrlInputReader {
@@ -59,26 +67,33 @@ impl UrlInputReader {
         mut parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         let (sender, receiver) = channel(PipelineState::Paused);
-        let config = config.clone();
-        let receiver_clone = receiver.clone();
-        let _worker = spawn(move || {
-            System::new().block_on(async move {
-                if let Err(error) = Self::worker_thread(config, &mut parser, receiver_clone).await {
-                    consumer.error(true, error);
-                } else {
-                    let _ = parser.end_of_fragments();
-                    consumer.eoi();
-                };
-            });
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        spawn({
+            let config = config.clone();
+            let receiver = receiver.clone();
+            let queue = queue.clone();
+            move || {
+                System::new().block_on(async move {
+                    if let Err(error) =
+                        Self::worker_thread(config, &mut parser, receiver, queue).await
+                    {
+                        consumer.error(true, error);
+                    } else {
+                        let _ = parser.end_of_fragments();
+                        consumer.eoi();
+                    };
+                });
+            }
         });
 
-        Ok(Self { sender })
+        Ok(Self { sender, queue })
     }
 
     async fn worker_thread(
         config: Arc<UrlInputConfig>,
         parser: &mut Box<dyn Parser>,
         mut receiver: Receiver<PipelineState>,
+        queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();
 
@@ -225,6 +240,9 @@ impl UrlInputReader {
                                     if !chunk.is_empty() {
                                         consumed_bytes += chunk.len() as u64;
                                         let _ = parser.input_fragment(chunk);
+                                        if let Some(buffer) = parser.take_buffer() {
+                                            queue.lock().unwrap().push_back(buffer);
+                                        }
                                     }
                                     offset += data_len;
                                 },
@@ -256,6 +274,23 @@ impl InputReader for UrlInputReader {
 
     fn disconnect(&self) {
         self.sender.send_replace(PipelineState::Terminated);
+    }
+
+    fn flush(&self, mut n: usize) -> usize {
+        let mut total = 0;
+        while n > 0 {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            let flushed = buffer.flush(n);
+            total += flushed;
+            n -= flushed;
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
     }
 }
 
@@ -389,6 +424,7 @@ bar,false,-10
         consumer.on_error(Some(Box::new(|_, _| ())));
 
         sleep(Duration::from_millis(10));
+        endpoint.flush_all();
 
         // No outputs should be produced at this point.
         assert!(parser.state().data.is_empty());
@@ -396,7 +432,14 @@ bar,false,-10
 
         // Unpause the endpoint, wait for the data to appear at the output.
         endpoint.start(0).unwrap();
-        wait(|| n_recs(&zset) == test_data.len(), DEFAULT_TIMEOUT_MS).unwrap();
+        wait(
+            || {
+                endpoint.flush_all();
+                n_recs(&zset) == test_data.len()
+            },
+            DEFAULT_TIMEOUT_MS,
+        )
+        .unwrap();
         for (i, upd) in zset.state().flushed.iter().enumerate() {
             assert_eq!(upd.unwrap_insert(), &test_data[i]);
         }
@@ -406,7 +449,8 @@ bar,false,-10
     /// Test connection failure.
     #[actix_web::test]
     async fn test_failure() -> Result<()> {
-        let (endpoint, consumer, parser, _zset) = setup_test(|| async { "" }, "nonexistent", 60).await;
+        let (endpoint, consumer, parser, _zset) =
+            setup_test(|| async { "" }, "nonexistent", 60).await;
 
         // Disable panic on error so we can detect it gracefully below.
         consumer.on_error(Some(Box::new(|_, _| ())));
@@ -438,8 +482,7 @@ bar,false,-10
             })
             .collect();
 
-        let (endpoint, consumer, parser,
-                                 zset) = setup_test(
+        let (endpoint, consumer, parser, zset) = setup_test(
             || async {
                 let stream = stream! {
                     for i in 0..100 {
@@ -470,13 +513,20 @@ bar,false,-10
         // The first 10 records should take about 100 ms to arrive.  In practice
         // on busy CI systems it often seems to take longer, so be generous.
         let timeout_ms = 2000;
-        let n1_time = wait(|| n_recs(&zset) >= 10, timeout_ms)
-            .unwrap_or_else(|()| panic!("only {} records after {timeout_ms} ms", n_recs(&zset)));
+        let n1_time = wait(
+            || {
+                endpoint.flush_all();
+                n_recs(&zset) >= 10
+            },
+            timeout_ms,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after {timeout_ms} ms", n_recs(&zset)));
         let n1 = n_recs(&zset);
         println!("{n1} records took {n1_time} ms to arrive");
 
         // After another 100 ms, there should be more records.
         sleep(Duration::from_millis(100));
+        endpoint.flush_all();
         let n2 = n_recs(&zset);
         println!("100 ms later, {n2} records arrived");
         assert!(n2 > n1, "After 100 ms longer, no more records arrived");
@@ -485,6 +535,7 @@ bar,false,-10
         // check that we've got at least 10 more than `n1` (really it should be
         // 20).
         sleep(Duration::from_millis(100));
+        endpoint.flush_all();
         let n3 = n_recs(&zset);
         println!("100 ms later, {n3} records arrived");
         assert!(
@@ -494,8 +545,14 @@ bar,false,-10
         );
 
         // Wait for the first 50 records to arrive.
-        let n4_time = wait(|| n_recs(&zset) >= 50, 350)
-            .unwrap_or_else(|()| panic!("only {} records after 350 ms", n_recs(&zset)));
+        let n4_time = wait(
+            || {
+                endpoint.flush_all();
+                n_recs(&zset) >= 50
+            },
+            350,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after 350 ms", n_recs(&zset)));
         let n4 = n_recs(&zset);
         println!("{} records took {n4_time} ms longer to arrive", n4 - n3);
 
@@ -504,12 +561,14 @@ bar,false,-10
         println!("pausing...");
         endpoint.pause().unwrap();
         sleep(Duration::from_millis(100));
+        endpoint.flush_all();
         let n5 = n_recs(&zset);
         println!("100 ms later, {n5} records arrived");
 
         // But now that we've waited a bit, no more should definitely arrive.
         for _ in 0..2 {
             sleep(Duration::from_millis(100));
+            endpoint.flush_all();
             let n = n_recs(&zset);
             println!("100 ms later, {n} records arrived");
             assert_eq!(n5, n);
@@ -527,6 +586,7 @@ bar,false,-10
             // let's only wait 400 ms.
             for _ in 0..4 {
                 sleep(Duration::from_millis(100));
+                endpoint.flush_all();
                 let n = n_recs(&zset);
                 println!("100 ms later, {n} records arrived");
                 assert_eq!(n5, n);
@@ -534,6 +594,7 @@ bar,false,-10
         } else {
             // The records should start arriving again immediately.
             sleep(Duration::from_millis(200));
+            endpoint.flush_all();
             let n = n_recs(&zset);
             println!("200 ms later, {n} records arrived");
             assert!(n > n5);
@@ -541,8 +602,15 @@ bar,false,-10
 
         // Within 600 ms more, we should get all 100 records, but fudge it to
         // 1000 ms.
-        let n6_time = wait(|| n_recs(&zset) >= 100, 1000)
-            .unwrap_or_else(|()| panic!("only {} records after 1000 ms", n_recs(&zset)));
+        let n6_time = wait(
+            || {
+                endpoint.flush_all();
+                n_recs(&zset) >= 100
+            },
+            1000,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after 1000 ms", n_recs(&zset)));
+        endpoint.flush_all();
         let n6 = n_recs(&zset);
         println!("{} more records took {n6_time} ms to arrive", n6 - n5);
 

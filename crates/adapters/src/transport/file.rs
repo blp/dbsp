@@ -374,6 +374,7 @@ format:
         drop(writer);
 
         consumer.on_error(Some(Box::new(|_, _| {})));
+        parser.on_error(Some(Box::new(|_, _| {})));
         temp_file.as_file().write_all(b"xxx\n").unwrap();
         temp_file.as_file().flush().unwrap();
 

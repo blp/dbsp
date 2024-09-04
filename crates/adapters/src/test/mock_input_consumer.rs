@@ -198,7 +198,7 @@ impl Parser for MockInputParser {
         state.parser.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         let mut state = self.0.lock().unwrap();
         state.parser.take_buffer()
     }

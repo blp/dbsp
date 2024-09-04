@@ -359,12 +359,14 @@ impl Inner {
             }
 
             // Queue the batch.
-            let batch = writers.map(|table, writer| {
-                let data = writer.into_inner().unwrap().into_inner();
-                let (_consumer, parser) = &mut cps[table];
-                parser.input_chunk(data.as_slice());
-                 parser.take_buffer()
-            }).into_array();
+            let batch = writers
+                .map(|table, writer| {
+                    let data = writer.into_inner().unwrap().into_inner();
+                    let (_consumer, parser) = &mut cps[table];
+                    parser.input_chunk(data.as_slice());
+                    parser.take_buffer().unwrap()
+                })
+                .into_array();
             self.queue.lock().unwrap()[index].push_back(batch);
 
             // Synchronize with the other threads.

@@ -297,6 +297,7 @@ mod test {
     use crate::{
         test::{mock_parser_pipeline, wait, MockDeZSet, MockInputConsumer, MockInputParser},
         transport::s3::{S3InputConfig, S3InputReader},
+        Parser,
     };
     use aws_sdk_s3::{
         operation::{
@@ -391,7 +392,7 @@ format:
     }
 
     fn run_test(config_str: &str, mock: super::MockS3Client, test_data: Vec<TestStruct>) {
-        let (reader, consumer, parser, input_handle) = test_setup(config_str, mock);
+        let (reader, consumer, mut parser, input_handle) = test_setup(config_str, mock);
         let _ = reader.pause();
         // No outputs should be produced at this point.
         assert!(parser.state().data.is_empty());
@@ -400,7 +401,10 @@ format:
         // Unpause the endpoint, wait for the data to appear at the output.
         reader.start(0).unwrap();
         wait(
-            || input_handle.state().flushed.len() == test_data.len(),
+            || {
+                parser.flush_all();
+                input_handle.state().flushed.len() == test_data.len()
+            },
             10000,
         )
         .unwrap();
@@ -494,22 +498,34 @@ format:
             .with(eq("test-bucket"), eq(""), eq(&None))
             .return_once(|_, _, _| Ok((objs, None)));
         let test_data: Vec<TestStruct> = (0..1000).map(|i| TestStruct { i }).collect();
-        let (reader, _, _, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
+        let (reader, _consumer, mut parser, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
         reader.start(0).unwrap();
         // Pause after 50 rows are recorded.
-        wait(|| input_handle.state().flushed.len() > 50, 10000).unwrap();
+        wait(
+            || {
+                parser.flush_all();
+                input_handle.state().flushed.len() > 50
+            },
+            10000,
+        )
+        .unwrap();
         let _ = reader.pause();
         // Wait a few milliseconds for the worker to pause and write any WIP object
         std::thread::sleep(Duration::from_millis(10));
+        parser.flush_all();
         let n = input_handle.state().flushed.len();
         // Wait a few more milliseconds and make sure no more entries were written
         std::thread::sleep(Duration::from_millis(100));
+        parser.flush_all();
         assert_eq!(n, input_handle.state().flushed.len());
         assert_ne!(input_handle.state().flushed.len(), test_data.len());
         // Resume to completion
         reader.start(0).unwrap();
         wait(
-            || input_handle.state().flushed.len() == test_data.len(),
+            || {
+                parser.flush_all();
+                input_handle.state().flushed.len() == test_data.len()
+            },
             10000,
         )
         .unwrap();

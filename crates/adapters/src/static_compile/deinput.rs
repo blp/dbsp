@@ -423,12 +423,16 @@ where
         n
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
-        self.committed_len = 0;
-        Box::new(DeZSetStreamBuffer {
-            updates: take(&mut self.updates),
-            handle: self.handle.clone(),
-        })
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            self.committed_len = 0;
+            Some(Box::new(DeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -632,7 +636,7 @@ where
         self.updates.truncate(self.committed_len);
     }
 
-    fn push(&mut self, n: usize) -> usize{
+    fn push(&mut self, n: usize) -> usize {
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
@@ -641,12 +645,16 @@ where
         n
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
-        self.committed_len = 0;
-        Box::new(DeSetStreamBuffer {
-            updates: take(&mut self.updates),
-            handle: self.handle.clone(),
-        })
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            self.committed_len = 0;
+            Some(Box::new(DeSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -940,7 +948,7 @@ where
         self.updates.truncate(self.committed_len);
     }
 
-    fn push(&mut self, n: usize) -> usize{
+    fn push(&mut self, n: usize) -> usize {
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
@@ -949,12 +957,16 @@ where
         n
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
-        self.committed_len = 0;
-        Box::new(DeMapStreamBuffer {
-            updates: take(&mut self.updates),
-            handle: self.handle.clone(),
-        })
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            self.committed_len = 0;
+            Some(Box::new(DeMapStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 

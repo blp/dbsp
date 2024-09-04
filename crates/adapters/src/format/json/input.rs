@@ -2,6 +2,7 @@
 
 use super::{DebeziumUpdate, InsDelUpdate, WeightedUpdate};
 use crate::catalog::InputCollectionHandle;
+use crate::format::InputBuffer;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     format::{InputFormat, ParseError, Parser},
@@ -448,7 +449,7 @@ impl Parser for JsonParser {
         self.input_stream.push(n)
     }
 
-    fn take_buffer(&mut self) -> Box<dyn crate::format::InputBuffer> {
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.input_stream.take_buffer()
     }
 }

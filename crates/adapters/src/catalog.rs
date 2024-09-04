@@ -148,7 +148,7 @@ pub trait DeCollectionStream: Send {
         self.push(usize::MAX)
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer>;
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.

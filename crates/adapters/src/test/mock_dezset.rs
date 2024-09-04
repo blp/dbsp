@@ -241,7 +241,7 @@ where
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
 
-    fn push(&mut self, n: usize) -> usize{
+    fn push(&mut self, n: usize) -> usize {
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
@@ -251,12 +251,16 @@ where
         n
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
-        self.committed_len = 0;
-        Box::new(MockDeZSetStreamBuffer {
-            updates: take(&mut self.updates),
-            handle: self.handle.clone(),
-        })
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            self.committed_len = 0;
+            Some(Box::new(MockDeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 

@@ -1833,7 +1833,7 @@ impl Parser for InputProbe {
         self.parser.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.parser.take_buffer()
     }
 }

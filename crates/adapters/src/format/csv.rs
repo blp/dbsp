@@ -166,7 +166,7 @@ impl Parser for CsvParser {
         self.input_stream.push(n)
     }
 
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.input_stream.take_buffer()
     }
 }

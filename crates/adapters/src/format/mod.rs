@@ -415,7 +415,7 @@ pub trait InputBuffer: Send {
 /// Note that the implementation can assume that either `input_fragment` or
 /// `input_chunk` will be called, but not both.
 pub trait Parser: Send {
-    fn take_buffer(&mut self) -> Box<dyn InputBuffer>;
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Sends the earliest `n` buffered records to the circuit.
     fn flush(&mut self, n: usize) -> usize;
