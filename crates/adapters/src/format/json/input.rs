@@ -447,6 +447,10 @@ impl Parser for JsonParser {
     fn flush(&mut self, n: usize) {
         self.input_stream.push(n)
     }
+
+    fn take_buffer(&mut self) -> Box<dyn crate::format::InputBuffer> {
+        self.input_stream.take_buffer()
+    }
 }
 
 #[cfg(test)]

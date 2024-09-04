@@ -1,3 +1,4 @@
+use crate::format::InputBuffer;
 use crate::transport::{input_transport_config_to_endpoint, output_transport_config_to_endpoint};
 use crate::{
     test::{
@@ -564,6 +565,9 @@ impl Parser for DummyInputConsumer {
     }
 
     fn flush(&mut self, _n: usize) {
+        todo!()
+    }
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
         todo!()
     }
 }

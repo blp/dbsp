@@ -2,6 +2,7 @@ use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::{collections::BTreeMap, sync::Arc};
 
+use crate::format::InputBuffer;
 use crate::{static_compile::DeScalarHandle, ControllerError};
 use anyhow::Result as AnyResult;
 #[cfg(feature = "with-avro")]
@@ -146,6 +147,8 @@ pub trait DeCollectionStream: Send {
     fn push_all(&mut self) {
         self.push(usize::MAX)
     }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.

@@ -1,4 +1,5 @@
 use crate::catalog::InputCollectionHandle;
+use crate::format::InputBuffer;
 use crate::transport::Step;
 use crate::{controller::FormatConfig, InputConsumer, InputFormat, ParseError, Parser};
 use anyhow::{anyhow, Error as AnyError};
@@ -195,5 +196,10 @@ impl Parser for MockInputParser {
     fn flush(&mut self, n: usize) {
         let mut state = self.0.lock().unwrap();
         state.parser.flush(n)
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        let mut state = self.0.lock().unwrap();
+        state.parser.take_buffer()
     }
 }

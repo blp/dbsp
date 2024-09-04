@@ -1,11 +1,13 @@
 //! An input adapter that generates Nexmark event input data.
 
+use std::collections::VecDeque;
 use std::io::Cursor;
 use std::mem;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::sync::{Barrier, OnceLock, Weak};
 use std::thread::{self, Thread};
 
+use crate::format::InputBuffer;
 use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
@@ -96,6 +98,36 @@ impl InputReader for InputGenerator {
         self.inner.status[self.table].store(PipelineState::Terminated, Ordering::Release);
         self.inner.unpark();
     }
+
+    fn flush(&self, n: usize) -> usize {
+        if self.table != NexmarkTable::Bid {
+            return 0;
+        }
+
+        let mut total = 0;
+        while total < n {
+            // Get the oldest buffer from each.
+            let mut guard = self.inner.queue.lock().unwrap();
+            for thread_queue in guard.iter() {
+                if thread_queue.is_empty() {
+                    return total;
+                }
+            }
+            let mut buffers = Vec::with_capacity(guard.len());
+            for thread_queue in guard.iter_mut() {
+                buffers.push(thread_queue.pop_front().unwrap());
+            }
+            drop(guard);
+
+            // Flush the buffers.
+            for tables in buffers {
+                for mut table in tables {
+                    total += table.flush_all();
+                }
+            }
+        }
+        total
+    }
 }
 
 static INNER: Mutex<Weak<Inner>> = Mutex::new(Weak::new());
@@ -109,6 +141,8 @@ struct Inner {
 
     /// The per-table consumers and parsers.
     cps: Mutex<EnumMap<NexmarkTable, Option<(Box<dyn InputConsumer>, Box<dyn Parser>)>>>,
+
+    queue: Mutex<Vec<VecDeque<[Box<dyn InputBuffer>; 3]>>>,
 
     /// The threads to wake up when we unpark.
     ///
@@ -125,6 +159,7 @@ impl Inner {
             status: EnumMap::from_fn(|_| Atomic::new(PipelineState::Paused)),
             options: OnceLock::new(),
             cps: Mutex::new(EnumMap::default()),
+            queue: Mutex::new(Vec::new()),
             threads: Mutex::new(Vec::new()),
         });
         thread::Builder::new()
@@ -323,26 +358,14 @@ impl Inner {
                 }
             }
 
-            // Write the batches to the consumers.
-            //
-            // We do this in a particular order--first `Person`, then `Auction`,
-            // then `Bid`--to honor the dependency graph among the tables,
-            // because auctions refer to people and bids refer to auctions and
-            // people.
-            let mut data = writers.map(|_table, writer| writer.into_inner().unwrap().into_inner());
-            for table in [
-                NexmarkTable::Person,
-                NexmarkTable::Auction,
-                NexmarkTable::Bid,
-            ] {
-                // Submit the data to the circuit.
-                cps[table].1.input_chunk(data[table].as_slice());
-
-                // Clear the data and stick it back into our collection of
-                // buffers so we can reuse the allocation for the next batch.
-                data[table].clear();
-                buffers[table] = mem::take(&mut data[table]);
-            }
+            // Queue the batch.
+            let batch = writers.map(|table, writer| {
+                let data = writer.into_inner().unwrap().into_inner();
+                let (_consumer, parser) = &mut cps[table];
+                parser.input_chunk(data.as_slice());
+                 parser.take_buffer()
+            }).into_array();
+            self.queue.lock().unwrap()[index].push_back(batch);
 
             // Synchronize with the other threads.
             barrier.as_ref().map(|barrier| barrier.wait());

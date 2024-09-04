@@ -394,11 +394,27 @@ impl dyn InputFormat {
     }
 }
 
+pub trait InputBuffer: Send {
+    /// Sends the earliest buffered records to the circuit, up to `n` if they
+    /// are available.  Returns the number sent.
+    fn flush(&mut self, n: usize) -> usize;
+
+    fn flush_all(&mut self) -> usize {
+        self.flush(usize::MAX)
+    }
+
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool { self.len() == 0}
+}
+
 /// Parser that converts a raw byte stream into a stream of database records.
 ///
 /// Note that the implementation can assume that either `input_fragment` or
 /// `input_chunk` will be called, but not both.
 pub trait Parser: Send {
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer>;
+
     /// Sends the earliest `n` buffered records to the circuit.
     fn flush(&mut self, n: usize);
 

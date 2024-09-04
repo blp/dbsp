@@ -19,6 +19,8 @@ pub use deserializer::string_record_deserializer;
 use pipeline_types::program_schema::Relation;
 use serde_yaml::Value as YamlValue;
 
+use super::InputBuffer;
+
 /// When including a long CSV record in an error message,
 /// truncate it to `MAX_RECORD_LEN_IN_ERRMSG` bytes.
 static MAX_RECORD_LEN_IN_ERRMSG: usize = 4096;
@@ -162,6 +164,10 @@ impl Parser for CsvParser {
 
     fn flush(&mut self, n: usize) {
         self.input_stream.push(n)
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.input_stream.take_buffer()
     }
 }
 

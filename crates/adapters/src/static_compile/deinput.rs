@@ -1,4 +1,5 @@
 use crate::catalog::ArrowStream;
+use crate::format::InputBuffer;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     format::byte_record_deserializer,
@@ -12,7 +13,7 @@ use dbsp::{
 };
 use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig};
 use serde_arrow::Deserializer as ArrowDeserializer;
-use std::{collections::VecDeque, marker::PhantomData, ops::Neg};
+use std::{cmp::min, collections::VecDeque, marker::PhantomData, mem::take, ops::Neg};
 
 /// A deserializer that parses byte arrays into a strongly typed representation.
 pub trait DeserializerFromBytes<C> {
@@ -315,6 +316,27 @@ where
     }
 }
 
+struct DeZSetStreamBuffer<K> {
+    updates: Vec<Tup2<K, ZWeight>>,
+    handle: ZSetHandle<K>,
+}
+
+impl<K> InputBuffer for DeZSetStreamBuffer<K>
+where
+    K: DBData,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        let n = min(n, self.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+}
+
 /// An input handle that wraps a [`MapHandle<K, R>`](`MapHandle`)
 /// returned by
 /// [`RootCircuit::add_input_zset`](`dbsp::RootCircuit::add_input_zset`).
@@ -394,10 +416,18 @@ where
 
     fn push(&mut self, n: usize) {
         self.save();
-        debug_assert!(n <= self.committed_len);
+        let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.committed_len = 0;
+        Box::new(DeZSetStreamBuffer {
+            updates: take(&mut self.updates),
+            handle: self.handle.clone(),
+        })
     }
 }
 
@@ -502,6 +532,27 @@ where
     }
 }
 
+struct DeSetStreamBuffer<K> {
+    updates: Vec<Tup2<K, bool>>,
+    handle: SetHandle<K>,
+}
+
+impl<K> InputBuffer for DeSetStreamBuffer<K>
+where
+    K: DBData,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        let n = min(n, self.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+}
+
 /// An input handle that wraps a [`SetHandle<V>`](`SetHandle`)
 /// returned by
 /// [`RootCircuit::add_input_set`](`dbsp::RootCircuit::add_input_set`).
@@ -582,10 +633,18 @@ where
 
     fn push(&mut self, n: usize) {
         self.save();
-        debug_assert!(n <= self.committed_len);
+        let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.committed_len = 0;
+        Box::new(DeSetStreamBuffer {
+            updates: take(&mut self.updates),
+            handle: self.handle.clone(),
+        })
     }
 }
 
@@ -740,6 +799,34 @@ where
     }
 }
 
+struct DeMapStreamBuffer<K, V, U>
+where
+    K: DBData,
+    V: DBData,
+    U: DBData,
+{
+    updates: Vec<Tup2<K, Update<V, U>>>,
+    handle: MapHandle<K, V, U>,
+}
+
+impl<K, V, U> InputBuffer for DeMapStreamBuffer<K, V, U>
+where
+    K: DBData,
+    V: DBData,
+    U: DBData,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        let n = min(n, self.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+}
+
 /// An input handle that wraps a [`MapHandle<K, V>`](`MapHandle`)
 /// returned by
 /// [`RootCircuit::add_input_map`](`dbsp::RootCircuit::add_input_map`).
@@ -853,10 +940,18 @@ where
 
     fn push(&mut self, n: usize) {
         self.save();
-        debug_assert!(n <= self.committed_len);
+        let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.committed_len = 0;
+        Box::new(DeMapStreamBuffer {
+            updates: take(&mut self.updates),
+            handle: self.handle.clone(),
+        })
     }
 }
 

@@ -29,6 +29,8 @@ use pipeline_types::format::json::JsonFlavor;
 use pipeline_types::format::parquet::{ParquetEncoderConfig, ParquetParserConfig};
 use pipeline_types::program_schema::{ColumnType, Field, IntervalUnit, Relation, SqlType};
 
+use super::InputBuffer;
+
 #[cfg(test)]
 pub mod test;
 
@@ -176,6 +178,11 @@ impl Parser for ParquetParser {
     fn flush(&mut self, n: usize) {
         self.input_stream.push(n)
     }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.input_stream.take_buffer()
+    }
+    
 }
 
 /// CSV format encoder.

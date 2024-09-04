@@ -33,6 +33,7 @@
 //! of transmitted bytes and records and updating respective performance
 //! counters in the controller.
 
+use crate::format::InputBuffer;
 use crate::transport::InputReader;
 use crate::transport::Step;
 use crate::transport::{
@@ -616,15 +617,15 @@ impl Controller {
                         start = None;
                         let mut total_consumed = 0;
                         for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
-                            let num_records = endpoint.reader.flush(endpoint.max_batch_size);
+                            let num_records = endpoint.reader.flush(endpoint.max_batch_size as usize);
                             controller.status.inputs.read().unwrap()[id]
-                                .consume_buffered(num_records);
+                                .consume_buffered(num_records as u64);
                             total_consumed += num_records;
                         }
                         controller
                             .status
                             .global_metrics
-                            .consume_buffered_inputs(total_consumed);
+                            .consume_buffered_inputs(total_consumed as u64);
 
                         // All input records accumulated so far (and possibly some more) will
                         // be fully processed after the `step()` call returns.
@@ -1799,7 +1800,6 @@ impl InputProbe {
 
 /// `InputConsumer` interface exposed to the transport endpoint.
 impl Parser for InputProbe {
-    
     fn input_fragment(&mut self, data: &[u8]) -> (usize, Vec<ParseError>) {
         let (num_records, errors) = self.parser.input_fragment(data);
         self.input_common(data, num_records, errors)
@@ -1831,6 +1831,10 @@ impl Parser for InputProbe {
 
     fn flush(&mut self, n: usize) {
         self.parser.flush(n)
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.parser.take_buffer()
     }
 }
 

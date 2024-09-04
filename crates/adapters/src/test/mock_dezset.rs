@@ -1,4 +1,5 @@
 use crate::catalog::ArrowStream;
+use crate::format::InputBuffer;
 use crate::{
     catalog::{DeCollectionStream, RecordFormat},
     static_compile::deinput::{
@@ -12,6 +13,7 @@ use pipeline_types::serde_with_context::{DeserializeWithContext, SqlSerdeConfig}
 use std::{
     cmp::min,
     fmt::Debug,
+    mem::take,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -155,6 +157,28 @@ where
     }
 }
 
+struct MockDeZSetStreamBuffer<T, U> {
+    updates: Vec<MockUpdate<T, U>>,
+    handle: MockDeZSet<T, U>,
+}
+
+impl<T, U> InputBuffer for MockDeZSetStreamBuffer<T, U>
+where
+    T: Send,
+    U: Send,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        let n = min(n, self.len());
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
+    }
+}
+
 #[derive(Clone)]
 pub struct MockDeZSetStream<De, T, U> {
     updates: Vec<MockUpdate<T, U>>,
@@ -224,6 +248,14 @@ where
 
         let mut state = self.handle.0.lock().unwrap();
         state.flushed.extend(self.updates.drain(..n));
+    }
+
+    fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
+        self.committed_len = 0;
+        Box::new(MockDeZSetStreamBuffer {
+            updates: take(&mut self.updates),
+            handle: self.handle.clone(),
+        })
     }
 }
 
