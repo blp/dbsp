@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use aws_sdk_s3::operation::{get_object::GetObjectOutput, list_objects_v2::ListObjectsV2Error};
 use log::error;
@@ -7,7 +10,9 @@ use tokio::sync::{
     watch::{channel, Receiver, Sender},
 };
 
-use crate::{InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint};
+use crate::{
+    format::InputBuffer, InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint,
+};
 use dbsp::circuit::tokio::TOKIO;
 #[cfg(test)]
 use mockall::automock;
@@ -118,6 +123,7 @@ trait S3Api: Send {
 
 struct S3InputReader {
     sender: Sender<PipelineState>,
+    queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
 }
 
 impl InputReader for S3InputReader {
@@ -135,7 +141,20 @@ impl InputReader for S3InputReader {
         self.sender.send_replace(PipelineState::Terminated);
     }
 
-    fn flush(&self, _n: usize) -> usize { todo!() }
+    fn flush(&self, n: usize) -> usize {
+        let mut total = 0;
+        while total < n {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            total += buffer.flush(n - total);
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
+    }
 }
 
 impl Drop for S3InputReader {
@@ -166,14 +185,24 @@ impl S3InputReader {
         let (sender, receiver) = channel(PipelineState::Paused);
         let config_clone = config.clone();
         let receiver_clone = receiver.clone();
-        std::thread::spawn(move || {
-            TOKIO.block_on(async {
-                let _ =
-                    Self::worker_task(s3_client, config_clone, consumer, parser, receiver_clone)
-                        .await;
-            })
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        std::thread::spawn({
+            let queue = queue.clone();
+            move || {
+                TOKIO.block_on(async {
+                    let _ = Self::worker_task(
+                        s3_client,
+                        config_clone,
+                        consumer,
+                        parser,
+                        queue,
+                        receiver_clone,
+                    )
+                    .await;
+                })
+            }
         });
-        S3InputReader { sender }
+        S3InputReader { sender, queue }
     }
 
     async fn worker_task(
@@ -181,6 +210,7 @@ impl S3InputReader {
         config: Arc<S3InputConfig>,
         mut consumer: Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
+        queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
         mut receiver: Receiver<PipelineState>,
     ) -> anyhow::Result<()> {
         // The worker thread fetches objects in the background while already retrieved
@@ -251,6 +281,9 @@ impl S3InputReader {
                                                 Err(e) => consumer.error(false, e.into())
                                         }
                                     }
+                                    if let Some(buffer) = parser.take_buffer() {
+                                        queue.lock().unwrap().push_back(buffer);
+                                    }
                                 }
                                 Some(Err(e)) => {
                                     match e.downcast_ref::<ListObjectsV2Error>() {
@@ -299,7 +332,6 @@ mod test {
     use crate::{
         test::{mock_parser_pipeline, wait, MockDeZSet, MockInputConsumer, MockInputParser},
         transport::s3::{S3InputConfig, S3InputReader},
-        Parser,
     };
     use aws_sdk_s3::{
         operation::{
@@ -394,7 +426,7 @@ format:
     }
 
     fn run_test(config_str: &str, mock: super::MockS3Client, test_data: Vec<TestStruct>) {
-        let (reader, consumer, mut parser, input_handle) = test_setup(config_str, mock);
+        let (reader, consumer, parser, input_handle) = test_setup(config_str, mock);
         let _ = reader.pause();
         // No outputs should be produced at this point.
         assert!(parser.state().data.is_empty());
@@ -404,7 +436,7 @@ format:
         reader.start(0).unwrap();
         wait(
             || {
-                parser.flush_all();
+                reader.flush_all();
                 input_handle.state().flushed.len() == test_data.len()
             },
             10000,
@@ -500,12 +532,12 @@ format:
             .with(eq("test-bucket"), eq(""), eq(&None))
             .return_once(|_, _, _| Ok((objs, None)));
         let test_data: Vec<TestStruct> = (0..1000).map(|i| TestStruct { i }).collect();
-        let (reader, _consumer, mut parser, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
+        let (reader, _consumer, _parser, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
         reader.start(0).unwrap();
         // Pause after 50 rows are recorded.
         wait(
             || {
-                parser.flush_all();
+                reader.flush_all();
                 input_handle.state().flushed.len() > 50
             },
             10000,
@@ -514,18 +546,18 @@ format:
         let _ = reader.pause();
         // Wait a few milliseconds for the worker to pause and write any WIP object
         std::thread::sleep(Duration::from_millis(10));
-        parser.flush_all();
+        reader.flush_all();
         let n = input_handle.state().flushed.len();
         // Wait a few more milliseconds and make sure no more entries were written
         std::thread::sleep(Duration::from_millis(100));
-        parser.flush_all();
+        reader.flush_all();
         assert_eq!(n, input_handle.state().flushed.len());
         assert_ne!(input_handle.state().flushed.len(), test_data.len());
         // Resume to completion
         reader.start(0).unwrap();
         wait(
             || {
-                parser.flush_all();
+                reader.flush_all();
                 input_handle.state().flushed.len() == test_data.len()
             },
             10000,

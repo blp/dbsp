@@ -1,4 +1,5 @@
 use super::{count_partitions_in_topic, Ctp, DataConsumerContext, ErrorHandler, POLL_TIMEOUT};
+use crate::format::InputBuffer;
 use crate::transport::kafka::ft::check_fatal_errors;
 use crate::transport::{InputEndpoint, InputReader, Step};
 use crate::{InputConsumer, Parser, TransportInputEndpoint};
@@ -21,7 +22,7 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
 use std::cmp::{max, Ordering};
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::thread::{self};
@@ -135,6 +136,7 @@ struct Reader {
     complete_step: Arc<Mutex<Option<Step>>>,
     unparker: Unparker,
     join_handle: Option<JoinHandle<()>>,
+    queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
 }
 
 impl Reader {
@@ -172,6 +174,21 @@ impl InputReader for Reader {
     fn disconnect(&self) {
         self.set_action(Err(ExitRequest));
     }
+
+    fn flush(&self, n: usize) -> usize {
+        let mut total = 0;
+        while total < n {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            total += buffer.flush(n - total);
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
+    }
 }
 
 impl Drop for Reader {
@@ -199,20 +216,26 @@ impl Reader {
         let unparker = parker.unparker().clone();
         let action = Arc::new(Mutex::new(Ok(OkAction::Pause)));
         let complete_step = Arc::new(Mutex::new(None));
-        let join_handle = Some(WorkerThread::spawn(
-            &action,
-            &complete_step,
-            start_step,
-            parker,
-            config,
-            consumer,
-            parser,
-        ));
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let join_handle = {
+            let queue = queue.clone();
+            Some(WorkerThread::spawn(
+                &action,
+                &complete_step,
+                start_step,
+                parker,
+                config,
+                consumer,
+                parser,
+                queue,
+            ))
+        };
         Reader {
             action,
             complete_step,
             unparker,
             join_handle,
+            queue,
         }
     }
 }
@@ -289,6 +312,8 @@ struct WorkerThread {
 
     /// Consumer and parser.
     cp: Arc<Mutex<(Box<dyn InputConsumer>, Box<dyn Parser>)>>,
+
+    queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
 }
 
 impl WorkerThread {
@@ -300,6 +325,7 @@ impl WorkerThread {
         config: &Arc<Config>,
         receiver: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
+        queue: Arc<Mutex<VecDeque<Box<dyn InputBuffer>>>>,
     ) -> JoinHandle<()> {
         let cp = Arc::new(Mutex::new((receiver, parser)));
         let worker_thread = Self {
@@ -309,6 +335,7 @@ impl WorkerThread {
             parker,
             config: config.clone(),
             cp: cp.clone(),
+            queue,
         };
         Builder::new()
             .name(format!(
@@ -519,7 +546,14 @@ impl WorkerThread {
                         continue;
                     }
                     if let Some(payload) = data_message.payload() {
-                        let _ = self.cp.lock().unwrap().1.input_chunk(payload);
+                        let mut guard = self.cp.lock().unwrap();
+                        let _ = guard .1.input_chunk(payload);
+                        let buffer = guard.1.take_buffer();
+                        drop(guard);
+
+                        if let Some(buffer) = buffer {
+                            self.queue.lock().unwrap().push_back(buffer);
+                        }
                     }
                     p.next_offset = data_message.offset() + 1;
                 }
@@ -568,7 +602,14 @@ impl WorkerThread {
                             // step).
 
                             if let Some(payload) = data_message.payload() {
-                                let _ = self.cp.lock().unwrap().1.input_chunk(payload);
+                                let mut guard = self.cp.lock().unwrap();
+                                let _ = guard .1.input_chunk(payload);
+                                let buffer = guard.1.take_buffer();
+                                drop(guard);
+
+                                if let Some(buffer) = buffer {
+                                    self.queue.lock().unwrap().push_back(buffer);
+                                }
                             }
                             n_messages += 1;
                             n_bytes += data_message.payload_len();

@@ -217,7 +217,7 @@ pub trait InputReader: Send {
     fn complete(&self, _step: Step) {}
 
     /// Requests the reader to write up to `n`  records.
-    fn flush(&self, _n: usize) -> usize { todo!() }
+    fn flush(&self, _n: usize) -> usize;
 
     fn flush_all(&self) -> usize {
         self.flush(usize::MAX)

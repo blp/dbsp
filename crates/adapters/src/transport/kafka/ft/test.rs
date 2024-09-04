@@ -9,7 +9,7 @@ use crate::{
     transport::Step,
     Controller, InputConsumer, PipelineConfig,
 };
-use crate::{ParseError, Parser};
+use crate::{InputReader, ParseError, Parser};
 use anyhow::Error as AnyError;
 use crossbeam::sync::{Parker, Unparker};
 use env_logger::Env;
@@ -29,11 +29,18 @@ use std::{
 use uuid::Uuid;
 
 /// Wait to receive all records in `data` in the same order.
-fn wait_for_output_ordered(zset: &MockDeZSet<TestStruct, TestStruct>, data: &[Vec<TestStruct>]) {
+fn wait_for_output_ordered(
+    endpoint: &Box<dyn InputReader>,
+    zset: &MockDeZSet<TestStruct, TestStruct>,
+    data: &[Vec<TestStruct>],
+) {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || zset.state().flushed.len() == num_records,
+        || {
+            endpoint.flush_all();
+            zset.state().flushed.len() == num_records
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();
@@ -44,11 +51,18 @@ fn wait_for_output_ordered(zset: &MockDeZSet<TestStruct, TestStruct>, data: &[Ve
 }
 
 /// Wait to receive all records in `data` in some order.
-fn wait_for_output_unordered(zset: &MockDeZSet<TestStruct, TestStruct>, data: &[Vec<TestStruct>]) {
+fn wait_for_output_unordered(
+    endpoint: &Box<dyn InputReader>,
+    zset: &MockDeZSet<TestStruct, TestStruct>,
+    data: &[Vec<TestStruct>],
+) {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || zset.state().flushed.len() == num_records,
+        || {
+            endpoint.flush_all();
+            zset.state().flushed.len() == num_records
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();
@@ -568,7 +582,7 @@ impl Parser for DummyInputConsumer {
         todo!()
     }
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        todo!()
+        None
     }
 }
 
@@ -758,7 +772,7 @@ format:
     // Make sure all records arrive in the original order.
     producer.send_to_topic(&data, topic1);
 
-    wait_for_output_ordered(&zset, &data);
+    wait_for_output_ordered(&endpoint, &zset, &data);
     zset.reset();
 
     info!("proptest_kafka_input: Test: Receive from a topic with multiple partitions");
@@ -768,7 +782,7 @@ format:
     // order.
     producer.send_to_topic(&data, topic2);
 
-    wait_for_output_unordered(&zset, &data);
+    wait_for_output_unordered(&endpoint, &zset, &data);
     zset.reset();
 
     info!("proptest_kafka_input: Test: pause/resume");
@@ -784,7 +798,7 @@ format:
 
     // Receive everything after unpause.
     endpoint.start(0).unwrap();
-    wait_for_output_unordered(&zset, &data);
+    wait_for_output_unordered(&endpoint, &zset, &data);
 
     zset.reset();
 
@@ -795,6 +809,7 @@ format:
 
     producer.send_to_topic(&data, topic1);
     sleep(Duration::from_millis(1000));
+    endpoint.flush_all();
     assert_eq!(zset.state().flushed.len(), 0);
 }
 
