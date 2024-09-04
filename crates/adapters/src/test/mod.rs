@@ -253,6 +253,7 @@ where
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).unwrap();
     let (_, errors) = parser.input_chunk(&bytes);
+    parser.flush_all();
 
     // Use assert_eq, so errors are printed in case of a failure.
     assert_eq!(errors, vec![]);

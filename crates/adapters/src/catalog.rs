@@ -144,7 +144,7 @@ pub trait DeCollectionStream: Send {
 
     fn push(&mut self, n: usize) -> usize;
 
-    fn push_all(&mut self) -> usize{
+    fn push_all(&mut self) -> usize {
         self.push(usize::MAX)
     }
 
@@ -159,6 +159,14 @@ pub trait ArrowStream: Send {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()>;
 
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()>;
+
+    fn push(&mut self, _n: usize) -> usize;
+
+    fn push_all(&mut self) -> usize {
+        self.push(usize::MAX)
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.

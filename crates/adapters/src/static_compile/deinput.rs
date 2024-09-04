@@ -438,6 +438,7 @@ where
 
 pub struct ArrowZSetStream<K, D, C> {
     handle: ZSetHandle<K>,
+    updates: Vec<Tup2<K, ZWeight>>,
     config: C,
     phantom: PhantomData<D>,
 }
@@ -446,6 +447,7 @@ impl<K, D, C> ArrowZSetStream<K, D, C> {
     pub fn new(handle: ZSetHandle<K>, config: C) -> Self {
         Self {
             handle,
+            updates: Vec::new(),
             config,
             phantom: PhantomData,
         }
@@ -461,8 +463,8 @@ where
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle
-            .append(&mut records.into_iter().map(|r| Tup2(K::from(r), 1)).collect());
+        self.updates
+            .extend(records.into_iter().map(|r| Tup2(K::from(r), 1)));
 
         Ok(())
     }
@@ -470,10 +472,28 @@ where
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle
-            .append(&mut records.into_iter().map(|r| Tup2(K::from(r), -1)).collect());
+        self.updates
+            .extend(records.into_iter().map(|r| Tup2(K::from(r), -1)));
 
         Ok(())
+    }
+
+    fn push(&mut self, n: usize) -> usize {
+        let n = min(n, self.updates.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(DeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
@@ -660,6 +680,7 @@ where
 
 pub struct ArrowSetStream<K, D, C> {
     handle: SetHandle<K>,
+    updates: Vec<Tup2<K, bool>>,
     config: C,
     phantom: PhantomData<D>,
 }
@@ -668,6 +689,7 @@ impl<K, D, C> ArrowSetStream<K, D, C> {
     pub fn new(handle: SetHandle<K>, config: C) -> Self {
         Self {
             handle,
+            updates: Vec::new(),
             config,
             phantom: PhantomData,
         }
@@ -683,12 +705,8 @@ where
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle.append(
-            &mut records
-                .into_iter()
-                .map(|r| Tup2(K::from(r), true))
-                .collect(),
-        );
+        self.updates
+            .extend(records.into_iter().map(|r| Tup2(K::from(r), true)));
 
         Ok(())
     }
@@ -696,18 +714,32 @@ where
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<D>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle.append(
-            &mut records
-                .into_iter()
-                .map(|r| Tup2(K::from(r), false))
-                .collect(),
-        );
+        self.updates
+            .extend(records.into_iter().map(|r| Tup2(K::from(r), false)));
 
         Ok(())
     }
 
     fn fork(&self) -> Box<dyn ArrowStream> {
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
+    }
+
+    fn push(&mut self, n: usize) -> usize {
+        let n = min(n, self.updates.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(DeSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -977,6 +1009,7 @@ where
 {
     value_key_func: VF,
     handle: MapHandle<K, V, U>,
+    updates: Vec<Tup2<K, Update<V, U>>>,
     config: C,
     phantom: PhantomData<fn(KD, VD)>,
 }
@@ -991,6 +1024,7 @@ where
         Self {
             value_key_func,
             handle,
+            updates: Vec::new(),
             config,
             phantom: PhantomData,
         }
@@ -1010,15 +1044,10 @@ where
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<VD>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle.append(
-            &mut records
-                .into_iter()
-                .map(|r| {
-                    let v = V::from(r);
-                    Tup2((self.value_key_func)(&v), Update::Insert(v))
-                })
-                .collect(),
-        );
+        self.updates.extend(records.into_iter().map(|r| {
+            let v = V::from(r);
+            Tup2((self.value_key_func)(&v), Update::Insert(v))
+        }));
 
         Ok(())
     }
@@ -1026,15 +1055,10 @@ where
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()> {
         let deserializer = ArrowDeserializer::from_record_batch(data)?;
         let records = Vec::<VD>::deserialize_with_context(deserializer, &self.config)?;
-        self.handle.append(
-            &mut records
-                .into_iter()
-                .map(|r| {
-                    let v = V::from(r);
-                    Tup2((self.value_key_func)(&v), Update::Delete)
-                })
-                .collect(),
-        );
+        self.updates.extend(records.into_iter().map(|r| {
+            let v = V::from(r);
+            Tup2((self.value_key_func)(&v), Update::Delete)
+        }));
 
         Ok(())
     }
@@ -1045,6 +1069,24 @@ where
             self.value_key_func.clone(),
             self.config.clone(),
         ))
+    }
+
+    fn push(&mut self, n: usize) -> usize {
+        let n = min(n, self.updates.len());
+        let mut head = self.updates.drain(..n).collect();
+        self.handle.append(&mut head);
+        n
+    }
+
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(DeMapStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
     }
 }
 

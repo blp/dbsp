@@ -628,10 +628,6 @@ impl Controller {
                             .global_metrics
                             .consume_buffered_inputs(total_consumed as u64);
 
-                        // All input records accumulated so far (and possibly some more) will
-                        // be fully processed after the `step()` call returns.
-                        let processed_records = controller.status.num_total_input_records();
-
                         // Wake up the backpressure thread to unpause endpoints blocked due to
                         // backpressure.
                         controller.unpark_backpressure();
@@ -639,9 +635,10 @@ impl Controller {
                         circuit.step().unwrap_or_else(|e| controller.error(e));
                         debug!("circuit thread: 'circuit.step' returned");
 
-                        controller
+                        let processed_records = controller
                             .status
-                            .set_num_total_processed_records(processed_records);
+                            .global_metrics
+                            .processed_records(total_consumed as u64);
 
                         // Push output batches to output pipelines.
                         let outputs = controller.outputs.read().unwrap();
@@ -1264,8 +1261,7 @@ impl ControllerInner {
 
                 endpoint
                     .open(input_handle, 0)
-                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
-                todo!()
+                    .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
             }
         };
 

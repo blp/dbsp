@@ -144,6 +144,11 @@ impl GlobalControllerMetrics {
         self.step_requested.store(false, Ordering::Release);
     }
 
+    pub(crate) fn processed_records(&self, num_records: u64) -> u64 {
+        self.total_processed_records
+            .fetch_add(num_records, Ordering::AcqRel)
+    }
+
     fn num_buffered_input_records(&self) -> u64 {
         self.buffered_input_records.load(Ordering::Acquire)
     }
@@ -154,11 +159,6 @@ impl GlobalControllerMetrics {
 
     fn num_total_processed_records(&self) -> u64 {
         self.total_processed_records.load(Ordering::Acquire)
-    }
-
-    fn set_num_total_processed_records(&self, total_processed_records: u64) {
-        self.total_processed_records
-            .store(total_processed_records, Ordering::Release);
     }
 
     fn step_requested(&self) -> bool {
@@ -471,11 +471,6 @@ impl ControllerStatus {
 
     pub fn num_total_processed_records(&self) -> u64 {
         self.global_metrics.num_total_processed_records()
-    }
-
-    pub fn set_num_total_processed_records(&self, total_processed_records: u64) {
-        self.global_metrics
-            .set_num_total_processed_records(total_processed_records);
     }
 
     pub fn step_requested(&self) -> bool {
