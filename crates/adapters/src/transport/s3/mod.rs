@@ -134,6 +134,8 @@ impl InputReader for S3InputReader {
     fn disconnect(&self) {
         self.sender.send_replace(PipelineState::Terminated);
     }
+
+    fn flush(&self, _n: usize) -> usize { todo!() }
 }
 
 impl Drop for S3InputReader {
