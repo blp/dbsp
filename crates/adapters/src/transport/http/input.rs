@@ -1,11 +1,10 @@
 use crate::transport::InputEndpoint;
-use crate::Parser;
 use crate::{
     server::{PipelineError, MAX_REPORTED_PARSE_ERRORS},
     transport::{InputReader, Step},
-    ControllerError, InputConsumer, ParseError, PipelineState, TransportConfig,
-    TransportInputEndpoint,
+    ControllerError, InputConsumer, PipelineState, TransportConfig, TransportInputEndpoint,
 };
+use crate::{ParseError, Parser};
 use actix_web::{web::Payload, HttpResponse};
 use anyhow::{anyhow, Error as AnyError, Result as AnyResult};
 use atomic::Atomic;
@@ -14,6 +13,7 @@ use futures_util::StreamExt;
 use log::debug;
 use pipeline_types::program_schema::Relation;
 use serde::Deserialize;
+use std::sync::atomic::AtomicUsize;
 use std::{
     sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
@@ -60,6 +60,7 @@ struct HttpInputEndpointInner {
     state: Atomic<PipelineState>,
     status_notifier: watch::Sender<()>,
     cp: Mutex<Option<(Box<dyn InputConsumer>, Box<dyn Parser>)>>,
+    queued: AtomicUsize,
     /// Ingest data even if the pipeline is paused.
     force: bool,
 }
@@ -75,6 +76,7 @@ impl HttpInputEndpointInner {
             }),
             status_notifier: watch::channel(()).0,
             cp: Mutex::new(None),
+            queued: AtomicUsize::new(0),
             force,
         }
     }
@@ -105,28 +107,25 @@ impl HttpInputEndpoint {
         self.inner.status_notifier.send_replace(());
     }
 
-    fn push_bytes(&self, bytes: &[u8]) -> Vec<ParseError> {
-        self.inner
-            .cp
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .1
-            .input_fragment(bytes)
-            .1
-    }
+    // Calls `errors`, which parses records and returns the number of records
+    // parsed and any errors that occurred, flushes the records, adds the errors
+    // to `errors`, and returns the number of errors.
+    fn push<F>(&self, f: F, errors: &mut CircularQueue<ParseError>) -> usize
+    where
+        F: FnOnce(&mut Box<dyn Parser>) -> (usize, Vec<ParseError>),
+    {
+        let mut guard = self.inner.cp.lock().unwrap();
+        let parser = &mut guard.as_mut().unwrap().1;
+        let (num_records, mut new_errors) = f(parser);
+        self.inner.queued.fetch_add(num_records, Ordering::SeqCst);
+        parser.flush_all();
+        drop(guard);
 
-    fn eoi(&self) -> Vec<ParseError> {
-        self.inner
-            .cp
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .1
-            .end_of_fragments()
-            .1
+        let num_errors = new_errors.len();
+        for error in new_errors.drain(..) {
+            errors.push(error);
+        }
+        num_errors
     }
 
     fn error(&self, fatal: bool, error: AnyError) {
@@ -169,11 +168,8 @@ impl HttpInputEndpoint {
                         Err(_elapsed) => (),
                         Ok(Some(Ok(bytes))) => {
                             num_bytes += bytes.len();
-                            let mut new_errors = self.push_bytes(&bytes);
-                            num_errors += new_errors.len();
-                            for error in new_errors.drain(..) {
-                                errors.push(error);
-                            }
+                            num_errors +=
+                                self.push(|parser| parser.input_fragment(&bytes), &mut errors);
                         }
                         Ok(Some(Err(e))) => {
                             self.error(true, anyhow!(e.to_string()));
@@ -184,11 +180,8 @@ impl HttpInputEndpoint {
                             ))?
                         }
                         Ok(None) => {
-                            let mut new_errors = self.eoi();
-                            num_errors += new_errors.len();
-                            for error in new_errors.drain(..) {
-                                errors.push(error);
-                            }
+                            num_errors +=
+                                self.push(|parser| parser.end_of_fragments(), &mut errors);
                             break;
                         }
                     }
@@ -253,5 +246,9 @@ impl InputReader for HttpInputEndpoint {
             .state
             .store(PipelineState::Terminated, Ordering::Release);
         self.notify();
+    }
+
+    fn flush(&self, _n: usize) -> usize {
+        self.inner.queued.swap(0, Ordering::SeqCst)
     }
 }

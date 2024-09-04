@@ -279,7 +279,7 @@ format:
         }
         writer.flush().unwrap();
 
-        let (endpoint, consumer, parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
+        let (endpoint, consumer, _parser, zset) = mock_input_pipeline::<TestStruct, TestStruct>(
             serde_yaml::from_str(&config_str).unwrap(),
             Relation::empty(),
         )

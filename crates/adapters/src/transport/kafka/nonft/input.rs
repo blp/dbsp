@@ -1,3 +1,4 @@
+use crate::format::InputBuffer;
 use crate::transport::InputEndpoint;
 use crate::Parser;
 use crate::{
@@ -21,6 +22,7 @@ use rdkafka::{
     error::{KafkaError, KafkaResult},
     ClientConfig, ClientContext, Message,
 };
+use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Sender};
@@ -116,6 +118,7 @@ struct KafkaInputReaderInner {
     state: Atomic<PipelineState>,
     kafka_consumer: BaseConsumer<KafkaInputContext>,
     errors: ArrayQueue<(KafkaError, String)>,
+    queue: Mutex<VecDeque<Box<dyn InputBuffer>>>,
 }
 
 impl KafkaInputReaderInner {
@@ -149,6 +152,9 @@ impl KafkaInputReaderInner {
                     // Leave it to the controller to handle errors.  There is noone we can
                     // forward the error to upstream.
                     let _ = parser.input_chunk(payload);
+                    if let Some(buffer) = parser.take_buffer() {
+                        self.queue.lock().unwrap().push_back(buffer);
+                    }
                 }
             }
         }
@@ -244,6 +250,7 @@ impl KafkaInputReader {
             state: Atomic::new(PipelineState::Paused),
             kafka_consumer: BaseConsumer::from_config_and_context(&client_config, context)?,
             errors: ArrayQueue::new(ERROR_BUFFER_SIZE),
+            queue: Mutex::new(VecDeque::new()),
         });
 
         *inner.kafka_consumer.context().endpoint.lock().unwrap() = Arc::downgrade(&inner);
@@ -281,6 +288,9 @@ impl KafkaInputReader {
                         // Leave it to the controller to handle errors.  There is noone we can
                         // forward the error to upstream.
                         let _ = parser.input_chunk(payload);
+                        if let Some(buffer) = parser.take_buffer() {
+                            inner.queue.lock().unwrap().push_back(buffer);
+                        }
                     }
                 }
                 _ => (),
@@ -540,6 +550,21 @@ impl InputReader for KafkaInputReader {
     fn disconnect(&self) {
         self.0.set_state(PipelineState::Terminated);
         self.1.thread().unpark();
+    }
+
+    fn flush(&self, n: usize) -> usize {
+        let mut total = 0;
+        while total < n {
+            let Some(mut buffer) = self.0.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            total += buffer.flush(n - total);
+            if !buffer.is_empty() {
+                self.0.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
     }
 }
 

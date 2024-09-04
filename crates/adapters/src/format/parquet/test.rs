@@ -21,7 +21,7 @@ use tempfile::NamedTempFile;
 
 use crate::{
     catalog::SerBatchReader,
-    format::{parquet::ParquetEncoder, Encoder, Parser},
+    format::{parquet::ParquetEncoder, Encoder},
     static_compile::seroutput::SerBatchImpl,
     test::{mock_input_pipeline, wait, MockOutputConsumer, TestStruct2, DEFAULT_TIMEOUT_MS},
 };

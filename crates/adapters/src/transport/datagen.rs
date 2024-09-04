@@ -1501,7 +1501,7 @@ transport:
     config:
         plan: [ { limit: 10, fields: {} } ]
 "#;
-        let (endpoint, consumer, parser, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1533,7 +1533,7 @@ transport:
     config:
         plan: [ { limit: 10, fields: { "id": { "strategy": "increment", "range": [10, 20], scale: 3 } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1559,7 +1559,7 @@ transport:
     config:
         plan: [ { limit: 1, fields: { "id": { "strategy": "uniform", "range": [10, 20] } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1583,7 +1583,7 @@ transport:
     config:
         plan: [ { limit: 4, fields: { "id": { values: [99, 100, 101] } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1629,7 +1629,7 @@ transport:
     config:
         plan: [ { limit: 10, fields: { "name": { null_percentage: 100 } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1653,7 +1653,7 @@ transport:
     config:
         plan: [ { limit: 100, fields: { "name": { null_percentage: 50 } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1681,7 +1681,7 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "name": { "strategy": "word" } } } ]
 "#;
-        let (_endpoint, consumer, parser, zset) =
+        let (_endpoint, consumer, _parser, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1782,7 +1782,7 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "bs": { "range": [ 1, 2 ], value: { "range": [128, 255], "strategy": "uniform" } } } } ]
 "#;
-        let (endpoint, consumer, parser, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<ByteStruct, ByteStruct>(config_str, ByteStruct::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1897,7 +1897,7 @@ transport:
     config:
         plan: [ { limit: 2, fields: {} } ]
 "#;
-        let (endpoint, consumer, parser, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1929,7 +1929,7 @@ transport:
     config:
         plan: [ { limit: 3, fields: { "ts": { "range": [1724803200000, 1724803200002] }, "dt": { "range": [19963, 19965] }, "t": { "range": [5, 7] } } } ]
 "#;
-        let (endpoint, consumer, parser, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -1969,7 +1969,7 @@ transport:
         plan: [ { limit: 3, fields: {  "ts": { "range": ["2024-08-28T00:00:00Z", "2024-08-28T00:00:02Z"], "scale": 1000 }, "dt": { "range": ["2024-08-28", "2024-08-30"] }, "t": { "range": ["00:00:05", "00:00:07"], "scale": 1000 } } } ]
 
 "#;
-        let (endpoint, consumer, parser, zset) =
+        let (endpoint, consumer, _parser, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
@@ -2022,7 +2022,7 @@ transport:
         workers: {workers}
 "
         );
-        let (_endpoint, consumer, parser, _zset) =
+        let (_endpoint, consumer, _parser, _zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str.as_str(), TestStruct2::schema())
                 .unwrap();
 

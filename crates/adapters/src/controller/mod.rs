@@ -617,7 +617,8 @@ impl Controller {
                         start = None;
                         let mut total_consumed = 0;
                         for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
-                            let num_records = endpoint.reader.flush(endpoint.max_batch_size as usize);
+                            let num_records =
+                                endpoint.reader.flush(endpoint.max_batch_size as usize);
                             controller.status.inputs.read().unwrap()[id]
                                 .consume_buffered(num_records as u64);
                             total_consumed += num_records;
