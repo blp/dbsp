@@ -7,6 +7,7 @@ use atomic::Atomic;
 use crossbeam::sync::{Parker, Unparker};
 use pipeline_types::program_schema::Relation;
 use pipeline_types::transport::file::{FileInputConfig, FileOutputConfig};
+use std::sync::Mutex;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
@@ -52,6 +53,7 @@ impl TransportInputEndpoint for FileInputEndpoint {
 struct FileInputReader {
     status: Arc<Atomic<PipelineState>>,
     unparker: Option<Unparker>,
+    parser: Arc<Mutex<Box<dyn Parser>>>,
 }
 
 impl FileInputReader {
@@ -69,15 +71,21 @@ impl FileInputReader {
         };
 
         let parker = Parker::new();
+        let parser = Arc::new(Mutex::new(parser));
         let unparker = Some(parker.unparker().clone());
         let status = Arc::new(Atomic::new(PipelineState::Paused));
-        let status_clone = status.clone();
-        let follow = config.follow;
-        let _worker = spawn(move || {
-            Self::worker_thread(reader, consumer, parser, parker, status_clone, follow)
+        spawn({
+            let follow = config.follow;
+            let status = status.clone();
+            let parser = parser.clone();
+            move || Self::worker_thread(reader, consumer, parser, parker, status, follow)
         });
 
-        Ok(Self { status, unparker })
+        Ok(Self {
+            status,
+            unparker,
+            parser,
+        })
     }
 
     fn unpark(&self) {
@@ -89,7 +97,7 @@ impl FileInputReader {
     fn worker_thread(
         mut reader: BufReader<File>,
         mut consumer: Box<dyn InputConsumer>,
-        mut parser: Box<dyn Parser>,
+        parser: Arc<Mutex<Box<dyn Parser>>>,
         parker: Parker,
         status: Arc<Atomic<PipelineState>>,
         follow: bool,
@@ -117,7 +125,7 @@ impl FileInputReader {
 
                             // Leave it to the controller to handle errors.  There is noone we can
                             // forward the error to upstream.
-                            let _ = parser.input_fragment(data);
+                            let _ = parser.lock().unwrap().input_fragment(data);
                             let len = data.len();
                             reader.consume(len);
                         }
@@ -151,6 +159,10 @@ impl InputReader for FileInputReader {
 
         // Wake up the worker if it's paused.
         self.unpark();
+    }
+
+    fn flush(&self, n: usize) -> usize {
+        self.parser.lock().unwrap().flush(n)
     }
 }
 
@@ -280,7 +292,10 @@ format:
         // Unpause the endpoint, wait for the data to appear at the output.
         endpoint.start(0).unwrap();
         wait(
-            || zset.state().flushed.len() == test_data.len(),
+            || {
+                endpoint.flush_all();
+                zset.state().flushed.len() == test_data.len()
+            },
             DEFAULT_TIMEOUT_MS,
         )
         .unwrap();
@@ -340,7 +355,10 @@ format:
             // Unpause the endpoint, wait for the data to appear at the output.
             endpoint.start(0).unwrap();
             wait(
-                || zset.state().flushed.len() == test_data.len(),
+                || {
+                    endpoint.flush_all();
+                    zset.state().flushed.len() == test_data.len()
+                },
                 DEFAULT_TIMEOUT_MS,
             )
             .unwrap();
@@ -362,6 +380,7 @@ format:
         endpoint.start(0).unwrap();
         wait(
             || {
+                endpoint.flush_all();
                 let state = parser.state();
                 // println!("result: {:?}", state.parser_result);
                 state.parser_result.is_some() && !state.parser_result.as_ref().unwrap().1.is_empty()

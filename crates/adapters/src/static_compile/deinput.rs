@@ -414,12 +414,13 @@ where
         self.updates.truncate(self.committed_len);
     }
 
-    fn push(&mut self, n: usize) {
+    fn push(&mut self, n: usize) -> usize {
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+        n
     }
 
     fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
@@ -631,12 +632,13 @@ where
         self.updates.truncate(self.committed_len);
     }
 
-    fn push(&mut self, n: usize) {
+    fn push(&mut self, n: usize) -> usize{
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+        n
     }
 
     fn take_buffer(&mut self) -> Box<dyn InputBuffer> {
@@ -938,12 +940,13 @@ where
         self.updates.truncate(self.committed_len);
     }
 
-    fn push(&mut self, n: usize) {
+    fn push(&mut self, n: usize) -> usize{
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
         let mut head = self.updates.drain(..n).collect();
         self.handle.append(&mut head);
+        n
     }
 
     fn take_buffer(&mut self) -> Box<dyn InputBuffer> {

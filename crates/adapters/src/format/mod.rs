@@ -405,7 +405,9 @@ pub trait InputBuffer: Send {
 
     fn len(&self) -> usize;
 
-    fn is_empty(&self) -> bool { self.len() == 0}
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Parser that converts a raw byte stream into a stream of database records.
@@ -416,9 +418,9 @@ pub trait Parser: Send {
     fn take_buffer(&mut self) -> Box<dyn InputBuffer>;
 
     /// Sends the earliest `n` buffered records to the circuit.
-    fn flush(&mut self, n: usize);
+    fn flush(&mut self, n: usize) -> usize;
 
-    fn flush_all(&mut self) {
+    fn flush_all(&mut self) -> usize {
         self.flush(usize::MAX)
     }
 

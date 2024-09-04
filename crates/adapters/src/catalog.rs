@@ -142,9 +142,9 @@ pub trait DeCollectionStream: Send {
     // TODO: add another method to invoke `CollectionHandle::clear_input`?
     fn discard(&mut self);
 
-    fn push(&mut self, n: usize);
+    fn push(&mut self, n: usize) -> usize;
 
-    fn push_all(&mut self) {
+    fn push_all(&mut self) -> usize{
         self.push(usize::MAX)
     }
 

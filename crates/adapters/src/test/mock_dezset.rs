@@ -241,13 +241,14 @@ where
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
 
-    fn push(&mut self, n: usize) {
+    fn push(&mut self, n: usize) -> usize{
         self.save();
         let n = min(n, self.updates.len());
         self.committed_len -= n;
 
         let mut state = self.handle.0.lock().unwrap();
         state.flushed.extend(self.updates.drain(..n));
+        n
     }
 
     fn take_buffer(&mut self) -> Box<dyn InputBuffer> {

@@ -162,7 +162,7 @@ impl Parser for CsvParser {
         Box::new(Self::new(self.input_stream.fork()))
     }
 
-    fn flush(&mut self, n: usize) {
+    fn flush(&mut self, n: usize) -> usize {
         self.input_stream.push(n)
     }
 

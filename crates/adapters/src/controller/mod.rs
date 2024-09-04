@@ -1829,7 +1829,7 @@ impl Parser for InputProbe {
         ))
     }
 
-    fn flush(&mut self, n: usize) {
+    fn flush(&mut self, n: usize) -> usize {
         self.parser.flush(n)
     }
 

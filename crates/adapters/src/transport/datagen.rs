@@ -1455,7 +1455,7 @@ mod test {
     use crate::test::{
         mock_input_pipeline, MockDeZSet, MockInputConsumer, MockInputParser, TestStruct2,
     };
-    use crate::{InputReader, Parser};
+    use crate::InputReader;
     use anyhow::Result as AnyResult;
     use pipeline_types::config::{InputEndpointConfig, TransportConfig};
     use pipeline_types::program_schema::{ColumnType, Field, Relation, SqlType};

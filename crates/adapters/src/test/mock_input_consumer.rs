@@ -193,7 +193,7 @@ impl Parser for MockInputParser {
         Box::new(Self::new(state.parser.fork()))
     }
 
-    fn flush(&mut self, n: usize) {
+    fn flush(&mut self, n: usize) -> usize {
         let mut state = self.0.lock().unwrap();
         state.parser.flush(n)
     }
