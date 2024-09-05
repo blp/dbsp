@@ -3,11 +3,12 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::mem;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::sync::{Barrier, OnceLock, Weak};
 use std::thread::{self, Thread};
 
-use crate::format::InputBuffer;
+use crate::format::{EmptyInputBuffer, InputBuffer};
 use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
@@ -85,6 +86,10 @@ impl InputGenerator {
 impl InputReader for InputGenerator {
     fn start(&self, _step: Step) -> AnyResult<()> {
         self.inner.status[self.table].store(PipelineState::Running, Ordering::Release);
+        self.inner.consumable_batches.store(
+            self.inner.queued_batches.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         self.inner.unpark();
         Ok(())
     }
@@ -99,32 +104,28 @@ impl InputReader for InputGenerator {
         self.inner.unpark();
     }
 
-    fn flush(&self, n: usize) -> usize {
-        if self.table != NexmarkTable::Bid {
+    fn flush(&self, _n: usize) -> usize {
+        let consumable_batches = self.inner.consumable_batches.load(Ordering::Acquire);
+
+        let n_threads = self.inner.options.get().unwrap().threads;
+        let mut buffers = Vec::with_capacity(n_threads);
+        let mut queue = self.inner.queue.lock().unwrap();
+        let batch_num = queue[self.table]
+            .front()
+            .map_or(usize::MAX, |front| front.0);
+        if batch_num >= consumable_batches {
             return 0;
         }
+        for _ in 0..n_threads {
+            let (_batch_num, buffer) = queue[self.table].pop_front().unwrap();
+            assert_eq!(_batch_num, batch_num);
+            buffers.push(buffer);
+        }
+        drop(queue);
 
         let mut total = 0;
-        while total < n {
-            // Get the oldest buffer from each.
-            let mut guard = self.inner.queue.lock().unwrap();
-            for thread_queue in guard.iter() {
-                if thread_queue.is_empty() {
-                    return total;
-                }
-            }
-            let mut buffers = Vec::with_capacity(guard.len());
-            for thread_queue in guard.iter_mut() {
-                buffers.push(thread_queue.pop_front().unwrap());
-            }
-            drop(guard);
-
-            // Flush the buffers.
-            for tables in buffers {
-                for mut table in tables {
-                    total += table.flush_all();
-                }
-            }
+        for mut buffer in buffers {
+            total += buffer.flush_all();
         }
         total
     }
@@ -142,7 +143,10 @@ struct Inner {
     /// The per-table consumers and parsers.
     cps: Mutex<EnumMap<NexmarkTable, Option<(Box<dyn InputConsumer>, Box<dyn Parser>)>>>,
 
-    queue: Mutex<Vec<VecDeque<[Box<dyn InputBuffer>; 3]>>>,
+    queue: Mutex<EnumMap<NexmarkTable, VecDeque<(usize, Box<dyn InputBuffer>)>>>,
+
+    consumable_batches: AtomicUsize,
+    queued_batches: AtomicUsize,
 
     /// The threads to wake up when we unpark.
     ///
@@ -159,7 +163,9 @@ impl Inner {
             status: EnumMap::from_fn(|_| Atomic::new(PipelineState::Paused)),
             options: OnceLock::new(),
             cps: Mutex::new(EnumMap::default()),
-            queue: Mutex::new(Vec::new()),
+            queue: Mutex::new(EnumMap::from_fn(|_| VecDeque::new())),
+            consumable_batches: AtomicUsize::new(0),
+            queued_batches: AtomicUsize::new(0),
             threads: Mutex::new(Vec::new()),
         });
         thread::Builder::new()
@@ -231,7 +237,9 @@ impl Inner {
         loop {
             match self.status() {
                 PipelineState::Paused => thread::park(),
-                PipelineState::Running => return Ok(()),
+                PipelineState::Running => {
+                    return Ok(());
+                }
                 PipelineState::Terminated => return Err(()),
             }
         }
@@ -260,9 +268,7 @@ impl Inner {
 
         // Start all the generator threads.
         let options = self.options.get_or_init(Default::default);
-        let barrier = options
-            .synchronize_threads
-            .then(|| Arc::new(Barrier::new(options.threads)));
+        let barrier = Arc::new(Barrier::new(options.threads));
         let generators = (0..options.threads)
             .map(|index| {
                 let cps = EnumMap::from_fn(|table| {
@@ -277,6 +283,7 @@ impl Inner {
                     .unwrap()
             })
             .collect::<Vec<_>>();
+        drop(barrier);
 
         // Make sure all the generator threads can get unparked, and then unpark
         // them for the first time to avoid a missed wakeup.
@@ -303,7 +310,7 @@ impl Inner {
         self: Arc<Self>,
         mut cps: EnumMap<NexmarkTable, (Box<dyn InputConsumer>, Box<dyn Parser>)>,
         index: usize,
-        barrier: Option<Arc<Barrier>>,
+        barrier: Arc<Barrier>,
     ) {
         let options = self.options.get().unwrap();
 
@@ -329,11 +336,9 @@ impl Inner {
         for i in 0..n_batches {
             // Wait until we're ready to run.
             if self.wait_to_run().is_err() {
-                if let Some(barrier) = barrier.as_ref() {
-                    // Make sure we synchronize exactly `n_batches` times.
-                    for _ in i..n_batches {
-                        barrier.wait();
-                    }
+                // Make sure we synchronize exactly `n_batches` times.
+                for _ in i..n_batches {
+                    barrier.wait();
                 }
                 return;
             }
@@ -359,18 +364,22 @@ impl Inner {
             }
 
             // Queue the batch.
-            let batch = writers
-                .map(|table, writer| {
-                    let data = writer.into_inner().unwrap().into_inner();
-                    let (_consumer, parser) = &mut cps[table];
-                    parser.input_chunk(data.as_slice());
-                    parser.take_buffer().unwrap()
-                })
-                .into_array();
-            self.queue.lock().unwrap()[index].push_back(batch);
+            let buffers = writers.map(|table, writer| {
+                let data = writer.into_inner().unwrap().into_inner();
+                let (_consumer, parser) = &mut cps[table];
+                parser.input_chunk(data.as_slice());
+                parser.take_buffer().unwrap_or(Box::new(EmptyInputBuffer))
+            });
+            let mut queue = self.queue.lock().unwrap();
+            for (table, buffer) in buffers {
+                queue[table].push_back((i as usize, buffer))
+            }
+            drop(queue);
 
             // Synchronize with the other threads.
-            barrier.as_ref().map(|barrier| barrier.wait());
+            if barrier.wait().is_leader() {
+                self.queued_batches.store(i as usize + 1, Ordering::Release);
+            }
         }
     }
 }

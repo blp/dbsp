@@ -811,8 +811,22 @@ impl Controller {
                 };
                 if *current_state != desired_state {
                     let result = match desired_state {
-                        EndpointState::Pause => ep.reader.pause(),
-                        EndpointState::Run(step) => ep.reader.start(step),
+                        EndpointState::Pause => {
+                            println!(
+                                "pausing {}: global={global_pause:?} user={:?} full={:?} (buffered={})",
+                                &ep.endpoint_name,
+                                controller.status.input_endpoint_paused_by_user(epid),
+                                controller.status.input_endpoint_full(epid),
+                                controller.status.num_input_endpoint_buffered_records(epid)
+                            );
+                            ep.reader.pause()
+                        }
+                        EndpointState::Run(step) => {
+                            if !matches!(*current_state, EndpointState::Run(_)) {
+                                println!("starting {}", &ep.endpoint_name);
+                            }
+                            ep.reader.start(step)
+                        }
                     };
                     if let Err(error) = result {
                         controller.input_transport_error(*epid, &ep.endpoint_name, true, error);

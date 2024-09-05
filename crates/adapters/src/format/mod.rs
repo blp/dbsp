@@ -414,6 +414,18 @@ pub trait InputBuffer: Send {
     }
 }
 
+pub struct EmptyInputBuffer;
+
+impl InputBuffer for EmptyInputBuffer {
+    fn flush(&mut self, _n: usize) -> usize {
+        0
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
 /// Parser that converts a raw byte stream into a stream of database records.
 ///
 /// Note that the implementation can assume that either `input_fragment` or
