@@ -300,7 +300,6 @@ def main():
             with open(profile_file_name, 'wb') as f:
                 for chunk in response.iter_content(1024):
                     f.write(chunk)
-            break
 
         # Stop pipeline
         elapsed = stop_pipeline(full_name, True)
