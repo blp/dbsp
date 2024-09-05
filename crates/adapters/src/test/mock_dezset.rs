@@ -251,16 +251,6 @@ where
         Box::new(Self::new(self.handle.clone(), self.config.clone()))
     }
 
-    fn push(&mut self, n: usize) -> usize {
-        self.save();
-        let n = min(n, self.updates.len());
-        self.committed_len -= n;
-
-        let mut state = self.handle.0.lock().unwrap();
-        state.flushed.extend(self.updates.drain(..n));
-        n
-    }
-
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         if !self.updates.is_empty() {
             self.committed_len = 0;
@@ -271,6 +261,27 @@ where
         } else {
             None
         }
+    }
+}
+
+impl<De, T, U> InputBuffer for MockDeZSetStream<De, T, U>
+where
+    T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
+    U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
+    De: DeserializerFromBytes<SqlSerdeConfig> + Send + 'static,
+{
+    fn flush(&mut self, n: usize) -> usize {
+        self.save();
+        let n = min(n, self.updates.len());
+        self.committed_len -= n;
+
+        let mut state = self.handle.0.lock().unwrap();
+        state.flushed.extend(self.updates.drain(..n));
+        n
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
     }
 }
 

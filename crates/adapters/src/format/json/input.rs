@@ -445,19 +445,25 @@ impl Parser for JsonParser {
         Box::new(Self::new(self.input_stream.fork(), self.config.clone()))
     }
 
-    fn flush(&mut self, n: usize) -> usize {
-        self.input_stream.push(n)
-    }
-
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.input_stream.take_buffer()
+    }
+}
+
+impl InputBuffer for JsonParser {
+    fn flush(&mut self, n: usize) -> usize {
+        self.input_stream.flush(n)
+    }
+
+    fn len(&self) -> usize {
+        self.input_stream.len()
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        format::Parser,
+        format::{InputBuffer, Parser},
         test::{init_test_logger, mock_parser_pipeline, MockUpdate},
         transport::InputConsumer,
         FormatConfig, ParseError,

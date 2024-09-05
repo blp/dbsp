@@ -1900,12 +1900,18 @@ impl Parser for InputProbe {
         ))
     }
 
+    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.parser.take_buffer()
+    }
+}
+
+impl InputBuffer for InputProbe {
     fn flush(&mut self, n: usize) -> usize {
         self.parser.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.parser.take_buffer()
+    fn len(&self) -> usize {
+        self.parser.len()
     }
 }
 

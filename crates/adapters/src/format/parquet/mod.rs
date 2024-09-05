@@ -176,14 +176,20 @@ impl Parser for ParquetParser {
         Box::new(Self::new(self.input_stream.fork()))
     }
 
-    fn flush(&mut self, n: usize) -> usize {
-        self.input_stream.push(n)
-    }
-
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.input_stream.take_buffer()
     }
     
+}
+
+impl InputBuffer for ParquetParser {
+    fn flush(&mut self, n: usize) -> usize {
+        self.input_stream.flush(n)
+    }
+
+    fn len(&self) -> usize {
+        self.input_stream.len()
+    }
 }
 
 /// CSV format encoder.

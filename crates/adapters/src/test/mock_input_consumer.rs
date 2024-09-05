@@ -193,13 +193,18 @@ impl Parser for MockInputParser {
         Box::new(Self::new(state.parser.fork()))
     }
 
-    fn flush(&mut self, n: usize) -> usize {
-        let mut state = self.0.lock().unwrap();
-        state.parser.flush(n)
-    }
-
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         let mut state = self.0.lock().unwrap();
         state.parser.take_buffer()
+    }
+}
+
+impl InputBuffer for MockInputParser {
+    fn flush(&mut self, n: usize) -> usize {
+        self.0.lock().unwrap().parser.flush(n)
+    }
+
+    fn len(&self) -> usize {
+        self.0.lock().unwrap().parser.len()
     }
 }

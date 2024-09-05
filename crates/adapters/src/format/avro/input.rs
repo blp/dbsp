@@ -439,10 +439,6 @@ impl Parser for AvroParser {
             .flatten()
     }
 
-    fn flush(&mut self, n: usize) -> usize {
-        self.input_stream.as_mut().map_or(0, |avro| avro.push(n))
-    }
-
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(AvroParser {
             endpoint_name: self.endpoint_name.clone(),
@@ -456,5 +452,15 @@ impl Parser for AvroParser {
             last_event_number: 0,
             schema_cache: self.schema_cache.clone(),
         })
+    }
+}
+
+impl InputBuffer for AvroParser{
+    fn flush(&mut self, n: usize) -> usize {
+        self.input_stream.as_mut().map_or(0, |avro| avro.push(n))
+    }
+
+    fn len(&self) -> usize {
+        self.input_stream.as_ref().map_or(0, |avro| avro.len())
     }
 }

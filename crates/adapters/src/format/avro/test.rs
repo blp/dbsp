@@ -4,7 +4,7 @@ use super::{
     serializer::{avro_ser_config, AvroSchemaSerializer},
 };
 use crate::{
-    format::Parser,
+    format::{InputBuffer, Parser},
     static_compile::seroutput::SerBatchImpl,
     test::{
         generate_test_batches_with_weights, mock_parser_pipeline, MockOutputConsumer, MockUpdate,

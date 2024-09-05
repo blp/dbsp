@@ -79,7 +79,7 @@ where
 /// [`DeCollectionHandle::configure_deserializer`].
 /// The data format accepted by the handle is determined
 /// by the `record_format` argument passed to this method.
-pub trait DeCollectionStream: Send {
+pub trait DeCollectionStream: Send + InputBuffer {
     /// Buffer a new insert update.
     ///
     /// Returns an error if deserialization fails, i.e., the serialized
@@ -142,12 +142,6 @@ pub trait DeCollectionStream: Send {
     // TODO: add another method to invoke `CollectionHandle::clear_input`?
     fn discard(&mut self);
 
-    fn push(&mut self, n: usize) -> usize;
-
-    fn push_all(&mut self) -> usize {
-        self.push(usize::MAX)
-    }
-
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
@@ -186,6 +180,8 @@ pub trait AvroStream: Send {
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn AvroStream>;
+
+    fn len(&self) -> usize {todo!() }
 
     fn push(&mut self, _n: usize) -> usize;
 
