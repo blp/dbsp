@@ -216,8 +216,14 @@ pub trait InputReader: Send {
     /// complete once a step fills up to the maximum size.
     fn complete(&self, _step: Step) {}
 
-    /// Requests the reader to write up to `n`  records.
-    fn flush(&self, _n: usize) -> usize;
+    /// A reader reads records into an internal buffer.  This method requests
+    /// the reader to write the `n` oldest of those records to the input handle
+    /// and return the number actually written.
+    ///
+    /// Some endpoints might have to write records in groups, so that they
+    /// actually write more than `n`. If the endpoint has fewer than `n` records
+    /// to write, then it should write as many as it has.
+    fn flush(&self, n: usize) -> usize;
 
     fn flush_all(&self) -> usize {
         self.flush(usize::MAX)
