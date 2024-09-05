@@ -20,8 +20,7 @@ CREATE TABLE person (
                 "options": {{
                     "events": {events},
                     "threads": {cores},
-                    "batch_size": 10000,
-                    "synchronize_threads": true
+                    "batch_size": 10000
                 }}
             }}
         }},
