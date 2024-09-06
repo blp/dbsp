@@ -11,7 +11,7 @@ use tokio::sync::{
 };
 
 use crate::{
-    format::InputBuffer, InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint,
+    format::{flush_vecdeque_queue, InputBuffer}, InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
 use dbsp::circuit::tokio::TOKIO;
 use feldera_types::program_schema::Relation;
@@ -142,18 +142,7 @@ impl InputReader for S3InputReader {
     }
 
     fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+        flush_vecdeque_queue(&self.queue, n)
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{count_partitions_in_topic, Ctp, DataConsumerContext, ErrorHandler, POLL_TIMEOUT};
-use crate::format::InputBuffer;
+use crate::format::{flush_vecdeque_queue, InputBuffer};
 use crate::transport::kafka::ft::check_fatal_errors;
 use crate::transport::{InputEndpoint, InputReader, Step};
 use crate::{InputConsumer, Parser, TransportInputEndpoint};
@@ -176,18 +176,7 @@ impl InputReader for Reader {
     }
 
     fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+        flush_vecdeque_queue(&self.queue, n)
     }
 }
 

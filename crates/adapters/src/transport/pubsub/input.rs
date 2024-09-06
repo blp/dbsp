@@ -1,5 +1,5 @@
 use crate::{
-    format::InputBuffer, transport::Step, InputConsumer, InputEndpoint, InputReader, Parser,
+    format::{flush_vecdeque_queue, InputBuffer}, transport::Step, InputConsumer, InputEndpoint, InputReader, Parser,
     PipelineState, TransportInputEndpoint,
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
@@ -213,18 +213,7 @@ impl InputReader for PubSubReader {
     }
 
     fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+        flush_vecdeque_queue(&self.queue, n)
     }
 }
 

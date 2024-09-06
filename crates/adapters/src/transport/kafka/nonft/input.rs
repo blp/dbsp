@@ -1,4 +1,4 @@
-use crate::format::InputBuffer;
+use crate::format::{flush_vecdeque_queue, InputBuffer};
 use crate::transport::InputEndpoint;
 use crate::Parser;
 use crate::{
@@ -553,18 +553,7 @@ impl InputReader for KafkaInputReader {
     }
 
     fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.0.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.0.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+        flush_vecdeque_queue(&self.0.queue, n)
     }
 }
 

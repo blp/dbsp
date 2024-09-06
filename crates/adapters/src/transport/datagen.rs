@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
-use crate::format::InputBuffer;
+use crate::format::{flush_vecdeque_queue, InputBuffer};
 use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
@@ -512,21 +512,8 @@ impl InputReader for InputGenerator {
         self.unpark();
     }
 
-    fn flush(&self, mut n: usize) -> usize {
-        let mut total = 0;
-        while n > 0 {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            let flushed = buffer.flush(n);
-            total += flushed;
-            n -= flushed;
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+    fn flush(&self, n: usize) -> usize {
+        flush_vecdeque_queue(&self.queue, n)
     }
 }
 

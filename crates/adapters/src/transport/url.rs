@@ -1,5 +1,9 @@
 use super::{InputConsumer, InputEndpoint, InputReader, Step, TransportInputEndpoint};
-use crate::{ensure_default_crypto_provider, format::InputBuffer, Parser, PipelineState};
+use crate::{
+    ensure_default_crypto_provider,
+    format::{flush_vecdeque_queue, InputBuffer},
+    Parser, PipelineState,
+};
 use actix::System;
 use actix_web::http::header::{ByteRangeSpec, ContentRangeSpec, Range, CONTENT_RANGE};
 use anyhow::{anyhow, Result as AnyResult};
@@ -276,21 +280,8 @@ impl InputReader for UrlInputReader {
         self.sender.send_replace(PipelineState::Terminated);
     }
 
-    fn flush(&self, mut n: usize) -> usize {
-        let mut total = 0;
-        while n > 0 {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            let flushed = buffer.flush(n);
-            total += flushed;
-            n -= flushed;
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+    fn flush(&self, n: usize) -> usize {
+        flush_vecdeque_queue(&self.queue, n)
     }
 }
 

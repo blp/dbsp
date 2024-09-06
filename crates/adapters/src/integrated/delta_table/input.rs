@@ -1,6 +1,6 @@
 use crate::catalog::{ArrowStream, InputCollectionHandle};
 use crate::controller::{ControllerInner, EndpointId};
-use crate::format::InputBuffer;
+use crate::format::{flush_vecdeque_queue, InputBuffer};
 use crate::integrated::delta_table::{delta_input_serde_config, register_storage_handlers};
 use crate::transport::{InputEndpoint, IntegratedInputEndpoint, Step};
 use crate::{
@@ -271,18 +271,7 @@ impl InputReader for DeltaTableInputReader {
     }
 
     fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.inner.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.inner.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
+        flush_vecdeque_queue(&self.inner.queue, n)
     }
 }
 
