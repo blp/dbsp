@@ -444,10 +444,6 @@ impl Parser for JsonParser {
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(Self::new(self.input_stream.fork(), self.config.clone()))
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.input_stream.take_buffer()
-    }
 }
 
 impl InputBuffer for JsonParser {
@@ -457,6 +453,10 @@ impl InputBuffer for JsonParser {
 
     fn len(&self) -> usize {
         self.input_stream.len()
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.input_stream.take()
     }
 }
 

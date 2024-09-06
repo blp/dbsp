@@ -167,15 +167,25 @@ where
     }
 }
 
+#[derive(Clone)]
 struct MockDeZSetStreamBuffer<T, U> {
     updates: Vec<MockUpdate<T, U>>,
     handle: MockDeZSet<T, U>,
 }
 
+impl<T, U> MockDeZSetStreamBuffer<T, U> {
+    fn new(handle: MockDeZSet<T, U>) -> Self {
+        Self {
+            updates: Vec::new(),
+            handle,
+        }
+    }
+}
+
 impl<T, U> InputBuffer for MockDeZSetStreamBuffer<T, U>
 where
-    T: Send,
-    U: Send,
+    T: Send + 'static,
+    U: Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
         let n = min(n, self.len());
@@ -187,13 +197,27 @@ where
     fn len(&self) -> usize {
         self.updates.len()
     }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(MockDeZSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
-pub struct MockDeZSetStream<De, T, U> {
-    updates: Vec<MockUpdate<T, U>>,
+pub struct MockDeZSetStream<De, T, U>
+where
+    T: Send,
+    U: Send,
+{
+    buffer: MockDeZSetStreamBuffer<T, U>,
     committed_len: usize,
-    handle: MockDeZSet<T, U>,
     deserializer: De,
     config: SqlSerdeConfig,
 }
@@ -201,12 +225,13 @@ pub struct MockDeZSetStream<De, T, U> {
 impl<De, T, U> MockDeZSetStream<De, T, U>
 where
     De: DeserializerFromBytes<SqlSerdeConfig>,
+    T: Send,
+    U: Send,
 {
     pub fn new(handle: MockDeZSet<T, U>, config: SqlSerdeConfig) -> Self {
         Self {
-            updates: Vec::new(),
+            buffer: MockDeZSetStreamBuffer::new(handle),
             committed_len: 0,
-            handle,
             deserializer: De::create(config.clone()),
             config,
         }
@@ -221,46 +246,34 @@ where
 {
     fn insert(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.updates.push(MockUpdate::Insert(val));
+        self.buffer.updates.push(MockUpdate::Insert(val));
         Ok(())
     }
 
     fn delete(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<T>(&mut self.deserializer, data)?;
-        self.updates.push(MockUpdate::Delete(val));
+        self.buffer.updates.push(MockUpdate::Delete(val));
         Ok(())
     }
 
     fn update(&mut self, data: &[u8]) -> AnyResult<()> {
         let val = DeserializerFromBytes::deserialize::<U>(&mut self.deserializer, data)?;
-        self.updates.push(MockUpdate::Update(val));
+        self.buffer.updates.push(MockUpdate::Update(val));
         Ok(())
     }
 
     fn reserve(&mut self, _reservation: usize) {}
 
     fn save(&mut self) {
-        self.committed_len = self.updates.len();
+        self.committed_len = self.buffer.updates.len();
     }
 
     fn discard(&mut self) {
-        self.updates.truncate(self.committed_len);
+        self.buffer.updates.truncate(self.committed_len);
     }
 
     fn fork(&self) -> Box<dyn DeCollectionStream> {
-        Box::new(Self::new(self.handle.clone(), self.config.clone()))
-    }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        if !self.updates.is_empty() {
-            self.committed_len = 0;
-            Some(Box::new(MockDeZSetStreamBuffer {
-                updates: take(&mut self.updates),
-                handle: self.handle.clone(),
-            }))
-        } else {
-            None
-        }
+        Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
     }
 }
 
@@ -271,17 +284,18 @@ where
     De: DeserializerFromBytes<SqlSerdeConfig> + Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
-        self.save();
-        let n = min(n, self.updates.len());
-        self.committed_len -= n;
-
-        let mut state = self.handle.0.lock().unwrap();
-        state.flushed.extend(self.updates.drain(..n));
+        let n = self.buffer.flush(n);
+        self.committed_len = self.buffer.len();
         n
     }
 
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.committed_len = 0;
+        self.buffer.take()
+    }
+
     fn len(&self) -> usize {
-        self.updates.len()
+        self.buffer.len()
     }
 }
 

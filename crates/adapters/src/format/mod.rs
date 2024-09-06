@@ -413,9 +413,7 @@ pub trait InputBuffer: Send {
         self.len() == 0
     }
 
-    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
-        todo!()
-    }
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>>;
 }
 
 pub struct EmptyInputBuffer;
@@ -439,8 +437,6 @@ impl InputBuffer for EmptyInputBuffer {
 /// Note that the implementation can assume that either `input_fragment` or
 /// `input_chunk` will be called, but not both.
 pub trait Parser: Send + InputBuffer {
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
-
     /// Push a fragment of the input stream to the parser.
     ///
     /// The parser breaks `data` up into records and add the records to its

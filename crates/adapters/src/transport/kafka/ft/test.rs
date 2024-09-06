@@ -580,10 +580,6 @@ impl Parser for DummyInputConsumer {
     fn fork(&self) -> Box<dyn Parser> {
         todo!()
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        None
-    }
 }
 
 impl InputBuffer for DummyInputConsumer {
@@ -593,6 +589,10 @@ impl InputBuffer for DummyInputConsumer {
 
     fn len(&self) -> usize {
         todo!()
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        None
     }
 }
 

@@ -452,10 +452,6 @@ where
     fn discard(&mut self) {
         self.buffer.updates.truncate(self.committed_len);
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.take()
-    }
 }
 
 impl<De, K, D, C> InputBuffer for DeZSetStream<De, K, D, C>
@@ -734,6 +730,17 @@ where
     fn len(&self) -> usize {
         self.updates.len()
     }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(DeSetStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 /// An input handle that wraps a [`SetHandle<V>`](`SetHandle`)
@@ -811,10 +818,6 @@ where
     fn discard(&mut self) {
         self.buffer.updates.truncate(self.committed_len);
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.buffer.take()
-    }
 }
 
 impl<De, K, D, C> InputBuffer for DeSetStream<De, K, D, C>
@@ -832,6 +835,10 @@ where
 
     fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.buffer.take()
     }
 }
 
@@ -1131,6 +1138,17 @@ where
     fn len(&self) -> usize {
         self.updates.len()
     }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        if !self.updates.is_empty() {
+            Some(Box::new(DeMapStreamBuffer {
+                updates: take(&mut self.updates),
+                handle: self.handle.clone(),
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 /// An input handle that wraps a [`MapHandle<K, V>`](`MapHandle`)
@@ -1243,10 +1261,6 @@ where
     fn discard(&mut self) {
         self.buffer.updates.truncate(self.committed_len);
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.buffer.take()
-    }
 }
 
 impl<De, K, KD, V, VD, U, UD, VF, UF, C> InputBuffer
@@ -1271,6 +1285,11 @@ where
 
     fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.committed_len = 0;
+        self.buffer.take()
     }
 }
 

@@ -432,13 +432,6 @@ impl Parser for AvroParser {
         (0, vec![])
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.input_stream
-            .as_mut()
-            .map(|avro| avro.take())
-            .flatten()
-    }
-
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(AvroParser {
             endpoint_name: self.endpoint_name.clone(),
@@ -462,5 +455,12 @@ impl InputBuffer for AvroParser {
 
     fn len(&self) -> usize {
         self.input_stream.as_ref().map_or(0, |avro| avro.len())
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.input_stream
+            .as_mut()
+            .map(|avro| avro.take())
+            .flatten()
     }
 }

@@ -368,7 +368,7 @@ impl Inner {
                 let data = writer.into_inner().unwrap().into_inner();
                 let (_consumer, parser) = &mut cps[table];
                 parser.input_chunk(data.as_slice());
-                parser.take_buffer().unwrap_or(Box::new(EmptyInputBuffer))
+                parser.take().unwrap_or(Box::new(EmptyInputBuffer))
             });
             let mut queue = self.queue.lock().unwrap();
             for (table, buffer) in buffers {

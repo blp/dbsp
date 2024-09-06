@@ -548,7 +548,7 @@ impl WorkerThread {
                     if let Some(payload) = data_message.payload() {
                         let mut guard = self.cp.lock().unwrap();
                         let _ = guard .1.input_chunk(payload);
-                        let buffer = guard.1.take_buffer();
+                        let buffer = guard.1.take();
                         drop(guard);
 
                         if let Some(buffer) = buffer {
@@ -604,7 +604,7 @@ impl WorkerThread {
                             if let Some(payload) = data_message.payload() {
                                 let mut guard = self.cp.lock().unwrap();
                                 let _ = guard .1.input_chunk(payload);
-                                let buffer = guard.1.take_buffer();
+                                let buffer = guard.1.take();
                                 drop(guard);
 
                                 if let Some(buffer) = buffer {

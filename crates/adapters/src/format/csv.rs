@@ -161,10 +161,6 @@ impl Parser for CsvParser {
     fn fork(&self) -> Box<dyn Parser> {
         Box::new(Self::new(self.input_stream.fork()))
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.input_stream.take_buffer()
-    }
 }
 
 impl InputBuffer for CsvParser {
@@ -174,6 +170,10 @@ impl InputBuffer for CsvParser {
 
     fn len(&self) -> usize {
         self.input_stream.len()
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.input_stream.take()
     }
 }
 

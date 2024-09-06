@@ -1899,10 +1899,6 @@ impl Parser for InputProbe {
             self.controller.clone(),
         ))
     }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.parser.take_buffer()
-    }
 }
 
 impl InputBuffer for InputProbe {
@@ -1913,6 +1909,11 @@ impl InputBuffer for InputProbe {
     fn len(&self) -> usize {
         self.parser.len()
     }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        self.parser.take()
+    }
+    
 }
 
 impl InputConsumer for InputProbe {

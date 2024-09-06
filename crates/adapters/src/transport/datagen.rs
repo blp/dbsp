@@ -453,7 +453,7 @@ impl InputGenerator {
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
                                 parser.input_chunk(&buffer);
-                                if let Some(b) = parser.take_buffer() {
+                                if let Some(b) = parser.take() {
                                     queue.lock().unwrap().push_back(b);
                                 }
                                 buffer.clear();
@@ -475,7 +475,7 @@ impl InputGenerator {
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
                     parser.input_chunk(&buffer);
-                    if let Some(b) = parser.take_buffer() {
+                    if let Some(b) = parser.take() {
                         queue.lock().unwrap().push_back(b);
                     }
                 }

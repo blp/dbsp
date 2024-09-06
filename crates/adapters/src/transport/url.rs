@@ -240,7 +240,7 @@ impl UrlInputReader {
                                     if !chunk.is_empty() {
                                         consumed_bytes += chunk.len() as u64;
                                         let _ = parser.input_fragment(chunk);
-                                        if let Some(buffer) = parser.take_buffer() {
+                                        if let Some(buffer) = parser.take() {
                                             queue.lock().unwrap().push_back(buffer);
                                         }
                                     }

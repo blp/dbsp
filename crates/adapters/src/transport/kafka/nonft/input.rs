@@ -152,7 +152,7 @@ impl KafkaInputReaderInner {
                     // Leave it to the controller to handle errors.  There is noone we can
                     // forward the error to upstream.
                     let _ = parser.input_chunk(payload);
-                    if let Some(buffer) = parser.take_buffer() {
+                    if let Some(buffer) = parser.take() {
                         self.queue.lock().unwrap().push_back(buffer);
                     }
                 }
@@ -288,7 +288,7 @@ impl KafkaInputReader {
                         // Leave it to the controller to handle errors.  There is noone we can
                         // forward the error to upstream.
                         let _ = parser.input_chunk(payload);
-                        if let Some(buffer) = parser.take_buffer() {
+                        if let Some(buffer) = parser.take() {
                             inner.queue.lock().unwrap().push_back(buffer);
                         }
                     }

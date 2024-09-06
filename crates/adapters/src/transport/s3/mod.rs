@@ -281,7 +281,7 @@ impl S3InputReader {
                                                 Err(e) => consumer.error(false, e.into())
                                         }
                                     }
-                                    if let Some(buffer) = parser.take_buffer() {
+                                    if let Some(buffer) = parser.take() {
                                         queue.lock().unwrap().push_back(buffer);
                                     }
                                 }

@@ -142,8 +142,6 @@ pub trait DeCollectionStream: Send + InputBuffer {
     // TODO: add another method to invoke `CollectionHandle::clear_input`?
     fn discard(&mut self);
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
-
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn DeCollectionStream>;

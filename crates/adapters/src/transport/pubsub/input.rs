@@ -171,7 +171,7 @@ impl PubSubReader {
                             // None if the stream is cancelled
                             while let Some(message) = stream.next().await {
                                 parser.input_chunk(&message.message.data);
-                                if let Some(buffer) = parser.take_buffer() {
+                                if let Some(buffer) = parser.take() {
                                     queue.lock().unwrap().push_back(buffer);
                                 }
                                 message.ack().await.unwrap_or_else(|e| {
