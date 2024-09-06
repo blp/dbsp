@@ -295,7 +295,10 @@ pub struct MockAvroStream<T, U> {
 
 impl<T, U> MockAvroStream<T, U> {
     fn new(handle: MockDeZSet<T, U>) -> Self {
-        Self { updates: Vec::new(), handle }
+        Self {
+            updates: Vec::new(),
+            handle,
+        }
     }
 }
 
@@ -307,8 +310,7 @@ where
     fn insert(&mut self, data: &AvroValue) -> AnyResult<()> {
         let v: AvroWrapper<T> = apache_avro::from_value(data)
             .map_err(|e| anyhow!("error deserializing Avro record: {e}"))?;
-        self.updates
-            .push(MockUpdate::Insert(v.value));
+        self.updates.push(MockUpdate::Insert(v.value));
         Ok(())
     }
 
@@ -316,16 +318,21 @@ where
         let v: AvroWrapper<T> = apache_avro::from_value(data)
             .map_err(|e| anyhow!("error deserializing Avro record: {e}"))?;
 
-        self.updates
-            .push(MockUpdate::Delete(v.value));
+        self.updates.push(MockUpdate::Delete(v.value));
         Ok(())
     }
 
     fn fork(&self) -> Box<dyn AvroStream> {
         Box::new(Self::new(self.handle.clone()))
     }
+}
 
-    fn push(&mut self, n: usize) -> usize {
+impl<T, U> InputBuffer for MockAvroStream<T, U>
+where
+    T: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
+    U: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
+{
+    fn flush(&mut self, n: usize) -> usize {
         let n = min(n, self.updates.len());
 
         let mut state = self.handle.0.lock().unwrap();
@@ -333,7 +340,7 @@ where
         n
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
         if !self.updates.is_empty() {
             Some(Box::new(MockDeZSetStreamBuffer {
                 updates: take(&mut self.updates),
@@ -342,6 +349,10 @@ where
         } else {
             None
         }
+    }
+
+    fn len(&self) -> usize {
+        self.updates.len()
     }
 }
 

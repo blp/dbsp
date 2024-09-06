@@ -412,6 +412,10 @@ pub trait InputBuffer: Send {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        todo!()
+    }
 }
 
 pub struct EmptyInputBuffer;
@@ -423,6 +427,10 @@ impl InputBuffer for EmptyInputBuffer {
 
     fn len(&self) -> usize {
         0
+    }
+
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
+        None
     }
 }
 

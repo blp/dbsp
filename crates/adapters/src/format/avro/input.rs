@@ -435,7 +435,7 @@ impl Parser for AvroParser {
     fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.input_stream
             .as_mut()
-            .map(|avro| avro.take_buffer())
+            .map(|avro| avro.take())
             .flatten()
     }
 
@@ -455,9 +455,9 @@ impl Parser for AvroParser {
     }
 }
 
-impl InputBuffer for AvroParser{
+impl InputBuffer for AvroParser {
     fn flush(&mut self, n: usize) -> usize {
-        self.input_stream.as_mut().map_or(0, |avro| avro.push(n))
+        self.input_stream.as_mut().map_or(0, |avro| avro.flush(n))
     }
 
     fn len(&self) -> usize {

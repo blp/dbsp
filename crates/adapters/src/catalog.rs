@@ -172,7 +172,7 @@ pub trait ArrowStream: Send {
 /// Like `DeCollectionStream`, but deserializes Avro-encoded records before pushing them to a
 /// stream.
 #[cfg(feature = "with-avro")]
-pub trait AvroStream: Send {
+pub trait AvroStream: InputBuffer + Send {
     fn insert(&mut self, data: &AvroValue) -> AnyResult<()>;
 
     fn delete(&mut self, data: &AvroValue) -> AnyResult<()>;
@@ -180,16 +180,6 @@ pub trait AvroStream: Send {
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
     fn fork(&self) -> Box<dyn AvroStream>;
-
-    fn len(&self) -> usize {todo!() }
-
-    fn push(&mut self, _n: usize) -> usize;
-
-    fn push_all(&mut self) -> usize {
-        self.push(usize::MAX)
-    }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 }
 
 /// A handle to an input collection that can be used to feed serialized data
