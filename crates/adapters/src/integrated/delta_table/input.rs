@@ -565,7 +565,7 @@ impl DeltaTableInputEndpointInner {
             } else {
                 input_stream.delete(&batch)
             };
-            if let Some(buffer) = input_stream.take_buffer() {
+            if let Some(buffer) = input_stream.take() {
                 self.queue.lock().unwrap().push_back(buffer);
             }
 

@@ -510,16 +510,27 @@ where
         Ok(())
     }
 
-    fn push(&mut self, n: usize) -> usize {
+    fn fork(&self) -> Box<dyn ArrowStream> {
+        Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
+    }
+}
+
+impl<K, D, C> InputBuffer for ArrowZSetStream<K, D, C>
+where
+    K: DBData + From<D>,
+    D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
+    C: Clone + Send + 'static,
+{
+    fn flush(&mut self, n: usize) -> usize {
         self.buffer.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.buffer.take()
     }
 
-    fn fork(&self) -> Box<dyn ArrowStream> {
-        Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
+    fn len(&self) -> usize {
+        self.buffer.len()
     }
 }
 
@@ -871,13 +882,24 @@ where
     fn fork(&self) -> Box<dyn ArrowStream> {
         Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
     }
+}
 
-    fn push(&mut self, n: usize) -> usize {
+impl<K, D, C> InputBuffer for ArrowSetStream<K, D, C>
+where
+    K: DBData + From<D>,
+    D: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
+    C: Clone + Send + 'static,
+{
+    fn flush(&mut self, n: usize) -> usize {
         self.buffer.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.buffer.take()
+    }
+
+    fn len(&self) -> usize {
+        self.buffer.len()
     }
 }
 
@@ -1336,13 +1358,28 @@ where
             self.config.clone(),
         ))
     }
+}
 
-    fn push(&mut self, n: usize) -> usize {
+impl<K, KD, V, VD, U, VF, C> InputBuffer for ArrowMapStream<K, KD, V, VD, U, VF, C>
+where
+    C: Clone + Send + 'static,
+    K: DBData + From<KD>,
+    KD: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
+    V: DBData + From<VD>,
+    VD: for<'de> DeserializeWithContext<'de, C> + Send + 'static,
+    U: DBData,
+    VF: Fn(&V) -> K + Clone + Send + 'static,
+{
+    fn flush(&mut self, n: usize) -> usize {
         self.buffer.flush(n)
     }
 
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>> {
+    fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
         self.buffer.take()
+    }
+
+    fn len(&self) -> usize {
+        self.buffer.len()
     }
 }
 

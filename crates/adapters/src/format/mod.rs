@@ -398,24 +398,34 @@ impl dyn InputFormat {
     }
 }
 
+/// A collection of records associated with an input handle.
 pub trait InputBuffer: Send {
-    /// Sends the earliest buffered records to the circuit, up to `n` if they
-    /// are available.  Returns the number sent.
+    /// Pushes the earliest buffered records to the circuit, up to `n` if they
+    /// are available.  Discards the records that are sent.  Returns the number
+    /// sent.
     fn flush(&mut self, n: usize) -> usize;
 
     fn flush_all(&mut self) -> usize {
         self.flush(usize::MAX)
     }
 
+    /// Returns the number of buffered records.
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Removes all of the records from this input buffer and returns a new
+    /// [InputBuffer] that holds them. Returns `None` if this input buffer is
+    /// empty.
+    ///
+    /// This is useful for extracting the records from one of several parser
+    /// threads to send to a single common thread to be pushed later.
     fn take(&mut self) -> Option<Box<dyn InputBuffer>>;
 }
 
+/// An empty [InputBuffer].
 pub struct EmptyInputBuffer;
 
 impl InputBuffer for EmptyInputBuffer {

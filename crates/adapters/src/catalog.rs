@@ -60,8 +60,7 @@ where
     }
 }
 
-/// An input handle that deserializes records before pushing them to a
-/// stream.
+/// An input handle that deserializes and buffers records.
 ///
 /// A trait for a type that wraps a [`ZSetHandle`](`dbsp::ZSetHandle`) or an
 /// [`MapHandle`](`dbsp::MapHandle`) and collects serialized relational data for
@@ -77,6 +76,10 @@ where
 /// [`DeCollectionHandle::configure_deserializer`].
 /// The data format accepted by the handle is determined
 /// by the `record_format` argument passed to this method.
+///
+/// The input handle internally buffers the deserialized records. Use the
+/// `InputBuffer` supertrait to push them to the circuit or extract them for
+/// later use.
 pub trait DeCollectionStream: Send + InputBuffer {
     /// Buffer a new insert update.
     ///
@@ -124,25 +127,18 @@ pub trait DeCollectionStream: Send + InputBuffer {
     /// Removes any updates beyond the first `len`.
     fn truncate(&mut self, len: usize);
 
-    /// Create a new deserializer with the same configuration connected to
-    /// the same input stream.
+    /// Create a new deserializer with the same configuration connected to the
+    /// same input stream. The new deserializer has an independent buffer that
+    /// is initially empty.
     fn fork(&self) -> Box<dyn DeCollectionStream>;
 }
 
 /// Like `DeCollectionStream`, but deserializes Arrow-encoded records before pushing them to a
 /// stream.
-pub trait ArrowStream: Send {
+pub trait ArrowStream: InputBuffer + Send {
     fn insert(&mut self, data: &RecordBatch) -> AnyResult<()>;
 
     fn delete(&mut self, data: &RecordBatch) -> AnyResult<()>;
-
-    fn push(&mut self, _n: usize) -> usize;
-
-    fn push_all(&mut self) -> usize {
-        self.push(usize::MAX)
-    }
-
-    fn take_buffer(&mut self) -> Option<Box<dyn InputBuffer>>;
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.
