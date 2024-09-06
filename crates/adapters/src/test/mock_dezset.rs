@@ -217,7 +217,6 @@ where
     U: Send,
 {
     buffer: MockDeZSetStreamBuffer<T, U>,
-    committed_len: usize,
     deserializer: De,
     config: SqlSerdeConfig,
 }
@@ -231,7 +230,6 @@ where
     pub fn new(handle: MockDeZSet<T, U>, config: SqlSerdeConfig) -> Self {
         Self {
             buffer: MockDeZSetStreamBuffer::new(handle),
-            committed_len: 0,
             deserializer: De::create(config.clone()),
             config,
         }
@@ -264,12 +262,8 @@ where
 
     fn reserve(&mut self, _reservation: usize) {}
 
-    fn save(&mut self) {
-        self.committed_len = self.buffer.updates.len();
-    }
-
-    fn discard(&mut self) {
-        self.buffer.updates.truncate(self.committed_len);
+    fn truncate(&mut self, len: usize) {
+        self.buffer.updates.truncate(len)
     }
 
     fn fork(&self) -> Box<dyn DeCollectionStream> {
@@ -284,13 +278,10 @@ where
     De: DeserializerFromBytes<SqlSerdeConfig> + Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
-        let n = self.buffer.flush(n);
-        self.committed_len = self.buffer.len();
-        n
+        self.buffer.flush(n)
     }
 
     fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.committed_len = 0;
         self.buffer.take()
     }
 

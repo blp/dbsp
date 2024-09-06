@@ -127,7 +127,6 @@ impl CsvParser {
             self.last_event_number += 1;
             buffer = rest;
         }
-        self.input_stream.save();
         (buffer, res)
     }
 }
@@ -154,7 +153,6 @@ impl Parser for CsvParser {
         if !leftover.is_empty() {
             self.parse_record(leftover.as_slice(), &mut res);
         }
-        self.input_stream.save();
         res
     }
 

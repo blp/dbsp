@@ -390,7 +390,6 @@ where
 /// update for the underlying `CollectionHandle`.
 pub struct DeZSetStream<De, K, D, C> {
     buffer: DeZSetStreamBuffer<K>,
-    committed_len: usize,
     deserializer: De,
     config: C,
     phantom: PhantomData<D>,
@@ -404,7 +403,6 @@ where
     pub fn new(handle: ZSetHandle<K>, config: C) -> Self {
         Self {
             buffer: DeZSetStreamBuffer::new(handle),
-            committed_len: 0,
             deserializer: De::create(config.clone()),
             config,
             phantom: PhantomData,
@@ -445,12 +443,8 @@ where
         Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
     }
 
-    fn save(&mut self) {
-        self.committed_len = self.buffer.len();
-    }
-
-    fn discard(&mut self) {
-        self.buffer.updates.truncate(self.committed_len);
+    fn truncate(&mut self, len: usize) {
+        self.buffer.updates.truncate(len)
     }
 }
 
@@ -462,9 +456,7 @@ where
     D: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
-        let n = self.buffer.flush(n);
-        self.committed_len = self.buffer.len();
-        n
+        self.buffer.flush(n)
     }
 
     fn len(&self) -> usize {
@@ -756,7 +748,6 @@ where
 /// `SetHandle`.
 pub struct DeSetStream<De, K, D, C> {
     buffer: DeSetStreamBuffer<K>,
-    committed_len: usize,
     deserializer: De,
     config: C,
     phantom: PhantomData<fn(D)>,
@@ -770,7 +761,6 @@ where
     pub fn new(handle: SetHandle<K>, config: C) -> Self {
         Self {
             buffer: DeSetStreamBuffer::new(handle),
-            committed_len: 0,
             deserializer: De::create(config.clone()),
             config,
             phantom: PhantomData,
@@ -811,12 +801,8 @@ where
         Box::new(Self::new(self.buffer.handle.clone(), self.config.clone()))
     }
 
-    fn save(&mut self) {
-        self.committed_len = self.buffer.len();
-    }
-
-    fn discard(&mut self) {
-        self.buffer.updates.truncate(self.committed_len);
+    fn truncate(&mut self, len: usize) {
+        self.buffer.updates.truncate(len)
     }
 }
 
@@ -828,9 +814,7 @@ where
     D: for<'de> DeserializeWithContext<'de, SqlSerdeConfig> + Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
-        let n = self.buffer.flush(n);
-        self.committed_len = self.buffer.len();
-        n
+        self.buffer.flush(n)
     }
 
     fn len(&self) -> usize {
@@ -1170,7 +1154,6 @@ where
     U: DBData,
 {
     buffer: DeMapStreamBuffer<K, V, U>,
-    committed_len: usize,
     value_key_func: VF,
     update_key_func: UF,
     config: C,
@@ -1194,7 +1177,6 @@ where
     ) -> Self {
         Self {
             buffer: DeMapStreamBuffer::new(handle),
-            committed_len: 0,
             value_key_func,
             update_key_func,
             deserializer: De::create(config.clone()),
@@ -1254,12 +1236,8 @@ where
         ))
     }
 
-    fn save(&mut self) {
-        self.committed_len = self.buffer.len();
-    }
-
-    fn discard(&mut self) {
-        self.buffer.updates.truncate(self.committed_len);
+    fn truncate(&mut self, len: usize) {
+        self.buffer.updates.truncate(len)
     }
 }
 
@@ -1278,9 +1256,7 @@ where
     UF: Fn(&U) -> K + Clone + Send + 'static,
 {
     fn flush(&mut self, n: usize) -> usize {
-        let n = self.buffer.flush(n);
-        self.committed_len = self.buffer.len();
-        n
+        self.buffer.flush(n)
     }
 
     fn len(&self) -> usize {
@@ -1288,7 +1264,6 @@ where
     }
 
     fn take(&mut self) -> Option<Box<dyn InputBuffer>> {
-        self.committed_len = 0;
         self.buffer.take()
     }
 }

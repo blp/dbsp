@@ -63,17 +63,15 @@ where
 /// An input handle that deserializes records before pushing them to a
 /// stream.
 ///
-/// A trait for a type that wraps a
-/// [`ZSetHandle`](`dbsp::ZSetHandle`) or
-/// an [`MapHandle`](`dbsp::MapHandle`) and pushes serialized relational
-/// data to the associated input stream record-by-record.  The client passes a
-/// byte array with a serialized data record (e.g., in JSON or CSV format)
-/// to [`insert`](`Self::insert`), [`delete`](`Self::delete`), and
+/// A trait for a type that wraps a [`ZSetHandle`](`dbsp::ZSetHandle`) or an
+/// [`MapHandle`](`dbsp::MapHandle`) and collects serialized relational data for
+/// the associated input stream.  The client passes a byte array with a
+/// serialized data record (e.g., in JSON or CSV format) to
+/// [`insert`](`Self::insert`), [`delete`](`Self::delete`), and
 /// [`update`](`Self::update`) methods. The record gets deserialized into the
-/// strongly typed representation expected by the input stream and gets buffered
-/// inside the handle. The [`flush`](`Self::flush`) method pushes all buffered
-/// data to the underlying [`ZSetHandle`](`dbsp::ZSetHandle`) or
-/// [`MapHandle`](`dbsp::MapHandle`).
+/// strongly typed representation expected by the input stream. The
+/// [`flush`](`Self::flush`) method pushes all buffered data to the underlying
+/// [`ZSetHandle`](`dbsp::ZSetHandle`) or [`MapHandle`](`dbsp::MapHandle`).
 ///
 /// Instances of this trait are created by calling
 /// [`DeCollectionHandle::configure_deserializer`].
@@ -123,24 +121,8 @@ pub trait DeCollectionStream: Send + InputBuffer {
     /// of inputs is known ahead of time to reduce reallocations.
     fn reserve(&mut self, reservation: usize);
 
-    /// Push all buffered updates to the underlying input stream handle.
-    ///
-    /// Flushed updates will be pushed to the stream during the next call
-    /// to [`DBSPHandle::step`](`dbsp::DBSPHandle::step`).  `flush` can
-    /// be called multiple times between two subsequent `step`s.  Every
-    /// `flush` call adds new updates to the previously flushed updates.
-    ///
-    /// Updates queued after the last `flush` remain buffered in the handle
-    /// until the next `flush` or `clear_buffer` call or until the handle
-    /// is destroyed.
-    fn save(&mut self);
-
-    /// Clear all buffered updates.
-    ///
-    /// Clears updates pushed to the handle after the last `flush`.
-    /// Flushed updates remain queued at the underlying input handle.
-    // TODO: add another method to invoke `CollectionHandle::clear_input`?
-    fn discard(&mut self);
+    /// Removes any updates beyond the first `len`.
+    fn truncate(&mut self, len: usize);
 
     /// Create a new deserializer with the same configuration connected to
     /// the same input stream.

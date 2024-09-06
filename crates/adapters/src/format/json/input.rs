@@ -247,14 +247,6 @@ impl JsonParser {
         }
     }
 
-    fn flush(&mut self) {
-        self.input_stream.save();
-    }
-
-    fn clear(&mut self) {
-        self.input_stream.discard();
-    }
-
     fn delete(&mut self, val: &RawValue) -> Result<(), ParseError> {
         self.input_stream.delete(val.get().as_bytes()).map_err(|e| {
             ParseError::text_event_error(
@@ -308,6 +300,7 @@ impl JsonParser {
                 }
                 Ok(updates) => {
                     let mut error = false;
+                    let old_len = self.len();
                     for update in updates {
                         match update.apply(self) {
                             Err(e) => {
@@ -321,9 +314,7 @@ impl JsonParser {
                         self.last_event_number += 1;
                     }
                     if error {
-                        self.clear();
-                    } else {
-                        self.flush();
+                        self.input_stream.truncate(old_len);
                     }
                 }
             };
@@ -368,9 +359,6 @@ impl JsonParser {
                         &json_str,
                         None,
                     ));
-                    if !self.config.array {
-                        self.flush();
-                    }
                     return (num_updates, errors);
                 }
                 Ok(update) => update,
@@ -393,9 +381,6 @@ impl JsonParser {
             }
         }
 
-        if !self.config.array {
-            self.flush();
-        }
         (num_updates, errors)
     }
 }

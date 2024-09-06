@@ -125,7 +125,6 @@ impl ParquetParser {
                             }
                             self.last_event_number += 1;
                         }
-                        self.input_stream.save();
                         (cnt, errors)
                     }
                     Err(e) => (
