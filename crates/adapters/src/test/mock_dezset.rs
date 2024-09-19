@@ -360,18 +360,14 @@ where
 }
 
 /// Wait to receive all records in `data` in the same order.
-pub fn wait_for_output_ordered<T, F>(zset: &MockDeZSet<T, T>, data: &[Vec<T>], flush: F)
+pub fn wait_for_output_ordered<T>(zset: &MockDeZSet<T, T>, data: &[Vec<T>])
 where
     T: DBData,
-    F: Fn(),
 {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || {
-            flush();
-            zset.state().flushed.len() == num_records
-        },
+        || zset.state().flushed.len() == num_records,
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();
@@ -398,18 +394,14 @@ where
 }
 
 /// Wait to receive all records in `data` in some order.
-pub fn wait_for_output_unordered<T, F>(zset: &MockDeZSet<T, T>, data: &[Vec<T>], flush: F)
+pub fn wait_for_output_unordered<T>(zset: &MockDeZSet<T, T>, data: &[Vec<T>])
 where
     T: DBData,
-    F: Fn(),
 {
     let num_records: usize = data.iter().map(Vec::len).sum();
 
     wait(
-        || {
-            flush();
-            zset.state().flushed.len() == num_records
-        },
+        || zset.state().flushed.len() == num_records,
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();

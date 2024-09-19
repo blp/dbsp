@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
@@ -33,7 +32,7 @@ use rand_distr::{Distribution, Zipf};
 use serde_json::{to_writer, Map, Value};
 use tokio::sync::Notify;
 
-use super::InputQueue;
+use super::{InputReaderCommand, InputStep};
 
 fn range_as_i64(
     field: &SqlIdentifier,
@@ -238,7 +237,7 @@ impl TransportInputEndpoint for GeneratorEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(InputGenerator::new(
@@ -255,7 +254,6 @@ struct InputGenerator {
     config: DatagenInputConfig,
     /// Amount of records generated so far.
     generated: Arc<AtomicUsize>,
-    queue: Arc<InputQueue>,
     notifier: Arc<Notify>,
 }
 
@@ -314,7 +312,6 @@ impl InputGenerator {
                 && p.limit.unwrap_or(usize::MAX) > 10_000_000
         });
 
-        let queue = Arc::new(InputQueue::new(consumer.clone()));
         for worker in 0..config.workers {
             let config = config.clone();
             let status = status.clone();
@@ -323,7 +320,6 @@ impl InputGenerator {
             let notifier = notifier.clone();
             let consumer = consumer.clone();
             let parser = parser.fork();
-            let queue = queue.clone();
             let shared_state = shared_state.clone();
 
             if needs_blocking_tasks {
@@ -335,7 +331,6 @@ impl InputGenerator {
                         schema,
                         consumer,
                         parser,
-                        queue,
                         notifier,
                         status,
                         generated,
@@ -349,7 +344,6 @@ impl InputGenerator {
                     schema,
                     consumer,
                     parser,
-                    queue,
                     notifier,
                     status,
                     generated,
@@ -361,7 +355,6 @@ impl InputGenerator {
             status,
             config,
             generated,
-            queue,
             notifier,
         })
     }
@@ -394,7 +387,6 @@ impl InputGenerator {
         schema: Relation,
         consumer: Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
-        queue: Arc<InputQueue>,
         notifier: Arc<Notify>,
         status: Arc<Atomic<PipelineState>>,
         generated: Arc<AtomicUsize>,
@@ -453,7 +445,7 @@ impl InputGenerator {
 
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
-                                queue.push(buffer.len(), parser.parse(&buffer));
+                                //consumer.queue(buffer.len(), parser.parse(&buffer));
                                 buffer.clear();
                                 buffer.extend(START_ARR);
                                 batch_idx = 0;
@@ -472,7 +464,7 @@ impl InputGenerator {
                 }
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
-                    queue.push(buffer.len(), parser.parse(&buffer));
+                    //consumer.queue(buffer.len(), parser.parse(&buffer));
                 }
                 // Update global progress after we created all records for a batch
                 //eprintln!("adding {} to generated", generate_range.len());
@@ -484,37 +476,14 @@ impl InputGenerator {
 }
 
 impl InputReader for InputGenerator {
-    fn pause(&self) -> AnyResult<()> {
-        // Notify worker thread via the status flag.  The worker may
-        // send another buffer downstream before the flag takes effect.
-        self.status.store(PipelineState::Paused, Ordering::Release);
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.status.store(PipelineState::Running, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.status
-            .store(PipelineState::Terminated, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.queue.flush(n)
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 
 impl Drop for InputGenerator {
     fn drop(&mut self) {
-        self.disconnect();
+        self.request(InputReaderCommand::Disconnect);
     }
 }
 
@@ -1586,7 +1555,7 @@ mod test {
         let relation = Relation::new("test_input".into(), fields, true, BTreeMap::new());
         let (endpoint, consumer, _parser, zset) =
             mock_input_pipeline::<T, U>(serde_yaml::from_str(config_str).unwrap(), relation)?;
-        endpoint.start(0)?;
+        endpoint.extend();
         Ok((endpoint, consumer, zset))
     }
 
@@ -1599,14 +1568,13 @@ transport:
     config:
         plan: [ { limit: 10, fields: {} } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<TestStruct2, TestStruct2>(config_str, TestStruct2::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(20));
-        endpoint.flush_all();
 
         let zst = zset.state();
         let iter = zst.flushed.iter();
@@ -1970,14 +1938,13 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "bs": { "range": [ 1, 5 ], values: [[1,2], [1,2,3]] } } } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<ByteStruct, ByteStruct>(config_str, ByteStruct::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(20));
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -1999,14 +1966,13 @@ transport:
     config:
         plan: [ { limit: 2, fields: { "bs": { "range": [ 1, 2 ], value: { "range": [128, 255], "strategy": "uniform" } } } } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<ByteStruct, ByteStruct>(config_str, ByteStruct::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(20));
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2111,13 +2077,12 @@ transport:
     config:
         plan: [ { limit: 2, fields: {} } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2143,14 +2108,13 @@ transport:
     config:
         plan: [ { limit: 3, fields: { "ts": { "range": [1724803200000, 1724803200002] }, "dt": { "range": [19963, 19965] }, "t": { "range": [5, 7] } } } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(20));
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2183,14 +2147,13 @@ transport:
         plan: [ { limit: 3, fields: {  "ts": { "range": ["2024-08-28T00:00:00Z", "2024-08-28T00:00:02Z"], "scale": 1000 }, "dt": { "range": ["2024-08-28", "2024-08-30"] }, "t": { "range": ["00:00:05", "00:00:07"], "scale": 1000 } } } ]
 
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(20));
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();
@@ -2237,13 +2200,12 @@ transport:
     config:
         plan: [ { limit: 1, fields: { "TS": { "values": ["1970-01-01T00:00:00Z"] }, "dT": { "values": ["1970-01-02"] }, "t": { "values": ["00:00:01"] } } } ]
 "#;
-        let (endpoint, consumer, zset) =
+        let (_endpoint, consumer, zset) =
             mk_pipeline::<TimeStuff, TimeStuff>(config_str, TimeStuff::schema()).unwrap();
 
         while !consumer.state().eoi {
             thread::sleep(Duration::from_millis(20));
         }
-        endpoint.flush_all();
 
         let zst = zset.state();
         let mut iter = zst.flushed.iter();

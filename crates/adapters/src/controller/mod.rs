@@ -3,28 +3,16 @@
 //!
 //! # Design
 //!
-//! The controller logic is split into two tasks that run in separate threads.
 //! The circuit thread owns the `DBSPHandle` and calls `step()` on it whenever
 //! there is some input data available for the circuit.  It can be configured
 //! to improve batching by slightly delaying the `step()` call if the number of
 //! available input records is below some used-defined threshold.
-//!
-//! The backpressure thread controls the flow of data through transport
-//! endpoints, pausing the endpoints either when the amount of data buffered by
-//! the endpoint exceeds a user-defined threshold or in response to an explicit
-//! user request.
-//!
-//! Both tasks require monitoring the state of the input buffers.  To this end,
-//! the controller expects transports to report the number of bytes and records
-//! buffered via `InputConsumer::queued`.
 
 use crate::catalog::OutputCollectionHandles;
 use crate::create_integrated_output_endpoint;
 use crate::transport::InputReader;
 use crate::transport::Step;
-use crate::transport::{
-    input_transport_config_to_endpoint, output_transport_config_to_endpoint, AtomicStep,
-};
+use crate::transport::{input_transport_config_to_endpoint, output_transport_config_to_endpoint};
 use crate::InputBuffer;
 use crate::{
     catalog::SerBatch, Catalog, CircuitCatalog, Encoder, InputConsumer, InputFormat,
@@ -38,29 +26,37 @@ use crossbeam::{
     sync::{Parker, ShardedLock, Unparker},
 };
 use datafusion::prelude::*;
+use dbsp::circuit::checkpointer::CheckpointMetadata;
+use dbsp::circuit::StorageConfig;
 use dbsp::circuit::{CircuitConfig, Layout};
 use dbsp::profile::GraphProfile;
 use dbsp::DBSPHandle;
 use log::{debug, error, info, trace};
+use metadata::Checkpoint;
+use metadata::{ReadResult, StepMetadata, StepReader, StepWriter};
 use metrics::set_global_recorder;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_util::{
     debugging::{DebuggingRecorder, Snapshotter},
     layers::FanoutBuilder,
 };
+use serde_json::Value as JsonValue;
+use stats::StepResults;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Error as IoError,
     mem::take,
     sync::OnceLock,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
     },
     thread::{spawn, JoinHandle},
     time::{Duration, Instant},
@@ -69,6 +65,7 @@ use tokio::sync::{oneshot::Sender as OneshotSender, Mutex as TokioMutex};
 use uuid::Uuid;
 
 mod error;
+mod metadata;
 mod stats;
 
 use crate::adhoc::table::AdHocTable;
@@ -103,13 +100,19 @@ pub struct Controller {
 
     /// The circuit thread handle (see module-level docs).
     circuit_thread_handle: JoinHandle<Result<(), ControllerError>>,
-
-    /// The backpressure thread handle (see module-level docs).
-    backpressure_thread_handle: JoinHandle<()>,
 }
 
 /// Type of the callback argumen to [`Controller::start_graph_profile`].
 pub type GraphProfileCallbackFn = Box<dyn FnOnce(Result<GraphProfile, ControllerError>) + Send>;
+
+/// A command that [Controller] can send to [Controller::circuit_thread].
+///
+/// There is no type for a command reply.  Instead, the command implementation
+/// uses a callback or [Sender] embedded in the command to reply.
+enum Command {
+    GraphProfile(GraphProfileCallbackFn),
+    Checkpoint(Sender<Result<CheckpointMetadata, DBSPError>>),
+}
 
 impl Controller {
     /// Create a new I/O controller for a circuit.
@@ -154,17 +157,8 @@ impl Controller {
         let circuit_thread_parker = Parker::new();
         let circuit_thread_unparker = circuit_thread_parker.unparker().clone();
 
-        let backpressure_thread_parker = Parker::new();
-        let backpressure_thread_unparker = backpressure_thread_parker.unparker().clone();
-
-        let (profile_request_sender, profile_request_receiver) = channel();
-        let inner = ControllerInner::new(
-            config,
-            circuit_thread_unparker,
-            backpressure_thread_unparker,
-            error_cb,
-            profile_request_sender,
-        );
+        let (command_sender, command_receiver) = channel();
+        let inner = ControllerInner::new(config, circuit_thread_unparker, error_cb, command_sender);
 
         let (circuit_thread_handle, inner) = {
             // A channel to communicate circuit initialization status.
@@ -181,7 +175,7 @@ impl Controller {
                     inner,
                     circuit_thread_parker,
                     init_status_sender,
-                    profile_request_receiver,
+                    command_receiver,
                 )
             });
             // If `recv` fails, it indicates that the circuit thread panicked
@@ -192,23 +186,9 @@ impl Controller {
             (handle, inner)
         };
 
-        let backpressure_thread_handle = {
-            let inner = inner.clone();
-            spawn(move || Self::backpressure_thread(inner, backpressure_thread_parker))
-        };
-
-        for (input_name, input_config) in config.inputs.iter() {
-            inner.connect_input(input_name, input_config)?;
-        }
-
-        for (output_name, output_config) in config.outputs.iter() {
-            inner.connect_output(output_name, output_config)?;
-        }
-
         Ok(Self {
             inner,
             circuit_thread_handle,
-            backpressure_thread_handle,
         })
     }
 
@@ -447,9 +427,6 @@ impl Controller {
         self.circuit_thread_handle
             .join()
             .map_err(|_| ControllerError::controller_panic())??;
-        self.backpressure_thread_handle
-            .join()
-            .map_err(|_| ControllerError::controller_panic())?;
         Ok(())
     }
 
@@ -478,12 +455,13 @@ impl Controller {
         mut controller: ControllerInner,
         parker: Parker,
         init_status_sender: SyncSender<Result<Arc<ControllerInner>, ControllerError>>,
-        profile_request_receiver: Receiver<GraphProfileCallbackFn>,
+        command_receiver: Receiver<Command>,
     ) -> Result<(), ControllerError>
     where
         F: FnOnce(CircuitConfig) -> Result<(DBSPHandle, Box<dyn CircuitCatalog>), ControllerError>,
     {
         let mut start: Option<Instant> = None;
+
         let min_storage_bytes = if controller.status.pipeline_config.global.storage {
             // This reduces the files stored on disk to a reasonable number.
             controller
@@ -495,27 +473,92 @@ impl Controller {
         } else {
             usize::MAX
         };
+
+        // Read the checkpoint and input steps, if any.
+        let mut checkpoint = Checkpoint::default();
+        let mut step_reader = None;
+        let mut step_writer = None;
+        let storage_path = controller
+            .status
+            .pipeline_config
+            .storage_config
+            .as_ref()
+            .map(|storage| &storage.path);
+        if let Some(path) = storage_path {
+            fn startup_io_error(error: IoError) -> ControllerError {
+                ControllerError::io_error(String::from("controller startup"), error)
+            }
+            fs::create_dir_all(path).map_err(startup_io_error)?;
+            let state_path = path.join("state.json");
+            if fs::exists(&state_path).map_err(startup_io_error)? {
+                info!("{}: reading checkpoint metadata", state_path.display());
+                checkpoint =
+                    serde_json::from_slice(&fs::read(&state_path).map_err(startup_io_error)?)
+                        .map_err(|e| ControllerError::CheckpointParseError {
+                            error: e.to_string(),
+                        })?;
+            }
+
+            let steps_path = path.join("steps.json");
+            if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
+                info!("{}: opening to read input steps", steps_path.display());
+                step_reader = Some(StepReader::open(&steps_path)?);
+            } else {
+                info!("{}: opening to write input steps", steps_path.display());
+                step_writer = Some(StepWriter::create(&steps_path)?);
+            };
+        };
+
         let config = CircuitConfig {
             layout: Layout::new_solo(controller.status.pipeline_config.global.workers as usize),
-            storage: controller.status.pipeline_config.storage_config.clone(),
+            // Put the circuit's checkpoints in a `circuit` subdirectory of the
+            // storage directory.
+            storage: controller
+                .status
+                .pipeline_config
+                .storage_config
+                .as_ref()
+                .map(|storage| {
+                    let path = storage.path.join("circuit");
+                    if !fs::exists(&path)? {
+                        fs::create_dir(&path)?;
+                    }
+                    Ok(StorageConfig {
+                        path,
+                        cache: storage.cache,
+                    })
+                })
+                .transpose()
+                .map_err(|error| {
+                    ControllerError::io_error(
+                        String::from("Failed to create checkpoint storage directory"),
+                        error,
+                    )
+                })?,
             min_storage_bytes,
-            init_checkpoint: Uuid::nil(),
+            init_checkpoint: checkpoint.circuit_uuid,
         };
-        let (mut circuit, controller) = match circuit_factory(config) {
-            Ok((circuit, catalog)) => {
-                // Complete initialization before sending back the confirmation to
-                // prevent a race.
-                controller.catalog = Arc::new(catalog);
-                let controller = Arc::new(controller);
-                controller.initialize_adhoc_queries();
-                let _ = init_status_sender.send(Ok(controller.clone()));
-                (circuit, controller)
-            }
+        let (mut circuit, catalog) = match circuit_factory(config) {
+            Ok(retval) => retval,
             Err(e) => {
                 let _ = init_status_sender.send(Err(e));
                 return Ok(());
             }
         };
+
+        controller.catalog = Arc::new(catalog);
+        let controller = Arc::new(controller);
+        controller.initialize_adhoc_queries();
+        for (input_name, input_config) in controller.status.pipeline_config.inputs.iter() {
+            controller.connect_input(input_name, input_config)?;
+        }
+        for (output_name, output_config) in controller.status.pipeline_config.outputs.iter() {
+            controller.connect_output(output_name, output_config)?;
+        }
+
+        // Send back confirmation only after having completed the
+        // initializations above, to avoid races.
+        let _ = init_status_sender.send(Ok(controller.clone()));
 
         if controller.status.pipeline_config.global.cpu_profiler {
             circuit.enable_cpu_profiler().unwrap_or_else(|e| {
@@ -536,7 +579,20 @@ impl Controller {
             .global
             .min_batch_size_records;
 
-        let mut step = 0;
+        let mut step = checkpoint.step;
+        if step > 0 {
+            let (new_step_reader, prev_step_metadata) =
+                step_reader.take().unwrap().seek(step - 1)?;
+            step_reader = Some(new_step_reader);
+            for (endpoint_name, metadata) in prev_step_metadata.input_endpoints {
+                let endpoint_id = controller.input_endpoint_id_by_name(&endpoint_name)?;
+                controller.inputs.lock().unwrap()[&endpoint_id]
+                    .reader
+                    .seek(metadata);
+            }
+        }
+        let (mut replaying, mut step_reader, mut step_writer) =
+            controller.replay_step(step_reader, step_writer, step)?;
 
         let clock_resolution = controller
             .status
@@ -548,13 +604,33 @@ impl Controller {
         // Time when the last step was started. Used to force the pipeline to make a step
         // periodically to update the now() value.
         let mut last_step: Option<Instant> = None;
+        let mut last_state = PipelineState::Paused;
 
         loop {
-            for reply_cb in profile_request_receiver.try_iter() {
-                reply_cb(circuit.graph_profile().map_err(ControllerError::dbsp_error));
+            for command in command_receiver.try_iter() {
+                match command {
+                    Command::GraphProfile(reply_callback) => {
+                        reply_callback(circuit.graph_profile().map_err(ControllerError::dbsp_error))
+                    }
+                    Command::Checkpoint(reply_sender) => drop(reply_sender.send(circuit.commit())),
+                }
             }
-            match controller.state() {
+            let new_state = controller.state();
+            match new_state {
                 PipelineState::Running | PipelineState::Paused => {
+                    if new_state != last_state {
+                        last_state = new_state;
+                        if !replaying {
+                            for endpoint in controller.inputs.lock().unwrap().values() {
+                                if new_state == PipelineState::Running {
+                                    endpoint.reader.extend();
+                                } else {
+                                    endpoint.reader.pause();
+                                }
+                            }
+                        }
+                    }
+
                     // Backpressure in the output pipeline: wait for room in output buffers to
                     // become available.
                     if controller.output_buffers_full() {
@@ -568,12 +644,12 @@ impl Controller {
 
                     // Trigger a step if it's been longer than `clock_resolution` since the last step
                     // and the pipeline isn't paused.
-                    let tick = if let Some(clock_resolution) = clock_resolution {
-                        (if let Some(last_step) = last_step {
-                            last_step.elapsed() > clock_resolution
-                        } else {
-                            true
-                        }) && (controller.state() == PipelineState::Running)
+                    let tick = if replaying {
+                        false
+                    } else if controller.state() != PipelineState::Running {
+                        false
+                    } else if let Some(clock_resolution) = clock_resolution {
+                        last_step.map_or(true, |last_step| last_step.elapsed() > clock_resolution)
                     } else {
                         false
                     };
@@ -582,50 +658,65 @@ impl Controller {
                     // the client explicitly requested the circuit to run -- kick the circuit to
                     // consume buffered data.
                     // Use strict inequality in case `min_batch_size_records` is 0.
-                    if controller.status.step_requested()
+                    if controller.status.unset_step_requested()
                         || tick
                         || buffered_records > min_batch_size_records
                         || start
                             .map(|start| start.elapsed() >= max_buffering_delay)
                             .unwrap_or(false)
+                        || replaying
                     {
                         // Begin countdown from the start of the step.
                         last_step = Some(Instant::now());
 
                         // Request all of the inputs to complete this step, and
                         // then wait for the completions.
-                        for endpoint in controller.inputs.lock().unwrap().values() {
-                            endpoint.reader.complete(step);
+                        if !replaying {
+                            for endpoint in controller.inputs.lock().unwrap().values() {
+                                endpoint.reader.queue();
+                            }
                         }
-                        while !controller.status.is_step_complete(step) {
+                        while !controller.status.is_complete() {
                             parker.park();
                         }
 
-                        start = None;
                         let mut total_consumed = 0;
-                        for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
-                            let num_records =
-                                endpoint.reader.flush(endpoint.max_batch_size as usize);
-                            controller.status.inputs.read().unwrap()[id]
-                                .consume_buffered(num_records as u64);
+                        let mut step_metadata = HashMap::new();
+                        for status in controller.status.input_status().values() {
+                            let StepResults {
+                                num_records,
+                                metadata,
+                            } = take(&mut *status.results.lock().unwrap()).unwrap();
                             total_consumed += num_records;
+                            if let Some(metadata) = metadata {
+                                step_metadata.insert(status.endpoint_name.clone(), metadata);
+                            }
                         }
+                        if !replaying {
+                            if let Some(step_writer) = step_writer.as_mut() {
+                                step_writer.write(&StepMetadata {
+                                    step,
+                                    input_endpoints: step_metadata,
+                                })?;
+                            }
+                        }
+
+                        start = None;
                         let input_queue = take(&mut *controller.input_queue.lock().unwrap());
                         let notifications = input_queue
                             .into_iter()
                             .map(|(mut buffer, notification)| {
-                                total_consumed += buffer.flush_all();
+                                let num_records = buffer.flush_all() as u64;
+                                controller
+                                    .status
+                                    .global_metrics
+                                    .consume_buffered_inputs(num_records);
                                 notification
                             })
                             .collect::<Vec<_>>();
-                        controller
-                            .status
-                            .global_metrics
-                            .consume_buffered_inputs(total_consumed as u64);
 
                         // Wake up the backpressure thread to unpause endpoints blocked due to
                         // backpressure.
-                        controller.unpark_backpressure();
                         debug!("circuit thread: calling 'circuit.step'");
                         circuit
                             .step()
@@ -649,6 +740,11 @@ impl Controller {
                         }
 
                         // Push output batches to output pipelines.
+                        if !replaying {
+                            if let Some(step_writer) = step_writer.as_mut() {
+                                step_writer.wait()?;
+                            }
+                        }
                         let outputs = controller.outputs.read().unwrap();
                         for (_stream, (output_handles, endpoints)) in outputs.iter_by_stream() {
                             let delta_batch = output_handles.delta_handle.as_ref().take_from_all();
@@ -679,8 +775,13 @@ impl Controller {
                         }
 
                         step += 1;
-                        controller.step.store(step, Ordering::Release);
-                        controller.unpark_backpressure();
+                        if replaying {
+                            (replaying, step_reader, step_writer) = controller.replay_step(
+                                step_reader.take(),
+                                step_writer.take(),
+                                step,
+                            )?;
+                        }
                     } else if buffered_records > 0 {
                         // We have some buffered data, but less than `min_batch_size_records` --
                         // wait up to `max_buffering_delay` for more data to
@@ -712,8 +813,13 @@ impl Controller {
                 }
                 PipelineState::Terminated => {
                     circuit.kill().map_err(|_| ControllerError::dbsp_panic())?;
-                    for reply_cb in profile_request_receiver.try_iter() {
-                        reply_cb(Err(ControllerError::ControllerExit));
+                    for command in command_receiver.try_iter() {
+                        match command {
+                            Command::GraphProfile(callback) => {
+                                callback(Err(ControllerError::ControllerExit))
+                            }
+                            Command::Checkpoint(_) => (),
+                        }
                     }
                     return Ok(());
                 }
@@ -721,53 +827,12 @@ impl Controller {
         }
     }
 
-    /// Backpressure thread function.
-    fn backpressure_thread(controller: Arc<ControllerInner>, parker: Parker) {
-        #[derive(Copy, Clone, PartialEq, Eq)]
-        enum EndpointState {
-            Pause,
-            Run(Step),
-        }
-
-        let mut endpoint_states = HashMap::new();
-
-        loop {
-            let global_pause = match controller.state() {
-                PipelineState::Paused => true,
-                PipelineState::Running => false,
-                PipelineState::Terminated => return,
-            };
-            let step = controller.step.load(Ordering::Acquire);
-            trace!("stepping to {step}");
-
-            for (epid, ep) in controller.inputs.lock().unwrap().iter() {
-                let current_state = endpoint_states.entry(*epid).or_insert(EndpointState::Pause);
-                let desired_state = if global_pause
-                    || controller.status.input_endpoint_paused_by_user(epid)
-                    || controller.status.input_endpoint_full(epid)
-                {
-                    EndpointState::Pause
-                } else {
-                    EndpointState::Run(step)
-                };
-                if *current_state != desired_state {
-                    let result = match desired_state {
-                        EndpointState::Pause => ep.reader.pause(),
-                        EndpointState::Run(step) => ep.reader.start(step),
-                    };
-                    if let Err(error) = result {
-                        controller.input_transport_error(*epid, &ep.endpoint_name, true, error);
-                    };
-                    *current_state = desired_state;
-                }
-            }
-
-            parker.park();
-        }
-    }
-
     pub(crate) fn metrics(&self) -> PrometheusHandle {
         self.inner.prometheus_handle.clone()
+    }
+
+    pub fn checkpoint(&self) -> Result<CheckpointMetadata, DBSPError>CheckpointMetadata {
+        self.inner.checkpoint()
     }
 }
 
@@ -775,15 +840,13 @@ impl Controller {
 struct InputEndpointDescr {
     endpoint_name: String,
     reader: Box<dyn InputReader>,
-    max_batch_size: u64,
 }
 
 impl InputEndpointDescr {
-    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>, max_batch_size: u64) -> Self {
+    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>) -> Self {
         Self {
             endpoint_name: endpoint_name.to_owned(),
             reader,
-            max_batch_size,
         }
     }
 }
@@ -990,39 +1053,27 @@ pub type ConsistentSnapshots =
 pub struct ControllerInner {
     pub status: Arc<ControllerStatus>,
     num_api_connections: AtomicU64,
-    profile_request: Sender<GraphProfileCallbackFn>,
+    command_sender: Sender<Command>,
     catalog: Arc<Box<dyn CircuitCatalog>>,
     // Always lock this after the catalog is locked to avoid deadlocks
     trace_snapshot: ConsistentSnapshots,
     inputs: Mutex<BTreeMap<EndpointId, InputEndpointDescr>>,
     outputs: ShardedLock<OutputEndpoints>,
     circuit_thread_unparker: Unparker,
-    backpressure_thread_unparker: Unparker,
     error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
-    step: AtomicStep,
     metrics_snapshotter: Arc<Snapshotter>,
     prometheus_handle: PrometheusHandle,
     session_ctxt: SessionContext,
     #[allow(clippy::type_complexity)]
     input_queue: Mutex<Vec<(Box<dyn InputBuffer>, OneshotSender<()>)>>,
-
-    /// The lowest-numbered input step not known to have committed yet.
-    ///
-    /// This is updated lazily, only when we need to wait for a step to commit
-    /// in `wait_to_commit`.
-    uncommitted_step: Mutex<Step>,
-
-    /// Condition that fires when `uncommitted_step` increases.
-    step_committed: Condvar,
 }
 
 impl ControllerInner {
     fn new(
         config: &PipelineConfig,
         circuit_thread_unparker: Unparker,
-        backpressure_thread_unparker: Unparker,
         error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
-        profile_request: Sender<GraphProfileCallbackFn>,
+        command_sender: Sender<Command>,
     ) -> Self {
         let pipeline_name = config
             .name
@@ -1035,19 +1086,15 @@ impl ControllerInner {
         Self {
             status,
             num_api_connections: AtomicU64::new(0),
-            profile_request,
+            command_sender,
             catalog: Arc::new(Box::new(Catalog::new())),
             trace_snapshot: Arc::new(TokioMutex::new(BTreeMap::new())),
             inputs: Mutex::new(BTreeMap::new()),
             outputs: ShardedLock::new(OutputEndpoints::new()),
             circuit_thread_unparker,
-            backpressure_thread_unparker,
             error_cb,
-            step: AtomicStep::new(0),
             metrics_snapshotter,
             prometheus_handle,
-            uncommitted_step: Mutex::new(0),
-            step_committed: Condvar::new(),
             session_ctxt: SessionContext::new(),
             input_queue: Mutex::new(Vec::new()),
         }
@@ -1138,7 +1185,6 @@ impl ControllerInner {
             ep.reader.disconnect();
             self.status.remove_input(endpoint_id);
             self.unpark_circuit();
-            self.unpark_backpressure();
         }
     }
 
@@ -1166,8 +1212,12 @@ impl ControllerInner {
 
         let endpoint_id = inputs.keys().next_back().map(|k| k + 1).unwrap_or(0);
 
-        let max_batch_size = endpoint_config.connector_config.max_batch_size;
-        let probe = Box::new(InputProbe::new(endpoint_id, endpoint_name, self.clone()));
+        let probe = Box::new(InputProbe::new(
+            endpoint_id,
+            endpoint_name,
+            &endpoint_config.connector_config,
+            self.clone(),
+        ));
         let reader = match endpoint {
             Some(endpoint) => {
                 // Create parser.
@@ -1214,7 +1264,7 @@ impl ControllerInner {
                 );
 
                 endpoint
-                    .open(probe, parser, 0, input_handle.schema.clone())
+                    .open(probe, parser, None, input_handle.schema.clone())
                     .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?
             }
             None => {
@@ -1236,19 +1286,13 @@ impl ControllerInner {
         };
 
         if self.state() == PipelineState::Running && !paused {
-            reader
-                .start(0)
-                .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
+            reader.extend();
         }
 
-        inputs.insert(
-            endpoint_id,
-            InputEndpointDescr::new(endpoint_name, reader, max_batch_size),
-        );
+        inputs.insert(endpoint_id, InputEndpointDescr::new(endpoint_name, reader));
 
         drop(inputs);
 
-        self.unpark_backpressure();
         Ok(endpoint_id)
     }
 
@@ -1279,11 +1323,6 @@ impl ControllerInner {
     /// Unpark the circuit thread.
     fn unpark_circuit(&self) {
         self.circuit_thread_unparker.unpark();
-    }
-
-    /// Unpark the backpressure thread.
-    fn unpark_backpressure(&self) {
-        self.backpressure_thread_unparker.unpark();
     }
 
     fn connect_output(
@@ -1462,7 +1501,6 @@ impl ControllerInner {
         encoder
             .encode(batch)
             .unwrap_or_else(|e| controller.encode_error(endpoint_id, endpoint_name, e));
-        controller.wait_to_commit(step);
         encoder.consumer().batch_end();
     }
 
@@ -1558,40 +1596,17 @@ impl ControllerInner {
         }
     }
 
-    /// Waits for input `step` to commit.
-    ///
-    /// An input step must commit before we can commit any of the output.
-    /// Otherwise, if there is a crash, we might have output for which we don't
-    /// know the corresponding input, which would break fault tolerance.
-    fn wait_to_commit(&self, step: Step) {
-        if !self.status.is_step_committed(step) {
-            let mut guard = self.uncommitted_step.lock().unwrap();
-            loop {
-                let uncommitted_step = self.status.uncommitted_step().unwrap();
-                if uncommitted_step > *guard {
-                    *guard = uncommitted_step;
-                    self.step_committed.notify_all();
-                }
-                if uncommitted_step < step {
-                    return;
-                }
-                guard = self.step_committed.wait(guard).unwrap();
-            }
-        }
-    }
-
     fn state(&self) -> PipelineState {
         self.status.state()
     }
 
     fn start(&self) {
         self.status.set_state(PipelineState::Running);
-        self.unpark_backpressure();
+        self.unpark_circuit();
     }
 
     fn pause(&self) {
         self.status.set_state(PipelineState::Paused);
-        self.unpark_backpressure();
     }
 
     fn stop(&self) {
@@ -1609,25 +1624,22 @@ impl ControllerInner {
         self.status.set_state(PipelineState::Terminated);
 
         self.unpark_circuit();
-        self.unpark_backpressure();
     }
 
     fn pause_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.pause_input_endpoint(&endpoint_id);
-        self.unpark_backpressure();
         Ok(())
     }
 
     fn start_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.start_input_endpoint(&endpoint_id);
-        self.unpark_backpressure();
         Ok(())
     }
 
     fn graph_profile(&self, cb: GraphProfileCallbackFn) {
-        self.profile_request.send(cb).unwrap();
+        self.command_sender.send(Command::GraphProfile(cb)).unwrap();
         self.unpark_circuit();
     }
 
@@ -1687,16 +1699,14 @@ impl ControllerInner {
     ///
     /// See [ControllerStatus::input_batch].
     pub fn input_batch(&self, endpoint_id: Option<(EndpointId, usize)>, num_records: usize) {
-        self.status
-            .input_batch_global(num_records, &self.circuit_thread_unparker);
+        if num_records > 0 {
+            self.status
+                .input_batch_global(num_records, &self.circuit_thread_unparker);
+        }
 
         if let Some((endpoint_id, num_bytes)) = endpoint_id {
-            self.status.input_batch_from_endpoint(
-                endpoint_id,
-                num_bytes,
-                num_records,
-                &self.backpressure_thread_unparker,
-            )
+            self.status
+                .input_batch_from_endpoint(endpoint_id, num_bytes, num_records)
         }
     }
 
@@ -1726,11 +1736,6 @@ impl ControllerInner {
         self.status.eoi(endpoint_id, &self.circuit_thread_unparker)
     }
 
-    pub fn start_step(&self, endpoint_id: EndpointId, step: Step) {
-        self.status.start_step(endpoint_id, step);
-        self.circuit_thread_unparker.unpark();
-    }
-
     pub fn committed(&self, endpoint_id: EndpointId, step: Step) {
         self.status.committed(endpoint_id, step);
         self.circuit_thread_unparker.unpark();
@@ -1738,6 +1743,41 @@ impl ControllerInner {
 
     fn output_buffers_full(&self) -> bool {
         self.status.output_buffers_full()
+    }
+
+    fn replay_step(
+        &self,
+        reader: Option<StepReader>,
+        writer: Option<StepWriter>,
+        step: Step,
+    ) -> Result<(bool, Option<StepReader>, Option<StepWriter>), ControllerError> {
+        if let Some(reader) = reader {
+            match reader.read()? {
+                ReadResult::Step { reader, metadata } => {
+                    if metadata.step != step {
+                        todo!()
+                    }
+                    for (endpoint_name, metadata) in metadata.input_endpoints {
+                        let endpoint_id = self.input_endpoint_id_by_name(&endpoint_name)?;
+                        self.inputs.lock().unwrap()[&endpoint_id]
+                            .reader
+                            .replay(metadata);
+                    }
+                    Ok((true, Some(reader), None))
+                }
+                ReadResult::Writer(writer) => Ok((false, None, Some(writer))),
+            }
+        } else {
+            Ok((false, reader, writer))
+        }
+    }
+
+    fn checkpoint(&self) -> Result<CheckpointMetadata, DBSPError> {
+        let (sender, receiver) = channel();
+        self.command_sender
+            .send(Command::Checkpoint(sender))
+            .unwrap();
+        receiver.recv().unwrap()
     }
 }
 
@@ -1747,43 +1787,69 @@ struct InputProbe {
     endpoint_id: EndpointId,
     endpoint_name: String,
     controller: Arc<ControllerInner>,
+    max_batch_size: usize,
+    max_queued_records: usize,
 }
 
 impl InputProbe {
-    fn new(endpoint_id: EndpointId, endpoint_name: &str, controller: Arc<ControllerInner>) -> Self {
+    fn new(
+        endpoint_id: EndpointId,
+        endpoint_name: &str,
+        connector_config: &ConnectorConfig,
+        controller: Arc<ControllerInner>,
+    ) -> Self {
         Self {
             endpoint_id,
             endpoint_name: endpoint_name.to_owned(),
             controller,
+            max_batch_size: connector_config.max_batch_size as usize,
+            max_queued_records: connector_config.max_queued_records as usize,
         }
     }
 }
 
 impl InputConsumer for InputProbe {
-    fn error(&self, fatal: bool, error: AnyError) {
+    fn max_batch_size(&self) -> usize {
+        self.max_batch_size
+    }
+
+    fn max_queued_records(&self) -> usize {
+        self.max_queued_records
+    }
+
+    fn parse_errors(&self, errors: Vec<ParseError>) {
+        for error in errors {
+            self.controller
+                .parse_error(self.endpoint_id, &self.endpoint_name, error);
+        }
+    }
+
+    fn buffered(&self, num_records: usize, num_bytes: usize) {
         self.controller
-            .input_transport_error(self.endpoint_id, &self.endpoint_name, fatal, error);
+            .input_batch(Some((self.endpoint_id, num_bytes)), num_records);
+    }
+
+    fn replayed(&self, num_records: usize) {
+        self.controller
+            .status
+            .completed(self.endpoint_id, num_records as u64, None);
+        self.controller.unpark_circuit();
+    }
+
+    fn extended(&self, num_records: usize, metadata: JsonValue) {
+        self.controller
+            .status
+            .completed(self.endpoint_id, num_records as u64, Some(metadata));
+        self.controller.unpark_circuit();
     }
 
     fn eoi(&self) {
         self.controller.eoi(self.endpoint_id);
     }
 
-    fn start_step(&self, step: Step) {
-        self.controller.start_step(self.endpoint_id, step);
-    }
-
-    fn committed(&self, step: Step) {
-        self.controller.committed(self.endpoint_id, step);
-    }
-
-    fn queued(&self, num_bytes: usize, num_records: usize, errors: Vec<ParseError>) {
-        for error in errors.iter() {
-            self.controller
-                .parse_error(self.endpoint_id, &self.endpoint_name, error.clone());
-        }
+    fn error(&self, fatal: bool, error: AnyError) {
         self.controller
-            .input_batch(Some((self.endpoint_id, num_bytes)), num_records);
+            .input_transport_error(self.endpoint_id, &self.endpoint_name, fatal, error);
     }
 }
 
@@ -1879,8 +1945,8 @@ mod test {
         Controller, PipelineConfig,
     };
     use csv::{ReaderBuilder as CsvReaderBuilder, WriterBuilder as CsvWriterBuilder};
-    use std::fs::remove_file;
-    use tempfile::NamedTempFile;
+    use std::fs::{remove_file, File};
+    use tempfile::{NamedTempFile, TempDir};
 
     use proptest::prelude::*;
 
@@ -1952,6 +2018,7 @@ outputs:
                 writer.serialize(val).unwrap();
             }
             writer.flush().unwrap();
+            println!("wait for {} records", data.len());
             controller.start();
 
             // Wait for the pipeline to output all records.
@@ -1982,5 +2049,178 @@ outputs:
 
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn test_ft() {
+        let tempdir = TempDir::new().unwrap();
+        let storage_dir = tempdir.path().join("storage");
+        let input_path = tempdir.path().join("input.csv");
+        let input_file = File::create(&input_path).unwrap();
+        let output_path = tempdir.path().join("output.csv");
+
+        let config_str = format!(
+            r#"
+name: test
+workers: 4
+storage_config:
+    path: {storage_dir:?}
+global:
+    storage: true
+inputs:
+    test_input1:
+        stream: test_input1
+        transport:
+            name: file_input
+            config:
+                path: {input_path:?}
+                follow: true
+        format:
+            name: csv
+outputs:
+    test_output1:
+        stream: test_output1
+        transport:
+            name: file_output
+            config:
+                path: {output_path:?}
+        format:
+            name: csv
+            config:
+        "#
+        );
+
+        let config: PipelineConfig = serde_yaml::from_str(&config_str).unwrap();
+        let controller = Controller::with_config(
+            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
+            &config,
+            Box::new(|e| panic!("error: {e}")),
+        )
+        .unwrap();
+
+        let mut writer = CsvWriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&input_file);
+
+        let data = (0..5000)
+            .map(|id| TestStruct {
+                id,
+                b: false,
+                i: None,
+                s: "".into(),
+            })
+            .collect::<Vec<_>>();
+        for val in data.iter().cloned() {
+            writer.serialize(val).unwrap();
+        }
+        writer.flush().unwrap();
+        controller.start();
+
+        // Wait for the pipeline to output all records.
+        println!("wait for {} records", data.len());
+        wait(
+            || {
+                controller
+                    .status()
+                    .output_status()
+                    .get(&0)
+                    .unwrap()
+                    .transmitted_records()
+                    >= data.len() as u64
+            },
+            10_000,
+        )
+        .unwrap();
+
+        assert_eq!(
+            controller
+                .status()
+                .output_status()
+                .get(&0)
+                .unwrap()
+                .transmitted_records(),
+            data.len() as u64
+        );
+
+        controller.stop().unwrap();
+
+        let mut expected = data.clone();
+        expected.sort();
+
+        let mut actual: Vec<_> = CsvReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&output_path)
+            .unwrap()
+            .deserialize::<(TestStruct, i32)>()
+            .map(|res| {
+                let (val, weight) = res.unwrap();
+                assert_eq!(weight, 1);
+                val
+            })
+            .collect();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+
+        println!("restart controller");
+        let controller = Controller::with_config(
+            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
+            &config,
+            Box::new(|e| panic!("error: {e}")),
+        )
+        .unwrap();
+
+        /*
+                for val in data.iter().cloned() {
+                    writer.serialize(val).unwrap();
+                }
+                writer.flush().unwrap();
+        */
+        println!("wait for {} records", data.len() * 2);
+        wait(
+            || {
+                controller
+                    .status()
+                    .output_status()
+                    .get(&0)
+                    .unwrap()
+                    .transmitted_records()
+                    >= data.len() as u64 * 2
+            },
+            10_000,
+        )
+        .unwrap();
+
+        assert_eq!(
+            controller
+                .status()
+                .output_status()
+                .get(&0)
+                .unwrap()
+                .transmitted_records(),
+            data.len() as u64 * 2
+        );
+
+        controller.stop().unwrap();
+
+        let mut expected = data.clone();
+        expected.extend(data.iter().cloned());
+        expected.sort();
+
+        let mut actual: Vec<_> = CsvReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&output_path)
+            .unwrap()
+            .deserialize::<(TestStruct, i32)>()
+            .map(|res| {
+                let (val, weight) = res.unwrap();
+                assert_eq!(weight, 1);
+                val
+            })
+            .collect();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+        println!("{}", tempdir.into_path().display());
     }
 }

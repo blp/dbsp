@@ -7,9 +7,11 @@ use std::{
     borrow::Cow,
     error::Error as StdError,
     fmt::{Display, Error as FmtError, Formatter},
-    io::Error as IOError,
+    io::Error as IoError,
     string::ToString,
 };
+
+use super::metadata::StepError;
 
 /// Controller configuration error.
 #[derive(Debug, Serialize)]
@@ -474,7 +476,7 @@ pub enum ControllerError {
     IoError {
         /// Describes the context where the error occurred.
         context: String,
-        io_error: IOError,
+        io_error: IoError,
         backtrace: Backtrace,
     },
 
@@ -483,6 +485,12 @@ pub enum ControllerError {
 
     /// Error validating program schema.
     SchemaValidationError { error: String },
+
+    /// Error parsing the checkpoint.
+    CheckpointParseError { error: String },
+
+    /// Error in steps metadata.
+    StepError(StepError),
 
     /// Feature is not supported.
     NotSupported { error: String },
@@ -555,14 +563,14 @@ pub enum ControllerError {
 
 fn serialize_io_error<S>(
     context: &String,
-    io_error: &IOError,
+    io_error: &IoError,
     backtrace: &Backtrace,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let mut ser = serializer.serialize_struct("IOError", 4)?;
+    let mut ser = serializer.serialize_struct("IoError", 4)?;
     ser.serialize_field("context", context)?;
     ser.serialize_field("kind", &io_error.kind().to_string())?;
     ser.serialize_field("os_error", &io_error.raw_os_error())?;
@@ -623,10 +631,12 @@ impl DetailedError for ControllerError {
     // TODO: attempts to cast `AnyError` to `DetailedError`.
     fn error_code(&self) -> Cow<'static, str> {
         match self {
-            Self::IoError { .. } => Cow::from("ControllerIOError"),
+            Self::IoError { .. } => Cow::from("ControllerIoError"),
             Self::NotSupported { .. } => Cow::from("NotSupported"),
             Self::SchemaParseError { .. } => Cow::from("SchemaParseError"),
             Self::SchemaValidationError { .. } => Cow::from("SchemaParseError"),
+            Self::CheckpointParseError { .. } => Cow::from("CheckpointParseError"),
+            Self::StepError { .. } => Cow::from("StepsError"),
             Self::IrParseError { .. } => Cow::from("IrParseError"),
             Self::CliArgsError { .. } => Cow::from("ControllerCliArgsError"),
             Self::Config { config_error } => {
@@ -665,6 +675,10 @@ impl Display for ControllerError {
             Self::SchemaValidationError { error } => {
                 write!(f, "Error validating program schema: {error}")
             }
+            Self::CheckpointParseError { error } => {
+                write!(f, "Error parsing checkpoint file: {error}")
+            }
+            Self::StepError(error) => write!(f, "Error with persistent input steps: {error}"),
             Self::IrParseError { error } => {
                 write!(f, "Error parsing program IR: {error}")
             }
@@ -737,7 +751,7 @@ impl Display for ControllerError {
 }
 
 impl ControllerError {
-    pub fn io_error(context: String, io_error: IOError) -> Self {
+    pub fn io_error(context: String, io_error: IoError) -> Self {
         Self::IoError {
             context,
             io_error,
