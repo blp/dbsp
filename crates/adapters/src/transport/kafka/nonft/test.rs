@@ -5,6 +5,7 @@ use crate::{
         mock_input_pipeline, test_circuit, wait_for_output_ordered, wait_for_output_unordered,
         TestStruct,
     },
+    transport::InputReaderCommand,
     Controller, PipelineConfig,
 };
 use feldera_types::program_schema::Relation;
@@ -235,7 +236,7 @@ format:
     )
     .unwrap();
 
-    endpoint.start(0).unwrap();
+    endpoint.extend();
 
     let producer = TestProducer::new();
 
@@ -266,24 +267,26 @@ format:
     //println!("records before pause: {}", zset.state().flushed.len());
 
     // Paused endpoint shouldn't receive any data.
-    endpoint.pause().unwrap();
+    endpoint.extend();
     sleep(Duration::from_millis(1000));
 
     kafka_resources.add_partition(topic2);
 
     producer.send_to_topic(&data, topic2);
     sleep(Duration::from_millis(1000));
+    todo!();
     assert_eq!(zset.state().flushed.len(), 0);
 
     // Receive everything after unpause.
-    endpoint.start(0).unwrap();
+    endpoint.extend();
+    todo!();
     wait_for_output_unordered(&zset, &data);
 
     zset.reset();
 
     info!("proptest_kafka_input: Test: Disconnect");
     // Disconnected endpoint should not receive any data.
-    endpoint.disconnect();
+    endpoint.request(InputReaderCommand::Disconnect);
     sleep(Duration::from_millis(1000));
 
     producer.send_to_topic(&data, topic2);

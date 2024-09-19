@@ -8,7 +8,6 @@ use std::sync::{Barrier, OnceLock, Weak};
 use std::thread::{self, Thread};
 
 use crate::format::InputBuffer;
-use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
@@ -22,6 +21,8 @@ use enum_map::EnumMap;
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::nexmark::{NexmarkInputConfig, NexmarkInputOptions, NexmarkTable};
 use rand::rngs::ThreadRng;
+
+use super::InputStep;
 
 pub(crate) struct NexmarkEndpoint {
     config: NexmarkInputConfig,
@@ -44,7 +45,7 @@ impl TransportInputEndpoint for NexmarkEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(InputGenerator::new(
@@ -83,20 +84,8 @@ impl InputGenerator {
 }
 
 impl InputReader for InputGenerator {
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.inner.status[self.table].store(PipelineState::Running, Ordering::Release);
-        self.inner.unpark();
-        Ok(())
-    }
-
-    fn pause(&self) -> AnyResult<()> {
-        self.inner.status[self.table].store(PipelineState::Paused, Ordering::Release);
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.inner.status[self.table].store(PipelineState::Terminated, Ordering::Release);
-        self.inner.unpark();
+    fn request(&self, _command: super::InputReaderCommand) {
+        todo!()
     }
 }
 
@@ -356,7 +345,7 @@ impl Inner {
                     .drain(..options.threads * 3)
                     .filter_map(|b| b)
                     .collect::<Multibuffer>();
-                consumer.queue(0, Some(Box::new(buffer)), Vec::new());
+                //consumer.queue(0, Some(Box::new(buffer)), Vec::new());
             }
         }
     }

@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use crate::transport::Step;
 use crate::{
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
@@ -32,6 +31,8 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Zipf};
 use serde_json::{to_writer, Map, Value};
 use tokio::sync::Notify;
+
+use super::{InputReaderCommand, InputStep};
 
 fn range_as_i64(
     field: &SqlIdentifier,
@@ -236,7 +237,7 @@ impl TransportInputEndpoint for GeneratorEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(InputGenerator::new(
@@ -444,7 +445,7 @@ impl InputGenerator {
 
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
-                                consumer.queue(buffer.len(), parser.parse(&buffer));
+                                //consumer.queue(buffer.len(), parser.parse(&buffer));
                                 buffer.clear();
                                 buffer.extend(START_ARR);
                                 batch_idx = 0;
@@ -463,7 +464,7 @@ impl InputGenerator {
                 }
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
-                    consumer.queue(buffer.len(), parser.parse(&buffer));
+                    //consumer.queue(buffer.len(), parser.parse(&buffer));
                 }
                 // Update global progress after we created all records for a batch
                 //eprintln!("adding {} to generated", generate_range.len());
@@ -475,33 +476,14 @@ impl InputGenerator {
 }
 
 impl InputReader for InputGenerator {
-    fn pause(&self) -> AnyResult<()> {
-        // Notify worker thread via the status flag.  The worker may
-        // send another buffer downstream before the flag takes effect.
-        self.status.store(PipelineState::Paused, Ordering::Release);
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.status.store(PipelineState::Running, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.status
-            .store(PipelineState::Terminated, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 
 impl Drop for InputGenerator {
     fn drop(&mut self) {
-        self.disconnect();
+        self.request(InputReaderCommand::Disconnect);
     }
 }
 
@@ -1573,7 +1555,7 @@ mod test {
         let relation = Relation::new("test_input".into(), fields, true, BTreeMap::new());
         let (endpoint, consumer, _parser, zset) =
             mock_input_pipeline::<T, U>(serde_yaml::from_str(config_str).unwrap(), relation)?;
-        endpoint.start(0)?;
+        endpoint.extend();
         Ok((endpoint, consumer, zset))
     }
 

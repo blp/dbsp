@@ -92,9 +92,12 @@ format:
     sleep(Duration::from_millis(10));
     assert!(parser.state().data.is_empty());
     assert!(!consumer.state().eoi);
-    endpoint.start(0).unwrap();
+    endpoint.extend();
     wait(
-        || zset.state().flushed.len() == test_data.len(),
+        || {
+            endpoint.queue();
+            zset.state().flushed.len() == test_data.len()
+        },
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();
