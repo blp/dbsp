@@ -1,10 +1,10 @@
 use super::{
-    InputConsumer, InputEndpoint, InputReader, OutputEndpoint, Step, TransportInputEndpoint,
+    InputConsumer, InputEndpoint, InputReader, InputReaderCommand, InputStep, OutputEndpoint,
+    TransportInputEndpoint,
 };
 use crate::format::StreamingSplitter;
 use crate::{Parser, PipelineState};
 use anyhow::{bail, Error as AnyError, Result as AnyResult};
-use atomic::Atomic;
 use crossbeam::sync::{Parker, Unparker};
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::file::{FileInputConfig, FileOutputConfig};
@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-const SLEEP_MS: u64 = 200;
+const SLEEP: Duration = Duration::from_millis(200);
 
 pub(crate) struct FileInputEndpoint {
     config: FileInputConfig,
@@ -30,7 +30,7 @@ impl FileInputEndpoint {
 
 impl InputEndpoint for FileInputEndpoint {
     fn is_fault_tolerant(&self) -> bool {
-        false
+        true
     }
 }
 
@@ -39,7 +39,7 @@ impl TransportInputEndpoint for FileInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(FileInputReader::new(
@@ -50,9 +50,91 @@ impl TransportInputEndpoint for FileInputEndpoint {
     }
 }
 
+struct StreamingSplitter {
+    buffer: Vec<u8>,
+    start: u64,
+    fragment: Range<usize>,
+    fed: usize,
+    splitter: Box<dyn Splitter>,
+}
+
+impl StreamingSplitter {
+    fn new(splitter: Box<dyn Splitter>, buffer_size: usize) -> Self {
+        let mut buffer = Vec::new();
+        buffer.resize(if buffer_size == 0 { 8192 } else { buffer_size }, 0);
+        Self {
+            buffer,
+            start: 0,
+            fragment: 0..0,
+            fed: 0,
+            splitter,
+        }
+    }
+    fn next(&mut self) -> Option<&[u8]> {
+        match self
+            .splitter
+            .input(&self.buffer[self.fed..self.fragment.end])
+        {
+            Some(n) => {
+                let chunk = &self.buffer[self.fragment.start..self.fed + n];
+                self.fed += n;
+                self.fragment.start = self.fed;
+                Some(chunk)
+            }
+            None => {
+                self.fed = self.fragment.end;
+                None
+            }
+        }
+    }
+    fn position(&self) -> u64 {
+        self.start + self.fragment.start as u64
+    }
+    fn final_chunk(&mut self) -> Option<&[u8]> {
+        if !self.fragment.is_empty() {
+            let chunk = &self.buffer[self.fragment.clone()];
+            self.fragment.end = self.fragment.start;
+            Some(chunk)
+        } else {
+            None
+        }
+    }
+    fn spare_capacity_mut(&mut self) -> &mut [u8] {
+        self.buffer.copy_within(self.fragment.clone(), 0);
+        self.start += self.fragment.start as u64;
+        self.fed -= self.fragment.start;
+        self.fragment = 0..self.fragment.len();
+        if self.fragment.len() == self.buffer.len() {
+            self.buffer.resize(self.buffer.capacity() * 2, 0);
+        }
+        &mut self.buffer[self.fragment.len()..]
+    }
+    fn added_data(&mut self, n: usize) {
+        self.fragment.end += n;
+    }
+    fn read(&mut self, file: &mut File, max: usize) -> Result<usize, IoError> {
+        let mut space = self.spare_capacity_mut();
+        if space.len() > max {
+            space = &mut space[..max];
+        }
+        let result = file.read(space);
+        if let Ok(n) = result {
+            println!("read {n} bytes");
+            self.added_data(n);
+        }
+        result
+    }
+    fn seek(&mut self, offset: u64) {
+        self.start = offset;
+        self.fragment = 0..0;
+        self.fed = 0;
+        self.splitter.clear();
+    }
+}
+
 struct FileInputReader {
-    status: Arc<Atomic<PipelineState>>,
-    unparker: Option<Unparker>,
+    sender: Sender<InputReaderCommand>,
+    unparker: Unparker,
 }
 
 impl FileInputReader {
@@ -66,75 +148,148 @@ impl FileInputReader {
         })?;
 
         let parker = Parker::new();
-        let unparker = Some(parker.unparker().clone());
-        let status = Arc::new(Atomic::new(PipelineState::Paused));
+        let unparker = parker.unparker().clone();
+        let (sender, receiver) = channel();
         spawn({
             let follow = config.follow;
-            let buffer_size = config.buffer_size_bytes;
-            let status = status.clone();
             move || {
-                let mut splitter = StreamingSplitter::new(parser.splitter(), buffer_size);
-                loop {
-                    match status.load(Ordering::Acquire) {
-                        PipelineState::Paused => parker.park(),
-                        PipelineState::Running => {
-                            let n = match splitter.read(&mut file, usize::MAX) {
-                                Ok(n) => n,
-                                Err(error) => {
-                                    consumer.error(true, AnyError::from(error));
-                                    break;
-                                }
-                            };
-
-                            while let Some(chunk) = splitter.next(n == 0 && !follow) {
-                                consumer.queue(0, parser.parse(chunk));
-                            }
-                            if n == 0 {
-                                if !follow {
-                                    consumer.eoi();
-                                    break;
-                                }
-                                sleep(Duration::from_millis(SLEEP_MS));
-                            }
-                        }
-                        PipelineState::Terminated => break,
-                    }
+                if let Err(error) = Self::worker_thread(
+                    file,
+                    buffer_size,
+                    &consumer,
+                    parser,
+                    parker,
+                    receiver,
+                    follow,
+                ) {
+                    consumer.error(true, error);
                 }
             }
         });
 
-        Ok(Self { status, unparker })
+        Ok(Self { sender, unparker })
     }
 
-    fn unpark(&self) {
-        if let Some(unparker) = &self.unparker {
-            unparker.unpark();
+    fn worker_thread(
+        mut file: File,
+        buffer_size: usize,
+        consumer: &Box<dyn InputConsumer>,
+        mut parser: Box<dyn Parser>,
+        parker: Parker,
+        receiver: Receiver<InputReaderCommand>,
+        follow: bool,
+    ) -> AnyResult<()> {
+        let mut splitter = StreamingSplitter::new(parser.splitter(), buffer_size);
+
+        let mut queue = VecDeque::<(Range<u64>, Box<dyn InputBuffer>)>::new();
+        let mut n_queued = 0;
+        let mut extending = false;
+        let mut eof = false;
+        loop {
+            for command in receiver.try_iter() {
+                match command {
+                    InputReaderCommand::Extend => {
+                        extending = true;
+                    }
+                    InputReaderCommand::Queue => {
+                        let mut total = 0;
+                        let limit = consumer.max_batch_size();
+                        let mut range: Option<Range<u64>> = None;
+                        while let Some((offsets, mut buffer)) = queue.pop_front() {
+                            range = match range {
+                                Some(range) => Some(range.start..offsets.end),
+                                None => Some(offsets),
+                            };
+                            total += buffer.len();
+                            buffer.flush_all();
+                            if total >= limit {
+                                break;
+                            }
+                        }
+                        println!("queued {total} records");
+                        consumer.extended(
+                            total,
+                            serde_json::to_value(Metadata {
+                                offsets: range.unwrap_or(0..0),
+                            })?,
+                        );
+                    }
+                    InputReaderCommand::Seek(metadata) => {
+                        let Metadata { offsets } = serde_json::from_value(metadata)?;
+                        file.seek(SeekFrom::Start(offsets.end))?;
+                    }
+                    InputReaderCommand::Replay(metadata) => {
+                        let Metadata { offsets } = serde_json::from_value(metadata)?;
+                        file.seek(SeekFrom::Start(offsets.start))?;
+                        splitter.seek(offsets.start);
+                        let mut remainder = (offsets.end - offsets.start) as usize;
+                        loop {
+                            while let Some(chunk) = splitter.next() {
+                                let prev_len = parser.len();
+                                consumer.parse_errors(parser.input_chunk(chunk));
+                                consumer.buffered(parser.len() - prev_len, chunk.len());
+                            }
+                            if remainder == 0 {
+                                break;
+                            }
+                            let n = splitter.read(&mut file, remainder)?;
+                            if n == 0 {
+                                todo!();
+                            }
+                            remainder -= n;
+                        }
+                        if let Some(chunk) = splitter.final_chunk() {
+                            let prev_len = parser.len();
+                            consumer.parse_errors(parser.input_chunk(chunk));
+                            consumer.buffered(parser.len() - prev_len, chunk.len());
+                        }
+                        let num_records = parser.len();
+                        parser.take().flush_all();
+                        consumer.replayed(num_records);
+                    }
+                    InputReaderCommand::Disconnect => return Ok(()),
+                }
+            }
+
+            if !extending || eof || n_queued >= consumer.max_queued_records() {
+                parker.park();
+                continue;
+            }
+
+            let start = splitter.position();
+            while let Some(chunk) = splitter.next() {
+                let prev_len = parser.len();
+                consumer.parse_errors(parser.input_chunk(chunk));
+                consumer.buffered(parser.len() - prev_len, chunk.len());
+            }
+            let n = splitter.read(&mut file, usize::MAX)?;
+            if n == 0 {
+                if !follow {
+                    eof = true;
+                    if let Some(chunk) = splitter.final_chunk() {
+                        let prev_len = parser.len();
+                        consumer.parse_errors(parser.input_chunk(chunk));
+                        consumer.buffered(parser.len() - prev_len, chunk.len());
+                    }
+                    consumer.eoi();
+                } else if parser.is_empty() {
+                    parker.park_timeout(SLEEP);
+                }
+            }
+            let end = splitter.position();
+
+            if let Some(buffer) = parser.take() {
+                n_queued += buffer.len();
+                queue.push_back((start..end, buffer));
+            }
         }
     }
 }
 
 impl InputReader for FileInputReader {
-    fn pause(&self) -> AnyResult<()> {
-        // Notify worker thread via the status flag.  The worker may
-        // send another buffer downstream before the flag takes effect.
-        self.status.store(PipelineState::Paused, Ordering::Release);
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.status.store(PipelineState::Running, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.status
-            .store(PipelineState::Terminated, Ordering::Release);
-
-        // Wake up the worker if it's paused.
-        self.unpark();
+    fn request(&self, command: super::InputReaderCommand) {
+        let _ = self.sender.send(command);
+        self.unparker.unpark();
     }
 }
 
@@ -262,9 +417,12 @@ format:
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
-        endpoint.start(0).unwrap();
+        endpoint.extend();
         wait(
-            || zset.state().flushed.len() == test_data.len(),
+            || {
+                endpoint.queue();
+                zset.state().flushed.len() == test_data.len()
+            },
             DEFAULT_TIMEOUT_MS,
         )
         .unwrap();
@@ -310,6 +468,8 @@ format:
         )
         .unwrap();
 
+        endpoint.extend();
+
         for _ in 0..10 {
             for val in test_data.iter().cloned() {
                 writer.serialize(val).unwrap();
@@ -322,16 +482,17 @@ format:
             assert!(!consumer.state().eoi);
 
             // Unpause the endpoint, wait for the data to appear at the output.
-            endpoint.start(0).unwrap();
             wait(
-                || zset.state().flushed.len() == test_data.len(),
+                || {
+                    endpoint.queue();
+                    zset.state().flushed.len() == test_data.len()
+                },
                 DEFAULT_TIMEOUT_MS,
             )
             .unwrap();
             for (i, upd) in zset.state().flushed.iter().enumerate() {
                 assert_eq!(upd.unwrap_insert(), &test_data[i]);
             }
-            endpoint.pause().unwrap();
 
             consumer.reset();
             zset.reset();
@@ -344,9 +505,9 @@ format:
         temp_file.as_file().write_all(b"xxx\n").unwrap();
         temp_file.as_file().flush().unwrap();
 
-        endpoint.start(0).unwrap();
         wait(
             || {
+                endpoint.queue();
                 let state = parser.state();
                 // println!("result: {:?}", state.parser_result);
                 state.parser_result.is_some() && !state.parser_result.as_ref().unwrap().is_empty()
@@ -359,4 +520,9 @@ format:
 
         endpoint.disconnect();
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Metadata {
+    offsets: Range<u64>,
 }

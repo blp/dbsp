@@ -37,7 +37,7 @@ impl TransportInputEndpoint for UrlInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(UrlInputReader::new(
@@ -72,7 +72,7 @@ impl UrlInputReader {
                         consumer.error(true, error);
                     } else {
                         if let Some(record) = splitter.next(true) {
-                            consumer.queue(record.len(), parser.parse(record));
+                            //consumer.queue(record.len(), parser.parse(record));
                         }
                         consumer.eoi();
                     };
@@ -236,7 +236,7 @@ impl UrlInputReader {
                                         consumed_bytes += chunk.len() as u64;
                                         splitter.append(chunk);
                                         while let Some(record) = splitter.next(false) {
-                                            consumer.queue(record.len(), parser.parse(record));
+                                            //consumer.queue(record.len(), parser.parse(record));
                                         }
                                     }
                                     offset += data_len;
@@ -252,23 +252,8 @@ impl UrlInputReader {
 }
 
 impl InputReader for UrlInputReader {
-    fn pause(&self) -> AnyResult<()> {
-        // Use `send_replace`, instead of `send`, to make it a no-op if the
-        // worker thread has died.  We want that behavior because pausing a
-        // download that is already complete should be a no-op.
-        //
-        // Same for `start` and `disconnect`, below.
-        self.sender.send_replace(PipelineState::Paused);
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.sender.send_replace(PipelineState::Running);
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.sender.send_replace(PipelineState::Terminated);
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 
@@ -408,8 +393,15 @@ bar,false,-10
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the data to appear at the output.
-        endpoint.start(0).unwrap();
-        wait(|| n_recs(&zset) == test_data.len(), DEFAULT_TIMEOUT_MS).unwrap();
+        endpoint.extend();
+        wait(
+            || {
+                endpoint.queue();
+                n_recs(&zset) == test_data.len()
+            },
+            DEFAULT_TIMEOUT_MS,
+        )
+        .unwrap();
         for (i, upd) in zset.state().flushed.iter().enumerate() {
             assert_eq!(upd.unwrap_insert(), &test_data[i]);
         }
@@ -433,9 +425,12 @@ bar,false,-10
         assert!(!consumer.state().eoi);
 
         // Unpause the endpoint, wait for the error.
-        endpoint.start(0).unwrap();
+        endpoint.extend();
         wait(
-            || consumer.state().endpoint_error.is_some(),
+            || {
+                endpoint.queue();
+                consumer.state().endpoint_error.is_some()
+            },
             DEFAULT_TIMEOUT_MS,
         )
         .unwrap();
@@ -478,18 +473,25 @@ bar,false,-10
 
         // Unpause the endpoint.  Outputs should start arriving, one record
         // every 10 ms.
-        endpoint.start(0).unwrap();
+        endpoint.extend();
 
         // The first 10 records should take about 100 ms to arrive.  In practice
         // on busy CI systems it often seems to take longer, so be generous.
         let timeout_ms = 2000;
-        let n1_time = wait(|| n_recs(&zset) >= 10, timeout_ms)
-            .unwrap_or_else(|()| panic!("only {} records after {timeout_ms} ms", n_recs(&zset)));
+        let n1_time = wait(
+            || {
+                endpoint.queue();
+                n_recs(&zset) >= 10
+            },
+            timeout_ms,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after {timeout_ms} ms", n_recs(&zset)));
         let n1 = n_recs(&zset);
         println!("{n1} records took {n1_time} ms to arrive");
 
         // After another 100 ms, there should be more records.
         sleep(Duration::from_millis(100));
+        endpoint.queue(); // XXX need to wait for it to be processed.
         let n2 = n_recs(&zset);
         println!("100 ms later, {n2} records arrived");
         assert!(n2 > n1, "After 100 ms longer, no more records arrived");
@@ -498,6 +500,7 @@ bar,false,-10
         // check that we've got at least 10 more than `n1` (really it should be
         // 20).
         sleep(Duration::from_millis(100));
+        endpoint.queue(); // XXX need to wait for it to be processed.
         let n3 = n_recs(&zset);
         println!("100 ms later, {n3} records arrived");
         assert!(
@@ -507,16 +510,24 @@ bar,false,-10
         );
 
         // Wait for the first 50 records to arrive.
-        let n4_time = wait(|| n_recs(&zset) >= 50, 350)
-            .unwrap_or_else(|()| panic!("only {} records after 350 ms", n_recs(&zset)));
+        let n4_time = wait(
+            || {
+                endpoint.queue();
+                n_recs(&zset) >= 50
+            },
+            350,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after 350 ms", n_recs(&zset)));
         let n4 = n_recs(&zset);
         println!("{} records took {n4_time} ms longer to arrive", n4 - n3);
 
         // Pause the endpoint.  No more records should arrive but who knows,
         // there could be a race, so don't be precise about it.
+        /* XXX we don't have pausing anymore
         println!("pausing...");
-        endpoint.pause().unwrap();
+        endpoint.pause().unwrap();*/
         sleep(Duration::from_millis(100));
+        endpoint.queue(); // XXX need to wait for it to be processed.
         let n5 = n_recs(&zset);
         println!("100 ms later, {n5} records arrived");
 
@@ -524,12 +535,13 @@ bar,false,-10
         for _ in 0..2 {
             sleep(Duration::from_millis(100));
             let n = n_recs(&zset);
+            endpoint.queue(); // XXX need to wait for it to be processed.
             println!("100 ms later, {n} records arrived");
             assert_eq!(n5, n);
         }
 
         // Now restart the endpoint.
-        endpoint.start(0).unwrap();
+        endpoint.extend();
         println!("restarting...");
         if with_reconnect {
             // The adapter will reopen the connection to the server.  The server
@@ -541,6 +553,7 @@ bar,false,-10
             for _ in 0..4 {
                 sleep(Duration::from_millis(100));
                 let n = n_recs(&zset);
+                endpoint.queue(); // XXX need to wait for it to be processed.
                 println!("100 ms later, {n} records arrived");
                 assert_eq!(n5, n);
             }
@@ -548,14 +561,21 @@ bar,false,-10
             // The records should start arriving again immediately.
             sleep(Duration::from_millis(200));
             let n = n_recs(&zset);
+            endpoint.queue(); // XXX need to wait for it to be processed.
             println!("200 ms later, {n} records arrived");
             assert!(n > n5);
         }
 
         // Within 600 ms more, we should get all 100 records, but fudge it to
         // 1000 ms.
-        let n6_time = wait(|| n_recs(&zset) >= 100, 1000)
-            .unwrap_or_else(|()| panic!("only {} records after 1000 ms", n_recs(&zset)));
+        let n6_time = wait(
+            || {
+                endpoint.queue();
+                n_recs(&zset) >= 100
+            },
+            1000,
+        )
+        .unwrap_or_else(|()| panic!("only {} records after 1000 ms", n_recs(&zset)));
         let n6 = n_recs(&zset);
         println!("{} more records took {n6_time} ms to arrive", n6 - n5);
 

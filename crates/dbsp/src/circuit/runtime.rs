@@ -769,7 +769,7 @@ mod tests {
         let cconf = CircuitConfig {
             layout: Layout::new_solo(4),
             storage: Some(StorageConfig {
-                path: path.to_str().unwrap().to_string(),
+                path: path.clone(),
                 cache: StorageCacheConfig::default(),
             }),
             min_storage_bytes: usize::MAX,

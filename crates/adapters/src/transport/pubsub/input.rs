@@ -1,5 +1,5 @@
 use crate::{
-    transport::Step, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState,
+    transport::{InputReaderCommand, InputStep}, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState,
     TransportInputEndpoint,
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
@@ -51,7 +51,7 @@ impl TransportInputEndpoint for PubSubInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(PubSubReader::new(
@@ -161,10 +161,11 @@ impl PubSubReader {
                         async move {
                             // None if the stream is cancelled
                             while let Some(message) = stream.next().await {
+        /*
                                 consumer.queue(
                                     message.message.data.len(),
                                     parser.parse(&message.message.data),
-                                );
+                                );*/
                                 message.ack().await.unwrap_or_else(|e| {
                                     consumer.error(
                                         false,
@@ -189,18 +190,8 @@ impl PubSubReader {
 }
 
 impl InputReader for PubSubReader {
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.state_sender.send(PipelineState::Running)?;
-        Ok(())
-    }
-
-    fn pause(&self) -> AnyResult<()> {
-        self.state_sender.send(PipelineState::Paused)?;
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        let _ = self.state_sender.send(PipelineState::Terminated);
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 

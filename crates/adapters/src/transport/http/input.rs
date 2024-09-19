@@ -1,8 +1,8 @@
 use crate::format::AppendSplitter;
-use crate::transport::{InputEndpoint};
+use crate::transport::InputEndpoint;
 use crate::{
     server::{PipelineError, MAX_REPORTED_PARSE_ERRORS},
-    transport::{InputReader, Step},
+    transport::InputReader,
     ControllerError, InputConsumer, PipelineState, TransportConfig, TransportInputEndpoint,
 };
 use crate::{ParseError, Parser};
@@ -125,9 +125,9 @@ impl HttpInputEndpoint {
         while let Some(chunk) = details.splitter.next(bytes.is_none()) {
             let (buffer, mut new_errors) = details.parser.parse(chunk);
             total_errors += new_errors.len();
-            details
-                .consumer
-                .queue(chunk.len(), (buffer, new_errors.clone()));
+            /*details
+            .consumer
+            .queue(chunk.len(), (buffer, new_errors.clone()));*/
             for error in new_errors.drain(..) {
                 errors.push(error);
             }
@@ -149,12 +149,7 @@ impl HttpInputEndpoint {
     }
 
     fn queue_len(&self) -> usize {
-        self.inner
-            .details
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or(0, |details| details.consumer.queue_len())
+        todo!()
     }
 
     /// Read the `payload` stream and push it to the pipeline.
@@ -235,7 +230,7 @@ impl TransportInputEndpoint for HttpInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         let splitter = AppendSplitter::new(parser.splitter());
@@ -249,30 +244,7 @@ impl TransportInputEndpoint for HttpInputEndpoint {
 }
 
 impl InputReader for HttpInputEndpoint {
-    fn pause(&self) -> AnyResult<()> {
-        if !self.inner.force {
-            self.inner
-                .state
-                .store(PipelineState::Paused, Ordering::Release);
-            self.notify();
-        }
-
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.inner
-            .state
-            .store(PipelineState::Running, Ordering::Release);
-        self.notify();
-
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.inner
-            .state
-            .store(PipelineState::Terminated, Ordering::Release);
-        self.notify();
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }

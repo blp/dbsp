@@ -1,10 +1,10 @@
-use crate::transport::InputEndpoint;
+use crate::transport::{InputEndpoint, InputReaderCommand, InputStep};
 use crate::Parser;
 use crate::{
     transport::{
         kafka::{rdkafka_loglevel_from, refine_kafka_error, DeferredLogging},
         secret_resolver::MaybeSecret,
-        InputReader, Step,
+        InputReader,
     },
     InputConsumer, PipelineState, TransportInputEndpoint,
 };
@@ -147,7 +147,7 @@ impl KafkaInputReaderInner {
                 // message.payload().map(|payload| consumer.input(payload));
 
                 if let Some(payload) = message.payload() {
-                    consumer.queue(payload.len(), parser.parse(payload));
+                    //consumer.queue(payload.len(), parser.parse(payload));
                 }
             }
         }
@@ -278,7 +278,7 @@ impl KafkaInputReader {
                     // Hopefully, this guarantees that we won't see any messages from it, but if
                     // that's not the case, there shouldn't be any harm in sending them downstream.
                     if let Some(payload) = message.payload() {
-                        inner.receive.queue(payload.len(), parser.parse(payload));
+                        //inner.receive.queue(payload.len(), parser.parse(payload));
                     }
                 }
                 _ => (),
@@ -510,7 +510,7 @@ impl TransportInputEndpoint for KafkaInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(KafkaInputReader::new(
@@ -522,27 +522,13 @@ impl TransportInputEndpoint for KafkaInputEndpoint {
 }
 
 impl InputReader for KafkaInputReader {
-    fn pause(&self) -> AnyResult<()> {
-        // Notify worker thread via the state flag.  The worker may
-        // send another buffer downstream before the flag takes effect.
-        self.0.set_state(PipelineState::Paused);
-        Ok(())
-    }
-
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.0.set_state(PipelineState::Running);
-        self.1.thread().unpark();
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.0.set_state(PipelineState::Terminated);
-        self.1.thread().unpark();
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 
 impl Drop for KafkaInputReader {
     fn drop(&mut self) {
-        self.disconnect();
+        self.request(InputReaderCommand::Disconnect);
     }
 }

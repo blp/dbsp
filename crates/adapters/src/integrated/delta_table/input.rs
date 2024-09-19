@@ -2,10 +2,11 @@ use crate::catalog::{ArrowStream, InputCollectionHandle};
 use crate::controller::{ControllerInner, EndpointId};
 use crate::format::InputBuffer;
 use crate::integrated::delta_table::{delta_input_serde_config, register_storage_handlers};
-use crate::transport::{InputEndpoint, IntegratedInputEndpoint, Step};
+use crate::transport::{
+    InputEndpoint, InputReaderCommand, InputStep, IntegratedInputEndpoint, Step,
+};
 use crate::{
-    ControllerError, InputConsumer, InputReader, ParseError, PipelineState, RecordFormat,
-    TransportInputEndpoint,
+    ControllerError, InputConsumer, InputReader, ParseError, RecordFormat, TransportInputEndpoint,
 };
 use anyhow::{anyhow, Result as AnyResult};
 use dbsp::circuit::tokio::TOKIO;
@@ -41,8 +42,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::mpsc;
-use tokio::sync::watch::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, unbounded_channel, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 use url::Url;
 use utoipa::ToSchema;
@@ -95,7 +95,7 @@ impl IntegratedInputEndpoint for DeltaTableInputEndpoint {
 }
 
 struct DeltaTableInputReader {
-    sender: Sender<PipelineState>,
+    sender: UnboundedSender<InputReaderCommand>,
 }
 
 impl DeltaTableInputReader {
@@ -103,12 +103,12 @@ impl DeltaTableInputReader {
         endpoint: &Arc<DeltaTableInputEndpointInner>,
         input_handle: &InputCollectionHandle,
     ) -> AnyResult<Self> {
-        let (sender, receiver) = channel(PipelineState::Paused);
+        let (sender, receiver) = unbounded_channel();
         let endpoint_clone = endpoint.clone();
 
         // Used to communicate the status of connector initialization.
         let (init_status_sender, mut init_status_receiver) =
-            mpsc::channel::<Result<(), ControllerError>>(1);
+            channel::<Result<(), ControllerError>>(1);
 
         let input_stream = input_handle
             .handle
@@ -136,29 +136,17 @@ impl DeltaTableInputReader {
     async fn worker_task(
         endpoint: Arc<DeltaTableInputEndpointInner>,
         input_stream: Box<dyn ArrowStream>,
-        receiver: Receiver<PipelineState>,
-        init_status_sender: mpsc::Sender<Result<(), ControllerError>>,
+        receiver: UnboundedReceiver<InputReaderCommand>,
+        init_status_sender: Sender<Result<(), ControllerError>>,
     ) {
-        let mut receiver_clone = receiver.clone();
-        select! {
-            _ = Self::worker_task_inner(endpoint.clone(), input_stream, receiver, init_status_sender) => {
-                debug!("delta_table {}: worker task terminated",
-                    &endpoint.endpoint_name,
-                );
-            }
-            _ = receiver_clone.wait_for(|state| state == &PipelineState::Terminated) => {
-                debug!("delta_table {}: received termination command; worker task canceled",
-                    &endpoint.endpoint_name,
-                );
-            }
-        }
+        Self::worker_task_inner(endpoint, input_stream, receiver, init_status_sender).await;
     }
 
     async fn worker_task_inner(
         endpoint: Arc<DeltaTableInputEndpointInner>,
         mut input_stream: Box<dyn ArrowStream>,
-        mut receiver: Receiver<PipelineState>,
-        init_status_sender: mpsc::Sender<Result<(), ControllerError>>,
+        mut receiver: UnboundedReceiver<InputReaderCommand>,
+        init_status_sender: Sender<Result<(), ControllerError>>,
     ) {
         let table = match endpoint.open_table().await {
             Err(e) => {
@@ -239,18 +227,8 @@ impl DeltaTableInputReader {
 }
 
 impl InputReader for DeltaTableInputReader {
-    fn start(&self, _step: Step) -> anyhow::Result<()> {
-        self.sender.send_replace(PipelineState::Running);
-        Ok(())
-    }
-
-    fn pause(&self) -> anyhow::Result<()> {
-        self.sender.send_replace(PipelineState::Paused);
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.sender.send_replace(PipelineState::Terminated);
+    fn request(&self, command: InputReaderCommand) {
+        let _ = self.sender.send(command);
     }
 }
 
@@ -483,7 +461,7 @@ impl DeltaTableInputEndpointInner {
         polarity: bool,
         descr: &str,
         input_stream: &mut dyn ArrowStream,
-        receiver: &mut Receiver<PipelineState>,
+        receiver: &mut UnboundedReceiver<InputReaderCommand>,
     ) {
         wait_running(receiver).await;
 
@@ -528,7 +506,7 @@ impl DeltaTableInputEndpointInner {
                 },
                 |()| Vec::new(),
             );
-            self.consumer.queue(bytes, (input_stream.take(), errors));
+            //self.consumer.queue(bytes, (input_stream.take(), errors));
         }
     }
 
@@ -540,7 +518,7 @@ impl DeltaTableInputEndpointInner {
         actions: &[Action],
         table: &DeltaTable,
         input_stream: &mut dyn ArrowStream,
-        receiver: &mut Receiver<PipelineState>,
+        receiver: &mut UnboundedReceiver<InputReaderCommand>,
     ) {
         // TODO: consider processing all Add actions and all Remove actions in one
         // go using `ListingTable`, which understands partitioning and can probably
@@ -556,7 +534,7 @@ impl DeltaTableInputEndpointInner {
         action: &Action,
         table: &DeltaTable,
         input_stream: &mut dyn ArrowStream,
-        receiver: &mut Receiver<PipelineState>,
+        receiver: &mut UnboundedReceiver<InputReaderCommand>,
     ) {
         match action {
             Action::Add(add) if add.data_change => {
@@ -577,7 +555,7 @@ impl DeltaTableInputEndpointInner {
         polarity: bool,
         table: &DeltaTable,
         input_stream: &mut dyn ArrowStream,
-        receiver: &mut Receiver<PipelineState>,
+        receiver: &mut UnboundedReceiver<InputReaderCommand>,
     ) {
         // See comment about `object_store_url` above.
         let full_path = format!("{}{}", table.log_store().object_store_url().as_str(), path);
@@ -608,11 +586,9 @@ impl DeltaTableInputEndpointInner {
 }
 
 /// Block until the state is `Running`.
-async fn wait_running(receiver: &mut Receiver<PipelineState>) {
+async fn wait_running(receiver: &mut UnboundedReceiver<InputReaderCommand>) {
     // An error indicates that the channel was closed.  It's ok to ignore
     // the error as this situation will be handled by the top-level select,
     // which will abort the worker thread.
-    let _ = receiver
-        .wait_for(|state| state == &PipelineState::Running)
-        .await;
+    todo!()
 }
