@@ -5,6 +5,7 @@ use crate::{
         mock_input_pipeline, test_circuit, wait_for_output_ordered, wait_for_output_unordered,
         TestStruct,
     },
+    transport::InputReaderCommand,
     Controller, PipelineConfig,
 };
 use feldera_types::program_schema::Relation;
@@ -235,7 +236,7 @@ format:
     )
     .unwrap();
 
-    endpoint.start(0).unwrap();
+    endpoint.extend();
 
     let producer = TestProducer::new();
 
@@ -244,14 +245,11 @@ format:
     // Send data to a topic with a single partition;
     producer.send_to_topic(&data, topic1);
 
-    let flush = || {
-        endpoint.flush_all();
-    };
     if poller_threads == 1 {
         // Make sure all records arrive in the original order.
-        wait_for_output_ordered(&zset, &data, flush);
+        wait_for_output_ordered(&zset, &data);
     } else {
-        wait_for_output_unordered(&zset, &data, flush);
+        wait_for_output_unordered(&zset, &data);
     }
     zset.reset();
 
@@ -262,37 +260,37 @@ format:
     // order.
     producer.send_to_topic(&data, topic2);
 
-    wait_for_output_unordered(&zset, &data, flush);
+    wait_for_output_unordered(&zset, &data);
     zset.reset();
 
     info!("proptest_kafka_input: Test: pause/resume");
     //println!("records before pause: {}", zset.state().flushed.len());
 
     // Paused endpoint shouldn't receive any data.
-    endpoint.pause().unwrap();
+    endpoint.extend();
     sleep(Duration::from_millis(1000));
 
     kafka_resources.add_partition(topic2);
 
     producer.send_to_topic(&data, topic2);
     sleep(Duration::from_millis(1000));
+    todo!();
     assert_eq!(zset.state().flushed.len(), 0);
 
     // Receive everything after unpause.
-    endpoint.start(0).unwrap();
-    wait_for_output_unordered(&zset, &data, flush);
+    endpoint.extend();
+    todo!();
+    wait_for_output_unordered(&zset, &data);
 
     zset.reset();
 
     info!("proptest_kafka_input: Test: Disconnect");
     // Disconnected endpoint should not receive any data.
-    endpoint.disconnect();
+    endpoint.request(InputReaderCommand::Disconnect);
     sleep(Duration::from_millis(1000));
-    flush();
 
     producer.send_to_topic(&data, topic2);
     sleep(Duration::from_millis(1000));
-    flush();
     assert_eq!(zset.state().flushed.len(), 0);
 }
 

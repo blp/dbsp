@@ -432,6 +432,10 @@ pub trait InputBuffer: Send {
     /// This is useful for extracting the records from one of several parser
     /// threads to send to a single common thread to be pushed later.
     fn take(&mut self) -> Option<Box<dyn InputBuffer>>;
+
+    fn take_some(&mut self, _n: usize) -> Option<Box<dyn InputBuffer>> {
+        self.take()
+    }
 }
 
 impl InputBuffer for Option<Box<dyn InputBuffer>> {
