@@ -15,6 +15,7 @@ use crate::transport::s3::S3InputConfig;
 use crate::transport::url::UrlInputConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
+use std::path::PathBuf;
 use std::{borrow::Cow, collections::BTreeMap};
 use utoipa::ToSchema;
 
@@ -101,7 +102,7 @@ pub struct StorageConfig {
     /// it does exist, then the pipeline starts from the most recent checkpoint
     /// that already exists there. In either case, (further) checkpoints will be
     /// written there.
-    pub path: String,
+    pub path: PathBuf,
 
     /// How to cache access to storage in this pipeline.
     #[serde(default)]

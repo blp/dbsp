@@ -1,8 +1,15 @@
+#![warn(unused_variables)]
+#![warn(unused_mut)]
+#![warn(unreachable_code)]
+#![warn(dead_code)]
 use crate::catalog::{ArrowStream, InputCollectionHandle};
 use crate::controller::{ControllerInner, EndpointId};
 use crate::format::InputBuffer;
 use crate::integrated::delta_table::{delta_input_serde_config, register_storage_handlers};
-use crate::transport::{InputEndpoint, InputQueue, IntegratedInputEndpoint, Step};
+use crate::transport::{
+    InputEndpoint, InputQueue, InputReaderCommand, IntegratedInputEndpoint,
+    NonFtInputReaderCommand, Step,
+};
 use crate::{
     ControllerError, InputConsumer, InputReader, ParseError, PipelineState, RecordFormat,
     TransportInputEndpoint,
@@ -140,22 +147,11 @@ impl DeltaTableInputReader {
 }
 
 impl InputReader for DeltaTableInputReader {
-    fn start(&self, _step: Step) -> anyhow::Result<()> {
-        self.sender.send_replace(PipelineState::Running);
-        Ok(())
-    }
-
-    fn pause(&self) -> anyhow::Result<()> {
-        self.sender.send_replace(PipelineState::Paused);
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        self.sender.send_replace(PipelineState::Terminated);
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.inner.queue.flush(n)
+    fn request(&self, command: InputReaderCommand) {
+        match command.as_nonft().unwrap() {
+            NonFtInputReaderCommand::Queue => self.inner.queue.queue(),
+            NonFtInputReaderCommand::Transition(state) => drop(self.sender.send_replace(state)),
+        }
     }
 }
 
@@ -522,7 +518,6 @@ impl DeltaTableInputEndpointInner {
             // info!("schema: {}", batch.schema());
             num_batches += 1;
             let bytes = batch.get_array_memory_size();
-            let rows = batch.num_rows();
             let result = if polarity {
                 input_stream.insert(&batch)
             } else {
@@ -538,7 +533,7 @@ impl DeltaTableInputEndpointInner {
                 },
                 |()| Vec::new(),
             );
-            self.queue.push(bytes, (input_stream.take(), errors));
+            self.queue.push((input_stream.take(), errors), bytes);
         }
     }
 

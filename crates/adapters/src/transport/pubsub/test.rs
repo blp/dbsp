@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, io, net::TcpStream, thread::sleep, time::Duration};
 
 use crate::test::{
-    init_test_logger, mock_input_pipeline, wait_for_output_ordered, wait_for_output_unordered,
+    init_test_logger, mock_input_pipeline,
     TestStruct,
 };
 use csv::WriterBuilder;
@@ -249,23 +249,22 @@ fn test_pubsub_input(
     )
     .unwrap();
 
-    endpoint.start(0).unwrap();
+    endpoint.extend();
 
     info!("test_pubsub_input: Test: Receive from a topic");
 
     // Send data to a topic with a single partition;
     publisher.send(&data, false, label_func);
 
-    wait_for_output_unordered(&zset, &data, || {
-        endpoint.flush_all();
-    });
+    todo!();
     zset.reset();
 
     info!("test_pubsub_input: Test: pause/resume");
     // //println!("records before pause: {}", zset.state().flushed.len());
 
     // Paused endpoint shouldn't receive any data.
-    endpoint.pause().unwrap();
+    //endpoint.pause().unwrap();
+    todo!();
     sleep(Duration::from_millis(1000));
 
     publisher.send(&data, true, label_func);
@@ -274,10 +273,8 @@ fn test_pubsub_input(
     assert_eq!(zset.state().flushed.len(), 0);
 
     // Receive everything after unpause.
-    endpoint.start(0).unwrap();
-    wait_for_output_ordered(&zset, &data, || {
-        endpoint.flush_all();
-    });
+    endpoint.extend();
+    todo!();
     zset.reset();
 
     info!("test_pubsub_input: Test: Disconnect");
@@ -332,7 +329,7 @@ fn test_pubsub_multiple_subscribers(data: Vec<Vec<TestStruct>>, topic: &str) {
     )
     .unwrap();
 
-    endpoint1.start(0).unwrap();
+    endpoint1.extend();
 
     let (endpoint2, _consumer, _parser, zset2) = mock_input_pipeline::<TestStruct, TestStruct>(
         serde_yaml::from_str(&config_str2).unwrap(),
@@ -340,7 +337,7 @@ fn test_pubsub_multiple_subscribers(data: Vec<Vec<TestStruct>>, topic: &str) {
     )
     .unwrap();
 
-    endpoint2.start(0).unwrap();
+    endpoint2.extend();
 
     info!("test_pubsub_multiple_subscribers: Sending data");
 
@@ -361,17 +358,7 @@ fn test_pubsub_multiple_subscribers(data: Vec<Vec<TestStruct>>, topic: &str) {
         .filter(|batch| !batch.is_empty() && !batch[0].b)
         .collect::<Vec<_>>();
 
-    wait_for_output_unordered(&zset1, &data1, || {
-        endpoint1.flush_all();
-        endpoint2.flush_all();
-    });
-    zset1.reset();
-
-    wait_for_output_unordered(&zset2, &data2, || {
-        endpoint1.flush_all();
-        endpoint2.flush_all();
-    });
-    zset2.reset();
+    todo!();
 
     info!("test_pubsub_multiple_subscribers: Test: Disconnect");
     endpoint1.disconnect();
