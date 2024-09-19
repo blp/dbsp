@@ -1,6 +1,5 @@
 use super::{
-    InputConsumer, InputEndpoint, InputQueue, InputReader, OutputEndpoint, Step,
-    TransportInputEndpoint,
+    InputConsumer, InputEndpoint, InputReader, OutputEndpoint, Step, TransportInputEndpoint,
 };
 use crate::format::StreamingSplitter;
 use crate::{Parser, PipelineState};
@@ -54,7 +53,6 @@ impl TransportInputEndpoint for FileInputEndpoint {
 struct FileInputReader {
     status: Arc<Atomic<PipelineState>>,
     unparker: Option<Unparker>,
-    queue: Arc<InputQueue>,
 }
 
 impl FileInputReader {
@@ -70,12 +68,10 @@ impl FileInputReader {
         let parker = Parker::new();
         let unparker = Some(parker.unparker().clone());
         let status = Arc::new(Atomic::new(PipelineState::Paused));
-        let queue = Arc::new(InputQueue::new(consumer.clone()));
         spawn({
             let follow = config.follow;
             let buffer_size = config.buffer_size_bytes;
             let status = status.clone();
-            let queue = queue.clone();
             move || {
                 let mut splitter = StreamingSplitter::new(parser.splitter(), buffer_size);
                 loop {
@@ -91,7 +87,7 @@ impl FileInputReader {
                             };
 
                             while let Some(chunk) = splitter.next(n == 0 && !follow) {
-                                queue.push(0, parser.parse(chunk));
+                                consumer.queue(0, parser.parse(chunk));
                             }
                             if n == 0 {
                                 if !follow {
@@ -107,11 +103,7 @@ impl FileInputReader {
             }
         });
 
-        Ok(Self {
-            status,
-            unparker,
-            queue,
-        })
+        Ok(Self { status, unparker })
     }
 
     fn unpark(&self) {
@@ -143,10 +135,6 @@ impl InputReader for FileInputReader {
 
         // Wake up the worker if it's paused.
         self.unpark();
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.queue.flush(n)
     }
 }
 
@@ -276,10 +264,7 @@ format:
         // Unpause the endpoint, wait for the data to appear at the output.
         endpoint.start(0).unwrap();
         wait(
-            || {
-                endpoint.flush_all();
-                zset.state().flushed.len() == test_data.len()
-            },
+            || zset.state().flushed.len() == test_data.len(),
             DEFAULT_TIMEOUT_MS,
         )
         .unwrap();
@@ -339,10 +324,7 @@ format:
             // Unpause the endpoint, wait for the data to appear at the output.
             endpoint.start(0).unwrap();
             wait(
-                || {
-                    endpoint.flush_all();
-                    zset.state().flushed.len() == test_data.len()
-                },
+                || zset.state().flushed.len() == test_data.len(),
                 DEFAULT_TIMEOUT_MS,
             )
             .unwrap();
@@ -365,7 +347,6 @@ format:
         endpoint.start(0).unwrap();
         wait(
             || {
-                endpoint.flush_all();
                 let state = parser.state();
                 // println!("result: {:?}", state.parser_result);
                 state.parser_result.is_some() && !state.parser_result.as_ref().unwrap().is_empty()

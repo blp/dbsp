@@ -608,18 +608,14 @@ impl Controller {
 
                         start = None;
                         let mut total_consumed = 0;
-                        for (id, endpoint) in controller.inputs.lock().unwrap().iter_mut() {
-                            let num_records =
-                                endpoint.reader.flush(endpoint.max_batch_size as usize);
-                            controller.status.inputs.read().unwrap()[id]
-                                .consume_buffered(num_records as u64);
-                            total_consumed += num_records;
+                        for endpoint in controller.status.inputs.read().unwrap().values() {
+                            total_consumed += endpoint.flush_buffer();
                         }
                         let input_queue = take(&mut *controller.input_queue.lock().unwrap());
                         let notifications = input_queue
                             .into_iter()
                             .map(|(mut buffer, notification)| {
-                                total_consumed += buffer.flush_all();
+                                total_consumed += buffer.flush_all() as u64;
                                 notification
                             })
                             .collect::<Vec<_>>();
@@ -778,15 +774,13 @@ impl Controller {
 struct InputEndpointDescr {
     endpoint_name: String,
     reader: Box<dyn InputReader>,
-    max_batch_size: u64,
 }
 
 impl InputEndpointDescr {
-    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>, max_batch_size: u64) -> Self {
+    pub fn new(endpoint_name: &str, reader: Box<dyn InputReader>) -> Self {
         Self {
             endpoint_name: endpoint_name.to_owned(),
             reader,
-            max_batch_size,
         }
     }
 }
@@ -1169,7 +1163,6 @@ impl ControllerInner {
 
         let endpoint_id = inputs.keys().next_back().map(|k| k + 1).unwrap_or(0);
 
-        let max_batch_size = endpoint_config.connector_config.max_batch_size;
         let probe = Box::new(InputProbe::new(endpoint_id, endpoint_name, self.clone()));
         let reader = match endpoint {
             Some(endpoint) => {
@@ -1244,10 +1237,7 @@ impl ControllerInner {
                 .map_err(|e| ControllerError::input_transport_error(endpoint_name, true, e))?;
         }
 
-        inputs.insert(
-            endpoint_id,
-            InputEndpointDescr::new(endpoint_name, reader, max_batch_size),
-        );
+        inputs.insert(endpoint_id, InputEndpointDescr::new(endpoint_name, reader));
 
         drop(inputs);
 
@@ -1689,15 +1679,22 @@ impl ControllerInner {
     /// Update counters after receiving a new input batch.
     ///
     /// See [ControllerStatus::input_batch].
-    pub fn input_batch(&self, endpoint_id: Option<(EndpointId, usize)>, num_records: usize) {
-        self.status
-            .input_batch_global(num_records, &self.circuit_thread_unparker);
+    pub fn input_batch(
+        &self,
+        endpoint_id: Option<(EndpointId, usize)>,
+        buffer: Option<Box<dyn InputBuffer>>,
+    ) {
+        let num_records = buffer.len();
+        if num_records > 0 {
+            self.status
+                .input_batch_global(num_records, &self.circuit_thread_unparker);
+        }
 
         if let Some((endpoint_id, num_bytes)) = endpoint_id {
             self.status.input_batch_from_endpoint(
                 endpoint_id,
                 num_bytes,
-                num_records,
+                buffer,
                 &self.backpressure_thread_unparker,
             )
         }
@@ -1780,13 +1777,23 @@ impl InputConsumer for InputProbe {
         self.controller.committed(self.endpoint_id, step);
     }
 
-    fn queued(&self, num_bytes: usize, num_records: usize, errors: Vec<ParseError>) {
-        for error in errors.iter() {
+    fn queue(
+        &self,
+        num_bytes: usize,
+        (buffer, errors): (Option<Box<dyn InputBuffer>>, Vec<ParseError>),
+    ) {
+        for error in errors {
             self.controller
-                .parse_error(self.endpoint_id, &self.endpoint_name, error.clone());
+                .parse_error(self.endpoint_id, &self.endpoint_name, error);
         }
         self.controller
-            .input_batch(Some((self.endpoint_id, num_bytes)), num_records);
+            .input_batch(Some((self.endpoint_id, num_bytes)), buffer);
+    }
+
+    fn queue_len(&self) -> usize {
+        self.controller
+            .status
+            .input_endpoint_queue_len(&self.endpoint_id)
     }
 }
 

@@ -89,7 +89,18 @@ impl InputConsumer for MockInputConsumer {
 
     fn committed(&self, _step: Step) {}
 
-    fn queued(&self, _num_bytes: usize, _num_records: usize, _errors: Vec<ParseError>) {}
+    fn queue(
+        &self,
+        _num_bytes: usize,
+        mut buffer: Option<Box<dyn InputBuffer>>,
+        _errors: Vec<ParseError>,
+    ) {
+        buffer.flush_all();
+    }
+
+    fn queue_len(&self) -> usize {
+        todo!()
+    }
 }
 
 pub struct MockInputParserState {

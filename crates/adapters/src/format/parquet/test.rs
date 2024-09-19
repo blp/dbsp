@@ -94,10 +94,7 @@ format:
     assert!(!consumer.state().eoi);
     endpoint.start(0).unwrap();
     wait(
-        || {
-            endpoint.flush_all();
-            zset.state().flushed.len() == test_data.len()
-        },
+        || zset.state().flushed.len() == test_data.len(),
         DEFAULT_TIMEOUT_MS,
     )
     .unwrap();

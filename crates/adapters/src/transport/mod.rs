@@ -25,9 +25,8 @@ use anyhow::{Error as AnyError, Result as AnyResult};
 use dyn_clone::DynClone;
 #[cfg(feature = "with-pubsub")]
 use pubsub::PubSubInputEndpoint;
-use std::collections::VecDeque;
 use std::ops::Range;
-use std::sync::{atomic::AtomicU64, Mutex};
+use std::sync::atomic::AtomicU64;
 
 mod file;
 pub mod http;
@@ -217,17 +216,6 @@ pub trait InputReader: Send {
     /// complete once a step fills up to the maximum size.
     fn complete(&self, _step: Step) {}
 
-    /// A reader reads records into an internal buffer.  This method requests
-    /// the reader to write the `n` oldest of those records to the input handle
-    /// (or as many as it has if that is less than `n`).  Some endpoints might
-    /// have to write records in groups, so that they actually write more than
-    /// `n`.  In any case, this method returns the number actually written.
-    fn flush(&self, n: usize) -> usize;
-
-    fn flush_all(&self) -> usize {
-        self.flush(usize::MAX)
-    }
-
     /// Disconnect the endpoint.
     ///
     /// Disconnect the endpoint and stop receiving data.  This is the last
@@ -236,66 +224,6 @@ pub trait InputReader: Send {
     /// data buffers may be pushed downstream before the endpoint gets
     /// disconnected.
     fn disconnect(&self);
-}
-
-/// A thread-safe queue for collecting and flushing input buffers.
-///
-/// Commonly used by `InputReader` implementations for staging buffers from
-/// worker threads.
-pub struct InputQueue {
-    pub queue: Mutex<VecDeque<Box<dyn InputBuffer>>>,
-    pub consumer: Box<dyn InputConsumer>,
-}
-
-impl InputQueue {
-    pub fn new(consumer: Box<dyn InputConsumer>) -> Self {
-        Self {
-            queue: Mutex::new(VecDeque::new()),
-            consumer,
-        }
-    }
-
-    /// Appends `buffer`, if non-`None` to the queue.  Reports to the controller
-    /// that `num_bytes` have been received and at least partially parsed, and
-    /// that `errors` have occurred during parsing.
-    ///
-    /// Using this method automatically satisfies the requirements described for
-    /// [InputConsumer::queued].
-    pub fn push(
-        &self,
-        num_bytes: usize,
-        (buffer, errors): (Option<Box<dyn InputBuffer>>, Vec<ParseError>),
-    ) {
-        match buffer {
-            Some(buffer) if !buffer.is_empty() => {
-                let num_records = buffer.len();
-                let mut guard = self.queue.lock().unwrap();
-                guard.push_back(buffer);
-                self.consumer.queued(num_bytes, num_records, errors);
-            }
-            _ => self.consumer.queued(num_bytes, 0, errors),
-        }
-    }
-
-    /// Implements [InputBuffer::flush] for `InputQueue`-based endpoints.
-    pub fn flush(&self, n: usize) -> usize {
-        let mut total = 0;
-        while total < n {
-            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
-                break;
-            };
-            total += buffer.flush(n - total);
-            if !buffer.is_empty() {
-                self.queue.lock().unwrap().push_front(buffer);
-                break;
-            }
-        }
-        total
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
-    }
 }
 
 /// Input stream consumer.
@@ -328,42 +256,15 @@ pub trait InputConsumer: Send + Sync + DynClone {
     /// step fails, then [`InputConsumer::error`] is called instead.)
     fn committed(&self, step: Step);
 
-    /// Reports that the endpoint has parsed `num_bytes` of data and internally
-    /// queued `num_records` records, and reports `errors` that occurred during
-    /// parsing. The client can call [InputReader::flush] to load the records
-    /// into the circuit.
+    /// Reports that the endpoint has parsed `num_bytes` of data to obtain the
+    /// records in `input.0` and that errors `input.1` occurred during parsing.
+    fn queue(&self, num_bytes: usize, input: (Option<Box<dyn InputBuffer>>, Vec<ParseError>));
+
+    /// Reports the number of `InputBuffer`s previously queued that have not yet
+    /// been submitted to the circuit for processing.
     ///
-    /// Currently, an input adapter is expected to call this method in a fashion
-    /// that is atomic with adding records to their internal queue, that is,
-    /// while holding whatever lock the input adapter uses to add to its
-    /// queue. Otherwise:
-    ///
-    /// * If the inpuit adapter calls this method before adding to its queue,
-    ///   the controller could request it to flush records that haven't yet been
-    ///   added.  This, in turn, could cause an empty step that could result in
-    ///   unexpected output, e.g. the Python `test_avg_distinct` could output a
-    ///   record with nulls.
-    ///
-    /// * If the input adapter calls this method after adding to its queue, then
-    ///   the flush operation might flush more records than the controller
-    ///   requests, which in turn could cause the controller's buffer counter to
-    ///   become negative (or rather to wrap around to a very large positive
-    ///   integer).
-    ///
-    /// We could avoid the latter problem by treating negative buffer counts as
-    /// zero. Maybe that is a better approach. Another way to handle it would be
-    /// to require adapters to never flush more records than requested. That's
-    /// currently not a viable approach for the Nexmark connector, but if we can
-    /// switch to using a single stream of records instead of three that are
-    /// tightly synchronized, then we could make that work too.
-    ///
-    /// An input adapter that uses [InputQueue] automatically satisfies the
-    /// requirement above.
-    ///
-    /// The considerations above only apply to `num_records`.  Reporting
-    /// `num_bytes` and `errors` isn't racy in the same way, so it's fine to
-    /// report them at any time if `num_records` is 0.
-    fn queued(&self, num_bytes: usize, num_records: usize, errors: Vec<ParseError>);
+    /// Most transports don't need to use this.
+    fn queue_len(&self) -> usize;
 
     /// Endpoint failed.
     ///

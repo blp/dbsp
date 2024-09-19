@@ -1,4 +1,4 @@
-use crate::transport::{InputEndpoint, InputQueue};
+use crate::transport::InputEndpoint;
 use crate::Parser;
 use crate::{
     transport::{
@@ -116,7 +116,7 @@ struct KafkaInputReaderInner {
     state: Atomic<PipelineState>,
     kafka_consumer: BaseConsumer<KafkaInputContext>,
     errors: ArrayQueue<(KafkaError, String)>,
-    queue: Arc<InputQueue>,
+    receiver: Box<dyn InputConsumer>,
 }
 
 impl KafkaInputReaderInner {
@@ -147,7 +147,7 @@ impl KafkaInputReaderInner {
                 // message.payload().map(|payload| consumer.input(payload));
 
                 if let Some(payload) = message.payload() {
-                    self.queue.push(payload.len(), parser.parse(payload));
+                    consumer.queue(payload.len(), parser.parse(payload));
                 }
             }
         }
@@ -243,7 +243,7 @@ impl KafkaInputReader {
             state: Atomic::new(PipelineState::Paused),
             kafka_consumer: BaseConsumer::from_config_and_context(&client_config, context)?,
             errors: ArrayQueue::new(ERROR_BUFFER_SIZE),
-            queue: Arc::new(InputQueue::new(consumer.clone())),
+            receiver: consumer.clone(),
         });
 
         *inner.kafka_consumer.context().endpoint.lock().unwrap() = Arc::downgrade(&inner);
@@ -278,7 +278,7 @@ impl KafkaInputReader {
                     // Hopefully, this guarantees that we won't see any messages from it, but if
                     // that's not the case, there shouldn't be any harm in sending them downstream.
                     if let Some(payload) = message.payload() {
-                        inner.queue.push(payload.len(), parser.parse(payload));
+                        inner.receive.queue(payload.len(), parser.parse(payload));
                     }
                 }
                 _ => (),
@@ -538,10 +538,6 @@ impl InputReader for KafkaInputReader {
     fn disconnect(&self) {
         self.0.set_state(PipelineState::Terminated);
         self.1.thread().unpark();
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.0.queue.flush(n)
     }
 }
 
