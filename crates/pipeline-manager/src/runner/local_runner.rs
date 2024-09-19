@@ -341,11 +341,9 @@ impl PipelineExecutor for LocalRunner {
 
         // The deployment configuration must be modified to fill in the details for storage,
         // which varies for each pipeline executor
-        let pipeline_dir = self.config.pipeline_dir(pipeline.id);
-        let pipeline_data_dir = pipeline_dir.join("data");
         deployment_config.storage_config = if deployment_config.global.storage {
             Some(StorageConfig {
-                path: pipeline_data_dir.to_string_lossy().into(),
+                path: self.config.pipeline_dir(pipeline.id).join("data"),
                 cache: StorageCacheConfig::default(),
             })
         } else {
@@ -399,7 +397,10 @@ impl PipelineExecutor for LocalRunner {
         {
             create_dir_all(&pipeline_data_dir).await.map_err(|e| {
                 ManagerError::io_error(
-                    format!("creating pipeline data directory '{}'", pipeline_data_dir),
+                    format!(
+                        "creating pipeline data directory '{}'",
+                        pipeline_data_dir.display()
+                    ),
                     e,
                 )
             })?;

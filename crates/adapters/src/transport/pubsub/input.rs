@@ -1,5 +1,5 @@
 use crate::{
-    transport::{InputQueue, Step},
+    transport::{InputReaderCommand, InputStep},
     InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
@@ -51,7 +51,7 @@ impl TransportInputEndpoint for PubSubInputEndpoint {
         &self,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        _start_step: Step,
+        _start_step: Option<InputStep>,
         _schema: Relation,
     ) -> AnyResult<Box<dyn InputReader>> {
         Ok(Box::new(PubSubReader::new(
@@ -64,7 +64,6 @@ impl TransportInputEndpoint for PubSubInputEndpoint {
 
 struct PubSubReader {
     state_sender: Sender<PipelineState>,
-    queue: Arc<InputQueue>,
 }
 
 impl PubSubReader {
@@ -75,23 +74,18 @@ impl PubSubReader {
     ) -> AnyResult<Self> {
         let (state_sender, state_receiver) = channel(PipelineState::Paused);
         let subscription = TOKIO.block_on(Self::subscribe(&config))?;
-        let queue = Arc::new(InputQueue::new(consumer.clone()));
         thread::spawn({
-            let queue = queue.clone();
             move || {
                 let consumer_clone = consumer.clone();
                 TOKIO.block_on(async {
-                    Self::worker_task(subscription, consumer_clone, parser, queue, state_receiver)
+                    Self::worker_task(subscription, consumer_clone, parser, state_receiver)
                         .await
                         .unwrap_or_else(|e| consumer.error(true, e));
                 })
             }
         });
 
-        Ok(Self {
-            state_sender,
-            queue,
-        })
+        Ok(Self { state_sender })
     }
 
     async fn subscribe(config: &PubSubInputConfig) -> Result<Subscription, AnyError> {
@@ -132,7 +126,6 @@ impl PubSubReader {
         subscription: Subscription,
         consumer: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        queue: Arc<InputQueue>,
         mut state_receiver: Receiver<PipelineState>,
     ) -> Result<(), AnyError> {
         let mut state = PipelineState::Paused;
@@ -165,14 +158,14 @@ impl PubSubReader {
                     let mut parser = parser.fork();
                     let token = stream.cancellable();
                     let handle = tokio::spawn({
-                        let queue = queue.clone();
                         async move {
                             // None if the stream is cancelled
                             while let Some(message) = stream.next().await {
-                                queue.push(
+                                /*
+                                consumer.queue(
                                     message.message.data.len(),
                                     parser.parse(&message.message.data),
-                                );
+                                );*/
                                 message.ack().await.unwrap_or_else(|e| {
                                     consumer.error(
                                         false,
@@ -197,22 +190,8 @@ impl PubSubReader {
 }
 
 impl InputReader for PubSubReader {
-    fn start(&self, _step: Step) -> AnyResult<()> {
-        self.state_sender.send(PipelineState::Running)?;
-        Ok(())
-    }
-
-    fn pause(&self) -> AnyResult<()> {
-        self.state_sender.send(PipelineState::Paused)?;
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        let _ = self.state_sender.send(PipelineState::Terminated);
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.queue.flush(n)
+    fn request(&self, _command: InputReaderCommand) {
+        todo!()
     }
 }
 

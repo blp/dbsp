@@ -16,10 +16,10 @@ use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-pub use ft::{KafkaFtInputEndpoint, KafkaFtOutputEndpoint};
+//pub use ft::{KafkaFtInputEndpoint, KafkaFtOutputEndpoint};
 pub use nonft::{KafkaInputEndpoint, KafkaOutputEndpoint};
 
-mod ft;
+//mod ft;
 mod nonft;
 
 const MAX_POLLING_INTERVAL: Duration = Duration::from_millis(5000);

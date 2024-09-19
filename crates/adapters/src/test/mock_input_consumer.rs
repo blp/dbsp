@@ -1,6 +1,5 @@
 use crate::catalog::InputCollectionHandle;
 use crate::format::{InputBuffer, Splitter};
-use crate::transport::Step;
 use crate::{controller::FormatConfig, InputConsumer, InputFormat, ParseError, Parser};
 use anyhow::{anyhow, Error as AnyError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -85,11 +84,17 @@ impl InputConsumer for MockInputConsumer {
         state.eoi = true;
     }
 
-    fn start_step(&self, _step: Step) {}
+    fn max_batch_size(&self) -> usize {
+        usize::MAX
+    }
 
-    fn committed(&self, _step: Step) {}
+    fn parse_errors(&self, _errors: Vec<ParseError>) {}
 
-    fn queued(&self, _num_bytes: usize, _num_records: usize, _errors: Vec<ParseError>) {}
+    fn buffered(&self, _num_records: usize, _num_bytes: usize) {}
+
+    fn replayed(&self, _num_records: usize) {}
+
+    fn extended(&self, _num_records: usize, _metadata: serde_json::Value) {}
 }
 
 pub struct MockInputParserState {
