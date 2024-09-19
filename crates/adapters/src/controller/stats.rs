@@ -33,7 +33,7 @@
 use super::{EndpointId, InputEndpointConfig, OutputEndpointConfig};
 use crate::{
     transport::{AtomicStep, Step},
-    PipelineState,
+    InputBuffer, PipelineState,
 };
 use anyhow::Error as AnyError;
 use atomic::Atomic;
@@ -52,7 +52,7 @@ use rand::{seq::index::sample, thread_rng};
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use std::{
     cmp::min,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
@@ -522,6 +522,15 @@ impl ControllerStatus {
         buffered_records >= max_queued_records
     }
 
+    /// Returns the number of input buffers queued for input endpoint `endpoint_id`.
+    pub fn input_endpoint_queue_len(&self, endpoint_id: &EndpointId) -> usize {
+        self.inputs
+            .read()
+            .unwrap()
+            .get(endpoint_id)
+            .map_or(0, |endpoint| endpoint.queue.lock().unwrap().len())
+    }
+
     /// True if the endpoint's `paused_by_user` flag is set to `true`.
     pub fn input_endpoint_paused_by_user(&self, endpoint_id: &EndpointId) -> bool {
         match self.inputs.read().unwrap().get(endpoint_id) {
@@ -569,10 +578,10 @@ impl ControllerStatus {
         &self,
         endpoint_id: EndpointId,
         num_bytes: usize,
-        num_records: usize,
+        buffer: Option<Box<dyn InputBuffer>>,
         backpressure_thread_unparker: &Unparker,
     ) {
-        let num_records = num_records as u64;
+        let num_records = buffer.len() as u64;
         let num_bytes = num_bytes as u64;
         let inputs = self.inputs.read().unwrap();
 
@@ -582,7 +591,7 @@ impl ControllerStatus {
         // There is a potential race condition if the endpoint is currently being
         // removed. In this case, it's safe to ignore this operation.
         if let Some(endpoint_stats) = inputs.get(&endpoint_id) {
-            let old = endpoint_stats.add_buffered(num_bytes, num_records);
+            let old = endpoint_stats.add_buffer(num_bytes, buffer);
 
             if old < endpoint_stats.config.connector_config.max_queued_records
                 && old + num_records >= endpoint_stats.config.connector_config.max_queued_records
@@ -852,6 +861,10 @@ pub struct InputEndpointStatus {
     /// Whether this input endpoint is [fault tolerant](crate#fault-tolerance).
     pub is_fault_tolerant: bool,
 
+    /// Input queue.
+    #[serde(skip)]
+    pub queue: Mutex<VecDeque<Box<dyn InputBuffer>>>,
+
     /// Endpoint has been paused by the user.
     ///
     /// When `true`, the endpoint doesn't produce any data even when the pipeline
@@ -873,19 +886,37 @@ impl InputEndpointStatus {
             metrics: Default::default(),
             fatal_error: Mutex::new(None),
             is_fault_tolerant,
+            queue: Mutex::new(VecDeque::new()),
             paused: paused_by_user,
         }
     }
 
-    pub(crate) fn consume_buffered(&self, num_records: u64) {
+    /// Flushes up to `max_batch_size` records (even more, if the buffers we're
+    /// flushing disregard the limit) into the circuit.  Returns the number of
+    /// records flushed into the circuit.
+    pub(crate) fn flush_buffer(&self) -> u64 {
+        let mut total = 0;
+        let limit = self.config.connector_config.max_batch_size as usize;
+        while total < limit {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            total += buffer.flush(limit - total);
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        let total = total as u64;
         self.metrics
             .buffered_records
-            .fetch_sub(num_records, Ordering::Release);
+            .fetch_sub(total, Ordering::Release);
+        total
     }
 
-    /// Increment the number of buffered bytes and records; return
-    /// the previous number of buffered records.
-    fn add_buffered(&self, num_bytes: u64, num_records: u64) -> u64 {
+    /// Adds `buffer` to buffered records and increments the number of buffered
+    /// bytes by `num_bytes`.  Returns the previous number of buffered records.
+    fn add_buffer(&self, num_bytes: u64, buffer: Option<Box<dyn InputBuffer>>) -> u64 {
         if num_bytes > 0 {
             // We are only updating statistics here, so no need to pay for
             // strong consistency.
@@ -894,6 +925,10 @@ impl InputEndpointStatus {
                 .fetch_add(num_bytes, Ordering::Relaxed);
         }
 
+        let num_records = buffer.len() as u64;
+        if num_records > 0 {
+            self.queue.lock().unwrap().push_back(buffer.unwrap());
+        }
         self.metrics
             .total_records
             .fetch_add(num_records, Ordering::Relaxed);

@@ -2,7 +2,7 @@ use crate::catalog::{ArrowStream, InputCollectionHandle};
 use crate::controller::{ControllerInner, EndpointId};
 use crate::format::InputBuffer;
 use crate::integrated::delta_table::{delta_input_serde_config, register_storage_handlers};
-use crate::transport::{InputEndpoint, InputQueue, IntegratedInputEndpoint, Step};
+use crate::transport::{InputEndpoint, IntegratedInputEndpoint, Step};
 use crate::{
     ControllerError, InputConsumer, InputReader, ParseError, PipelineState, RecordFormat,
     TransportInputEndpoint,
@@ -96,7 +96,6 @@ impl IntegratedInputEndpoint for DeltaTableInputEndpoint {
 
 struct DeltaTableInputReader {
     sender: Sender<PipelineState>,
-    inner: Arc<DeltaTableInputEndpointInner>,
 }
 
 impl DeltaTableInputReader {
@@ -106,7 +105,6 @@ impl DeltaTableInputReader {
     ) -> AnyResult<Self> {
         let (sender, receiver) = channel(PipelineState::Paused);
         let endpoint_clone = endpoint.clone();
-        let receiver_clone = receiver.clone();
 
         // Used to communicate the status of connector initialization.
         let (init_status_sender, mut init_status_receiver) =
@@ -118,13 +116,9 @@ impl DeltaTableInputReader {
 
         std::thread::spawn(move || {
             TOKIO.block_on(async {
-                let _ = Self::worker_task(
-                    endpoint_clone,
-                    input_stream,
-                    receiver_clone,
-                    init_status_sender,
-                )
-                .await;
+                let _ =
+                    Self::worker_task(endpoint_clone, input_stream, receiver, init_status_sender)
+                        .await;
             })
         });
 
@@ -136,10 +130,7 @@ impl DeltaTableInputReader {
             )
         })??;
 
-        Ok(Self {
-            sender,
-            inner: endpoint.clone(),
-        })
+        Ok(Self { sender })
     }
 
     async fn worker_task(
@@ -261,10 +252,6 @@ impl InputReader for DeltaTableInputReader {
     fn disconnect(&self) {
         self.sender.send_replace(PipelineState::Terminated);
     }
-
-    fn flush(&self, n: usize) -> usize {
-        self.inner.queue.flush(n)
-    }
 }
 
 impl Drop for DeltaTableInputReader {
@@ -278,7 +265,6 @@ struct DeltaTableInputEndpointInner {
     config: DeltaTableReaderConfig,
     consumer: Box<dyn InputConsumer>,
     datafusion: SessionContext,
-    queue: InputQueue,
 }
 
 impl DeltaTableInputEndpointInner {
@@ -287,13 +273,11 @@ impl DeltaTableInputEndpointInner {
         config: DeltaTableReaderConfig,
         consumer: Box<dyn InputConsumer>,
     ) -> Self {
-        let queue = InputQueue::new(consumer.clone());
         Self {
             endpoint_name: endpoint_name.to_string(),
             config,
             consumer,
             datafusion: SessionContext::new(),
-            queue,
         }
     }
 
@@ -544,7 +528,7 @@ impl DeltaTableInputEndpointInner {
                 },
                 |()| Vec::new(),
             );
-            self.queue.push(bytes, (input_stream.take(), errors));
+            self.consumer.queue(bytes, (input_stream.take(), errors));
         }
     }
 

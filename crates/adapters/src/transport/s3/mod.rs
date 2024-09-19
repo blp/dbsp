@@ -19,8 +19,6 @@ use mockall::automock;
 use crate::transport::InputEndpoint;
 use feldera_types::transport::s3::{AwsCredentials, ConsumeStrategy, ReadStrategy, S3InputConfig};
 
-use super::InputQueue;
-
 pub struct S3InputEndpoint {
     config: Arc<S3InputConfig>,
 }
@@ -123,7 +121,6 @@ trait S3Api: Send {
 
 struct S3InputReader {
     sender: Sender<PipelineState>,
-    queue: Arc<InputQueue>,
 }
 
 impl InputReader for S3InputReader {
@@ -139,10 +136,6 @@ impl InputReader for S3InputReader {
 
     fn disconnect(&self) {
         self.sender.send_replace(PipelineState::Terminated);
-    }
-
-    fn flush(&self, n: usize) -> usize {
-        self.queue.flush(n)
     }
 }
 
@@ -174,9 +167,7 @@ impl S3InputReader {
         let (sender, receiver) = channel(PipelineState::Paused);
         let config_clone = config.clone();
         let receiver_clone = receiver.clone();
-        let queue = Arc::new(InputQueue::new(consumer.clone()));
         std::thread::spawn({
-            let queue = queue.clone();
             move || {
                 TOKIO.block_on(async {
                     let _ = Self::worker_task(
@@ -184,14 +175,13 @@ impl S3InputReader {
                         config_clone,
                         consumer,
                         parser,
-                        queue,
                         receiver_clone,
                     )
                     .await;
                 })
             }
         });
-        S3InputReader { sender, queue }
+        S3InputReader { sender }
     }
 
     async fn worker_task(
@@ -199,7 +189,6 @@ impl S3InputReader {
         config: Arc<S3InputConfig>,
         consumer: Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
-        queue: Arc<InputQueue>,
         mut receiver: Receiver<PipelineState>,
     ) -> anyhow::Result<()> {
         // The worker thread fetches objects in the background while already retrieved
@@ -263,7 +252,7 @@ impl S3InputReader {
                                                 Some(Ok(bytes)) => {
                                                     splitter.append(&bytes);
                                                     while let Some(chunk) = splitter.next(false) {
-                                                        queue.push(chunk.len(), parser.parse(chunk));
+                                                        consumer.queue(chunk.len(), parser.parse(chunk));
                                                     }
                                                 }
                                                 None => break,
@@ -273,7 +262,7 @@ impl S3InputReader {
                                         None =>
                                             match object.body.collect().await.map(|c| c.into_bytes()) {
                                                 Ok(bytes) => {
-                                                queue.push(bytes.len(), parser.parse(&bytes));
+                                                consumer.queue(bytes.len(), parser.parse(&bytes));
                                                 }
                                                 Err(e) => consumer.error(false, e.into())
                                         }
@@ -432,10 +421,7 @@ format:
         // Unpause the endpoint, wait for the data to appear at the output.
         reader.start(0).unwrap();
         wait(
-            || {
-                reader.flush_all();
-                input_handle.state().flushed.len() == test_data.len()
-            },
+            || input_handle.state().flushed.len() == test_data.len(),
             10000,
         )
         .unwrap();
@@ -532,31 +518,19 @@ format:
         let (reader, _consumer, _parser, input_handle) = test_setup(MULTI_KEY_CONFIG_STR, mock);
         reader.start(0).unwrap();
         // Pause after 50 rows are recorded.
-        wait(
-            || {
-                reader.flush_all();
-                input_handle.state().flushed.len() > 50
-            },
-            10000,
-        )
-        .unwrap();
+        wait(|| input_handle.state().flushed.len() > 50, 10000).unwrap();
         let _ = reader.pause();
         // Wait a few milliseconds for the worker to pause and write any WIP object
         std::thread::sleep(Duration::from_millis(10));
-        reader.flush_all();
         let n = input_handle.state().flushed.len();
         // Wait a few more milliseconds and make sure no more entries were written
         std::thread::sleep(Duration::from_millis(100));
-        reader.flush_all();
         assert_eq!(n, input_handle.state().flushed.len());
         assert_ne!(input_handle.state().flushed.len(), test_data.len());
         // Resume to completion
         reader.start(0).unwrap();
         wait(
-            || {
-                reader.flush_all();
-                input_handle.state().flushed.len() == test_data.len()
-            },
+            || input_handle.state().flushed.len() == test_data.len(),
             10000,
         )
         .unwrap();

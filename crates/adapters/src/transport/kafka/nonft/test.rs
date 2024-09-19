@@ -244,14 +244,11 @@ format:
     // Send data to a topic with a single partition;
     producer.send_to_topic(&data, topic1);
 
-    let flush = || {
-        endpoint.flush_all();
-    };
     if poller_threads == 1 {
         // Make sure all records arrive in the original order.
-        wait_for_output_ordered(&zset, &data, flush);
+        wait_for_output_ordered(&zset, &data);
     } else {
-        wait_for_output_unordered(&zset, &data, flush);
+        wait_for_output_unordered(&zset, &data);
     }
     zset.reset();
 
@@ -262,7 +259,7 @@ format:
     // order.
     producer.send_to_topic(&data, topic2);
 
-    wait_for_output_unordered(&zset, &data, flush);
+    wait_for_output_unordered(&zset, &data);
     zset.reset();
 
     info!("proptest_kafka_input: Test: pause/resume");
@@ -280,7 +277,7 @@ format:
 
     // Receive everything after unpause.
     endpoint.start(0).unwrap();
-    wait_for_output_unordered(&zset, &data, flush);
+    wait_for_output_unordered(&zset, &data);
 
     zset.reset();
 
@@ -288,11 +285,9 @@ format:
     // Disconnected endpoint should not receive any data.
     endpoint.disconnect();
     sleep(Duration::from_millis(1000));
-    flush();
 
     producer.send_to_topic(&data, topic2);
     sleep(Duration::from_millis(1000));
-    flush();
     assert_eq!(zset.state().flushed.len(), 0);
 }
 

@@ -1,7 +1,7 @@
 use super::{count_partitions_in_topic, Ctp, DataConsumerContext, ErrorHandler, POLL_TIMEOUT};
 use crate::transport::kafka::ft::check_fatal_errors;
-use crate::transport::{InputEndpoint, InputQueue, InputReader, Step};
-use crate::{InputConsumer, Parser, TransportInputEndpoint};
+use crate::transport::{InputEndpoint, Step};
+use crate::{InputConsumer, InputReader, Parser, TransportInputEndpoint};
 use anyhow::{anyhow, bail, Context, Error as AnyError, Result as AnyResult};
 use crossbeam::sync::{Parker, Unparker};
 use feldera_types::program_schema::Relation;
@@ -135,7 +135,6 @@ struct Reader {
     complete_step: Arc<Mutex<Option<Step>>>,
     unparker: Unparker,
     join_handle: Option<JoinHandle<()>>,
-    queue: Arc<InputQueue>,
 }
 
 impl Reader {
@@ -173,10 +172,6 @@ impl InputReader for Reader {
     fn disconnect(&self) {
         self.set_action(Err(ExitRequest));
     }
-
-    fn flush(&self, n: usize) -> usize {
-        self.queue.flush(n)
-    }
 }
 
 impl Drop for Reader {
@@ -204,9 +199,7 @@ impl Reader {
         let unparker = parker.unparker().clone();
         let action = Arc::new(Mutex::new(Ok(OkAction::Pause)));
         let complete_step = Arc::new(Mutex::new(None));
-        let queue = Arc::new(InputQueue::new(consumer.clone()));
         let join_handle = {
-            let queue = queue.clone();
             Some(WorkerThread::spawn(
                 &action,
                 &complete_step,
@@ -215,7 +208,6 @@ impl Reader {
                 config,
                 consumer,
                 parser,
-                queue,
             ))
         };
         Reader {
@@ -223,7 +215,6 @@ impl Reader {
             complete_step,
             unparker,
             join_handle,
-            queue,
         }
     }
 }
@@ -299,7 +290,6 @@ struct WorkerThread {
     config: Arc<Config>,
     receiver: Arc<Box<dyn InputConsumer>>,
     parser: Box<dyn Parser>,
-    queue: Arc<InputQueue>,
 }
 
 impl WorkerThread {
@@ -312,7 +302,6 @@ impl WorkerThread {
         config: &Arc<Config>,
         receiver: Box<dyn InputConsumer>,
         parser: Box<dyn Parser>,
-        queue: Arc<InputQueue>,
     ) -> JoinHandle<()> {
         let receiver = Arc::new(receiver);
         let worker_thread = Self {
@@ -323,7 +312,6 @@ impl WorkerThread {
             config: config.clone(),
             receiver: receiver.clone(),
             parser,
-            queue,
         };
         Builder::new()
             .name(format!(
@@ -532,7 +520,7 @@ impl WorkerThread {
                         continue;
                     }
                     if let Some(payload) = data_message.payload() {
-                        self.queue.push(payload.len(), self.parser.parse(payload));
+                        self.receiver.queue(payload.len(), self.parser.parse(payload));
                     }
                     p.next_offset = data_message.offset() + 1;
                 }
@@ -581,7 +569,7 @@ impl WorkerThread {
                             // step).
 
                             if let Some(payload) = data_message.payload() {
-                                self.queue.push(payload.len(), self.parser.parse(payload));
+                                self.receiver.queue(payload.len(), self.parser.parse(payload));
                             }
                             n_messages += 1;
                             n_bytes += data_message.payload_len();
