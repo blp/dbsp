@@ -453,8 +453,7 @@ impl InputGenerator {
 
                             if batch_idx % batch_size == 0 {
                                 buffer.extend(END_ARR);
-                                let errors = parser.input_chunk(&buffer);
-                                queue.push(parser.take(), buffer.len(), errors);
+                                queue.push(buffer.len(), parser.parse(&buffer));
                                 buffer.clear();
                                 buffer.extend(START_ARR);
                                 batch_idx = 0;
@@ -473,8 +472,7 @@ impl InputGenerator {
                 }
                 if !buffer.is_empty() {
                     buffer.extend(END_ARR);
-                    let errors = parser.input_chunk(&buffer);
-                    queue.push(parser.take(), buffer.len(), errors);
+                    queue.push(buffer.len(), parser.parse(&buffer));
                 }
                 // Update global progress after we created all records for a batch
                 //eprintln!("adding {} to generated", generate_range.len());
