@@ -7,7 +7,10 @@ use tokio::sync::{
     watch::{channel, Receiver, Sender},
 };
 
-use crate::{InputConsumer, InputReader, Parser, PipelineState, TransportInputEndpoint};
+use crate::{
+    format::AppendSplitter, InputConsumer, InputReader, Parser, PipelineState,
+    TransportInputEndpoint,
+};
 use dbsp::circuit::tokio::TOKIO;
 use feldera_types::program_schema::Relation;
 #[cfg(test)]
@@ -204,7 +207,10 @@ impl S3InputReader {
         // to make it so that no more than 8 objects are fetched while waiting
         // for object processing.
         let (tx, mut rx) = mpsc::channel(8);
-        let consume_strategy = config.consume_strategy.clone();
+        let mut splitter = match config.consume_strategy {
+            ConsumeStrategy::Fragment => Some(AppendSplitter::new(parser.splitter())),
+            ConsumeStrategy::Object => None,
+        };
         tokio::spawn(async move {
             let mut continuation_token = None;
             loop {
@@ -251,20 +257,23 @@ impl S3InputReader {
                         get_obj = rx.recv() => {
                             match get_obj {
                                 Some(Ok(mut object)) => {
-                                    match consume_strategy {
-                                        ConsumeStrategy::Fragment => match object.body.next().await {
-                                            Some(Ok(bytes)) => {
-                                                let errors = parser.input_fragment(&bytes);
-                                                queue.push(parser.take(), bytes.len(), errors);
+                                    match splitter {
+                                        Some(ref mut splitter) => {
+                                            match object.body.next().await {
+                                                Some(Ok(bytes)) => {
+                                                    splitter.append(&bytes);
+                                                    while let Some(chunk) = splitter.next(false) {
+                                                        queue.push(chunk.len(), parser.parse(chunk));
+                                                    }
+                                                }
+                                                None => break,
+                                                Some(Err(e)) => consumer.error(false, e.into())
                                             }
-                                            None => break,
-                                            Some(Err(e)) => consumer.error(false, e.into())
                                         }
-                                        ConsumeStrategy::Object =>
+                                        None =>
                                             match object.body.collect().await.map(|c| c.into_bytes()) {
                                                 Ok(bytes) => {
-                                                let errors = parser.input_chunk(&bytes);
-                                                queue.push(parser.take(), bytes.len(), errors);
+                                                queue.push(bytes.len(), parser.parse(&bytes));
                                                 }
                                                 Err(e) => consumer.error(false, e.into())
                                         }

@@ -544,7 +544,7 @@ impl DeltaTableInputEndpointInner {
                 },
                 |()| Vec::new(),
             );
-            self.queue.push(input_stream.take(), bytes, errors);
+            self.queue.push(bytes, (input_stream.take(), errors));
         }
     }
 
