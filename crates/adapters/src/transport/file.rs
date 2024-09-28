@@ -128,7 +128,6 @@ impl FileSplitter {
         }
         let result = file.read(space);
         if let Ok(n) = result {
-            println!("read {n} bytes");
             self.added_data(n);
         }
         result
