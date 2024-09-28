@@ -1,5 +1,5 @@
 use crate::format::AppendSplitter;
-use crate::transport::InputEndpoint;
+use crate::transport::{InputEndpoint, InputReaderCommand, InputStep};
 use crate::{
     server::{PipelineError, MAX_REPORTED_PARSE_ERRORS},
     transport::InputReader,

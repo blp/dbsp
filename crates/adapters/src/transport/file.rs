@@ -2,17 +2,21 @@ use super::{
     InputConsumer, InputEndpoint, InputReader, InputReaderCommand, InputStep, OutputEndpoint,
     TransportInputEndpoint,
 };
-use crate::format::StreamingSplitter;
-use crate::{Parser, PipelineState};
+use crate::format::Splitter;
+use crate::{InputBuffer, Parser};
 use anyhow::{bail, Error as AnyError, Result as AnyResult};
 use crossbeam::sync::{Parker, Unparker};
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::file::{FileInputConfig, FileOutputConfig};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::{
     fs::File,
-    io::Write,
-    sync::{atomic::Ordering, Arc},
-    thread::{sleep, spawn},
+    io::{Error as IoError, Write},
+    thread::spawn,
     time::Duration,
 };
 
@@ -50,7 +54,7 @@ impl TransportInputEndpoint for FileInputEndpoint {
     }
 }
 
-struct StreamingSplitter {
+struct FileSplitter {
     buffer: Vec<u8>,
     start: u64,
     fragment: Range<usize>,
@@ -58,9 +62,10 @@ struct StreamingSplitter {
     splitter: Box<dyn Splitter>,
 }
 
-impl StreamingSplitter {
-    fn new(splitter: Box<dyn Splitter>, buffer_size: usize) -> Self {
+impl FileSplitter {
+    fn new(splitter: Box<dyn Splitter>, buffer_size: Option<usize>) -> Self {
         let mut buffer = Vec::new();
+        let buffer_size = buffer_size.unwrap_or_default();
         buffer.resize(if buffer_size == 0 { 8192 } else { buffer_size }, 0);
         Self {
             buffer,
@@ -70,7 +75,7 @@ impl StreamingSplitter {
             splitter,
         }
     }
-    fn next(&mut self) -> Option<&[u8]> {
+    fn next(&mut self, eoi: bool) -> Option<&[u8]> {
         match self
             .splitter
             .input(&self.buffer[self.fed..self.fragment.end])
@@ -83,7 +88,11 @@ impl StreamingSplitter {
             }
             None => {
                 self.fed = self.fragment.end;
-                None
+                if eoi {
+                    self.final_chunk()
+                } else {
+                    None
+                }
             }
         }
     }
@@ -141,7 +150,7 @@ impl FileInputReader {
     fn new(
         config: &FileInputConfig,
         consumer: Box<dyn InputConsumer>,
-        mut parser: Box<dyn Parser>,
+        parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         let mut file = File::open(&config.path).map_err(|e| {
             AnyError::msg(format!("Failed to open input file '{}': {e}", config.path))
@@ -152,6 +161,7 @@ impl FileInputReader {
         let (sender, receiver) = channel();
         spawn({
             let follow = config.follow;
+            let buffer_size = config.buffer_size_bytes;
             move || {
                 if let Err(error) = Self::worker_thread(
                     file,
@@ -172,14 +182,14 @@ impl FileInputReader {
 
     fn worker_thread(
         mut file: File,
-        buffer_size: usize,
+        buffer_size: Option<usize>,
         consumer: &Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
         parker: Parker,
         receiver: Receiver<InputReaderCommand>,
         follow: bool,
     ) -> AnyResult<()> {
-        let mut splitter = StreamingSplitter::new(parser.splitter(), buffer_size);
+        let mut splitter = FileSplitter::new(parser.splitter(), buffer_size);
 
         let mut queue = VecDeque::<(Range<u64>, Box<dyn InputBuffer>)>::new();
         let mut n_queued = 0;
@@ -223,28 +233,20 @@ impl FileInputReader {
                         file.seek(SeekFrom::Start(offsets.start))?;
                         splitter.seek(offsets.start);
                         let mut remainder = (offsets.end - offsets.start) as usize;
-                        loop {
-                            while let Some(chunk) = splitter.next() {
-                                let prev_len = parser.len();
-                                consumer.parse_errors(parser.input_chunk(chunk));
-                                consumer.buffered(parser.len() - prev_len, chunk.len());
-                            }
-                            if remainder == 0 {
-                                break;
-                            }
+                        let mut num_records = 0;
+                        while remainder > 0 {
                             let n = splitter.read(&mut file, remainder)?;
                             if n == 0 {
                                 todo!();
                             }
                             remainder -= n;
+                            while let Some(chunk) = splitter.next(remainder == 0) {
+                                let (buffer, errors) = parser.parse(chunk);
+                                consumer.parse_errors(errors);
+                                consumer.buffered(buffer.len(), chunk.len());
+                                num_records += buffer.flush_all();
+                            }
                         }
-                        if let Some(chunk) = splitter.final_chunk() {
-                            let prev_len = parser.len();
-                            consumer.parse_errors(parser.input_chunk(chunk));
-                            consumer.buffered(parser.len() - prev_len, chunk.len());
-                        }
-                        let num_records = parser.len();
-                        parser.take().flush_all();
                         consumer.replayed(num_records);
                     }
                     InputReaderCommand::Disconnect => return Ok(()),
@@ -256,31 +258,32 @@ impl FileInputReader {
                 continue;
             }
 
-            let start = splitter.position();
-            while let Some(chunk) = splitter.next() {
-                let prev_len = parser.len();
-                consumer.parse_errors(parser.input_chunk(chunk));
-                consumer.buffered(parser.len() - prev_len, chunk.len());
-            }
             let n = splitter.read(&mut file, usize::MAX)?;
             if n == 0 {
-                if !follow {
-                    eof = true;
-                    if let Some(chunk) = splitter.final_chunk() {
-                        let prev_len = parser.len();
-                        consumer.parse_errors(parser.input_chunk(chunk));
-                        consumer.buffered(parser.len() - prev_len, chunk.len());
-                    }
-                    consumer.eoi();
-                } else if parser.is_empty() {
+                if follow {
                     parker.park_timeout(SLEEP);
+                    continue;
+                }
+                eof = true;
+            }
+            loop {
+                let start = splitter.position();
+                let Some(chunk) = splitter.next(eof) else {
+                    break;
+                };
+                let end = splitter.position();
+
+                let (buffer, errors) = parser.parse(chunk);
+                consumer.buffered(buffer.len(), chunk.len());
+                consumer.parse_errors(errors);
+
+                n_queued += buffer.len();
+                if let Some(buffer) = buffer {
+                    queue.push_back((start..end, buffer));
                 }
             }
-            let end = splitter.position();
-
-            if let Some(buffer) = parser.take() {
-                n_queued += buffer.len();
-                queue.push_back((start..end, buffer));
+            if n == 0 {
+                consumer.eoi();
             }
         }
     }
