@@ -225,6 +225,8 @@ pub enum InputReaderCommand {
     ///   that extension is complete (with [InputConsumer::extend_complete]).
     Extend,
 
+    Pause,
+
     /// Tells the reader to finish up accepting further input for now. The
     /// reader may call [InputConsumer::queue] some more times if necessary,
     /// and then call [InputConsumer::extend_complete] to indicate that it
@@ -264,6 +266,10 @@ pub trait InputReader: Send {
 
     fn extend(&self) {
         self.request(InputReaderCommand::Extend);
+    }
+
+    fn pause(&self) {
+        self.request(InputReaderCommand::Pause);
     }
 
     fn queue(&self) {

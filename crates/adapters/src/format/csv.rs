@@ -149,7 +149,6 @@ struct CsvSplitter {
 
 impl CsvSplitter {
     fn new() -> Self {
-        println!("csv splitter");
         Self { quoted: false }
     }
 }

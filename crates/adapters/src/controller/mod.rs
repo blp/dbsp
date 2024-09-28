@@ -185,14 +185,6 @@ impl Controller {
             (handle, inner)
         };
 
-        for (input_name, input_config) in config.inputs.iter() {
-            inner.connect_input(input_name, input_config)?;
-        }
-
-        for (output_name, output_config) in config.outputs.iter() {
-            inner.connect_output(output_name, output_config)?;
-        }
-
         Ok(Self {
             inner,
             circuit_thread_handle,
@@ -531,21 +523,27 @@ impl Controller {
             min_storage_bytes,
             init_checkpoint: checkpoint.circuit_uuid,
         };
-        let (mut circuit, controller) = match circuit_factory(config) {
-            Ok((circuit, catalog)) => {
-                // Complete initialization before sending back the confirmation to
-                // prevent a race.
-                controller.catalog = Arc::new(catalog);
-                let controller = Arc::new(controller);
-                controller.initialize_adhoc_queries();
-                let _ = init_status_sender.send(Ok(controller.clone()));
-                (circuit, controller)
-            }
+        let (mut circuit, catalog) = match circuit_factory(config) {
+            Ok(retval) => retval,
             Err(e) => {
                 let _ = init_status_sender.send(Err(e));
                 return Ok(());
             }
         };
+
+        controller.catalog = Arc::new(catalog);
+        let controller = Arc::new(controller);
+        controller.initialize_adhoc_queries();
+        for (input_name, input_config) in controller.status.pipeline_config.inputs.iter() {
+            controller.connect_input(input_name, input_config)?;
+        }
+        for (output_name, output_config) in controller.status.pipeline_config.outputs.iter() {
+            controller.connect_output(output_name, output_config)?;
+        }
+
+        // Send back confirmation only after having completed the
+        // initializations above, to avoid races.
+        let _ = init_status_sender.send(Ok(controller.clone()));
 
         if controller.status.pipeline_config.global.cpu_profiler {
             circuit.enable_cpu_profiler().unwrap_or_else(|e| {
@@ -603,13 +601,28 @@ impl Controller {
         // Time when the last step was started. Used to force the pipeline to make a step
         // periodically to update the now() value.
         let mut last_step: Option<Instant> = None;
+        let mut last_state = PipelineState::Paused;
 
         loop {
             for reply_cb in profile_request_receiver.try_iter() {
                 reply_cb(circuit.graph_profile());
             }
-            match controller.state() {
+            let new_state = controller.state();
+            match new_state {
                 PipelineState::Running | PipelineState::Paused => {
+                    if new_state != last_state {
+                        last_state = new_state;
+                        if !replaying {
+                            for endpoint in controller.inputs.lock().unwrap().values() {
+                                if new_state == PipelineState::Running {
+                                    endpoint.reader.extend();
+                                } else {
+                                    endpoint.reader.pause();
+                                }
+                            }
+                        }
+                    }
+
                     // Backpressure in the output pipeline: wait for room in output buffers to
                     // become available.
                     if controller.output_buffers_full() {
@@ -1566,6 +1579,7 @@ impl ControllerInner {
 
     fn start(self: &Arc<Self>) {
         self.status.set_state(PipelineState::Running);
+        self.unpark_circuit();
     }
 
     fn pause(self: &Arc<Self>) {
@@ -1946,6 +1960,7 @@ outputs:
                 writer.serialize(val).unwrap();
             }
             writer.flush().unwrap();
+            println!("wait for {} records", data.len());
             controller.start();
 
             // Wait for the pipeline to output all records.

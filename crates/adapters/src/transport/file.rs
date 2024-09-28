@@ -201,6 +201,9 @@ impl FileInputReader {
                     InputReaderCommand::Extend => {
                         extending = true;
                     }
+                    InputReaderCommand::Pause => {
+                        extending = false;
+                    },
                     InputReaderCommand::Queue => {
                         let mut total = 0;
                         let limit = consumer.max_batch_size();
@@ -216,7 +219,7 @@ impl FileInputReader {
                                 break;
                             }
                         }
-                        println!("queued {total} records");
+                        n_queued -= total;
                         consumer.extended(
                             total,
                             serde_json::to_value(Metadata {
@@ -241,7 +244,7 @@ impl FileInputReader {
                             }
                             remainder -= n;
                             while let Some(chunk) = splitter.next(remainder == 0) {
-                                let (buffer, errors) = parser.parse(chunk);
+                                let (mut buffer, errors) = parser.parse(chunk);
                                 consumer.parse_errors(errors);
                                 consumer.buffered(buffer.len(), chunk.len());
                                 num_records += buffer.flush_all();
@@ -271,14 +274,13 @@ impl FileInputReader {
                 let Some(chunk) = splitter.next(eof) else {
                     break;
                 };
-                let end = splitter.position();
-
                 let (buffer, errors) = parser.parse(chunk);
                 consumer.buffered(buffer.len(), chunk.len());
                 consumer.parse_errors(errors);
 
                 n_queued += buffer.len();
                 if let Some(buffer) = buffer {
+                    let end = splitter.position();
                     queue.push_back((start..end, buffer));
                 }
             }

@@ -331,8 +331,8 @@ impl Inner {
                 .map(|(table, writer)| {
                     let data = writer.into_inner().unwrap().into_inner();
                     let parser = &mut parsers[table];
-                    parser.input_chunk(data.as_slice());
-                    parser.take()
+                    let (buffer, _errors) = parser.parse(data.as_slice());
+                    buffer
                 })
                 .collect::<Vec<_>>();
             queue.lock().unwrap().extend(buffers.into_iter());
