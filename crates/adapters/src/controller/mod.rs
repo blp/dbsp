@@ -31,7 +31,6 @@ use datafusion::prelude::*;
 use dbsp::circuit::StorageConfig;
 use dbsp::circuit::{CircuitConfig, Layout};
 use dbsp::profile::GraphProfile;
-use feldera_types::query::OutputQuery;
 use log::{debug, error, info, trace};
 use metadata::Checkpoint;
 use metadata::StepMetadata;

@@ -1,4 +1,7 @@
-use super::{InputConsumer, InputEndpoint, InputReader, Step, TransportInputEndpoint};
+use super::{
+    InputConsumer, InputEndpoint, InputReader, InputReaderCommand, InputStep,
+    TransportInputEndpoint,
+};
 use crate::{ensure_default_crypto_provider, format::AppendSplitter, Parser, PipelineState};
 use actix::System;
 use actix_web::http::header::{ByteRangeSpec, ContentRangeSpec, Range, CONTENT_RANGE};
@@ -66,7 +69,7 @@ impl UrlInputReader {
                 System::new().block_on(async move {
                     let mut splitter = AppendSplitter::new(parser.splitter());
                     if let Err(error) =
-                        Self::worker_thread(config, &mut parser, &mut splitter, receiver)
+                        Self::worker_thread(config, &mut parser, &mut splitter, receiver, &consumer)
                             .await
                     {
                         consumer.error(true, error);
@@ -88,7 +91,7 @@ impl UrlInputReader {
         parser: &mut Box<dyn Parser>,
         splitter: &mut AppendSplitter,
         mut receiver: Receiver<PipelineState>,
-        consumer: Box<dyn InputConsumer>,
+        consumer: &Box<dyn InputConsumer>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();
 
