@@ -2142,12 +2142,12 @@ outputs:
         )
         .unwrap();
 
-/*
-        for val in data.iter().cloned() {
-            writer.serialize(val).unwrap();
-        }
-        writer.flush().unwrap();
-*/
+        /*
+                for val in data.iter().cloned() {
+                    writer.serialize(val).unwrap();
+                }
+                writer.flush().unwrap();
+        */
         println!("wait for {} records", data.len() * 2);
         wait(
             || {

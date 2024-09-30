@@ -397,7 +397,10 @@ impl PipelineExecutor for LocalRunner {
         {
             create_dir_all(&pipeline_data_dir).await.map_err(|e| {
                 ManagerError::io_error(
-                    format!("creating pipeline data directory '{}'", pipeline_data_dir.display()),
+                    format!(
+                        "creating pipeline data directory '{}'",
+                        pipeline_data_dir.display()
+                    ),
                     e,
                 )
             })?;

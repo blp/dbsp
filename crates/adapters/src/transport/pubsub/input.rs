@@ -1,6 +1,6 @@
 use crate::{
-    transport::{InputReaderCommand, InputStep}, InputConsumer, InputEndpoint, InputReader, Parser, PipelineState,
-    TransportInputEndpoint,
+    transport::{InputReaderCommand, InputStep},
+    InputConsumer, InputEndpoint, InputReader, Parser, PipelineState, TransportInputEndpoint,
 };
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
 use chrono::DateTime;
@@ -161,7 +161,7 @@ impl PubSubReader {
                         async move {
                             // None if the stream is cancelled
                             while let Some(message) = stream.next().await {
-        /*
+                                /*
                                 consumer.queue(
                                     message.message.data.len(),
                                     parser.parse(&message.message.data),

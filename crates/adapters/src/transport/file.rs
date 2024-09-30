@@ -202,7 +202,7 @@ impl FileInputReader {
                     }
                     InputReaderCommand::Pause => {
                         extending = false;
-                    },
+                    }
                     InputReaderCommand::Queue => {
                         let mut total = 0;
                         let limit = consumer.max_batch_size();

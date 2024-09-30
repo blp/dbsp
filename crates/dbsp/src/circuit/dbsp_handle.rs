@@ -599,9 +599,7 @@ impl DBSPHandle {
     /// Evaluate the circuit for one clock cycle.
     pub fn step(&mut self) -> Result<(), DBSPError> {
         counter!("feldera.dbsp.step").increment(1);
-        let span = Arc::new(
-            Span::root("step", SpanContext::random()),
-        );
+        let span = Arc::new(Span::root("step", SpanContext::random()));
         let _guard = span.set_local_parent();
         self.broadcast_command(Command::Step(span), |_, _| {})
     }
@@ -681,9 +679,7 @@ impl DBSPHandle {
         let fingerprint = self.fingerprint()?;
         self.checkpointer.create_checkpoint_dir(uuid)?;
         self.send_commit(uuid)?;
-        let md = self
-            .checkpointer
-            .commit(uuid, identifier, fingerprint)?;
+        let md = self.checkpointer.commit(uuid, identifier, fingerprint)?;
         Ok(md)
     }
 
