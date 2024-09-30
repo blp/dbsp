@@ -336,7 +336,6 @@ mod tests {
             step_reader = new_reader;
         }
         assert_eq!(written_data, read_data);
-        println!("{}", tempdir.into_path().display());
     }
 
     /// Create and write a steps file, then read it back, and continue adding more steps at the end.

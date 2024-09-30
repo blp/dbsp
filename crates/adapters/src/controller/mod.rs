@@ -485,6 +485,7 @@ impl Controller {
             fs::create_dir_all(path).map_err(startup_io_error)?;
             let state_path = path.join("state.json");
             if fs::exists(&state_path).map_err(startup_io_error)? {
+                info!("{}: reading checkpoint metadata", state_path.display());
                 checkpoint =
                     serde_json::from_slice(&fs::read(&state_path).map_err(startup_io_error)?)
                         .map_err(|e| ControllerError::CheckpointParseError {
@@ -494,8 +495,10 @@ impl Controller {
 
             let steps_path = path.join("steps.json");
             if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
+                info!("{}: opening to read input steps", steps_path.display());
                 step_reader = Some(StepReader::open(&steps_path)?);
             } else {
+                info!("{}: opening to write input steps", steps_path.display());
                 step_writer = Some(StepWriter::create(&steps_path)?);
             };
         };
@@ -509,10 +512,23 @@ impl Controller {
                 .pipeline_config
                 .storage_config
                 .as_ref()
-                .map(|storage| StorageConfig {
-                    path: storage.path.join("circuit"),
-                    cache: storage.cache,
-                }),
+                .map(|storage| {
+                    let path = storage.path.join("circuit");
+                    if !fs::exists(&path)? {
+                        fs::create_dir(&path)?;
+                    }
+                    Ok(StorageConfig {
+                        path,
+                        cache: storage.cache,
+                    })
+                })
+                .transpose()
+                .map_err(|error| {
+                    ControllerError::io_error(
+                        String::from("Failed to create checkpoint storage directory"),
+                        error,
+                    )
+                })?,
             min_storage_bytes,
             init_checkpoint: checkpoint.circuit_uuid,
         };
@@ -1901,8 +1917,8 @@ mod test {
         Controller, PipelineConfig,
     };
     use csv::{ReaderBuilder as CsvReaderBuilder, WriterBuilder as CsvWriterBuilder};
-    use std::fs::remove_file;
-    use tempfile::NamedTempFile;
+    use std::fs::{remove_file, File};
+    use tempfile::{NamedTempFile, TempDir};
 
     use proptest::prelude::*;
 
@@ -2005,5 +2021,178 @@ outputs:
 
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn test_ft() {
+        let tempdir = TempDir::new().unwrap();
+        let storage_dir = tempdir.path().join("storage");
+        let input_path = tempdir.path().join("input.csv");
+        let input_file = File::create(&input_path).unwrap();
+        let output_path = tempdir.path().join("output.csv");
+
+        let config_str = format!(
+            r#"
+name: test
+workers: 4
+storage_config:
+    path: {storage_dir:?}
+global:
+    storage: true
+inputs:
+    test_input1:
+        stream: test_input1
+        transport:
+            name: file_input
+            config:
+                path: {input_path:?}
+                follow: true
+        format:
+            name: csv
+outputs:
+    test_output1:
+        stream: test_output1
+        transport:
+            name: file_output
+            config:
+                path: {output_path:?}
+        format:
+            name: csv
+            config:
+        "#
+        );
+
+        let config: PipelineConfig = serde_yaml::from_str(&config_str).unwrap();
+        let controller = Controller::with_config(
+            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
+            &config,
+            Box::new(|e| panic!("error: {e}")),
+        )
+        .unwrap();
+
+        let mut writer = CsvWriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&input_file);
+
+        let data = (0..5000)
+            .map(|id| TestStruct {
+                id,
+                b: false,
+                i: None,
+                s: "".into(),
+            })
+            .collect::<Vec<_>>();
+        for val in data.iter().cloned() {
+            writer.serialize(val).unwrap();
+        }
+        writer.flush().unwrap();
+        controller.start();
+
+        // Wait for the pipeline to output all records.
+        println!("wait for {} records", data.len());
+        wait(
+            || {
+                controller
+                    .status()
+                    .output_status()
+                    .get(&0)
+                    .unwrap()
+                    .transmitted_records()
+                    >= data.len() as u64
+            },
+            10_000,
+        )
+        .unwrap();
+
+        assert_eq!(
+            controller
+                .status()
+                .output_status()
+                .get(&0)
+                .unwrap()
+                .transmitted_records(),
+            data.len() as u64
+        );
+
+        controller.stop().unwrap();
+
+        let mut expected = data.clone();
+        expected.sort();
+
+        let mut actual: Vec<_> = CsvReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&output_path)
+            .unwrap()
+            .deserialize::<(TestStruct, i32)>()
+            .map(|res| {
+                let (val, weight) = res.unwrap();
+                assert_eq!(weight, 1);
+                val
+            })
+            .collect();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+
+        println!("restart controller");
+        let controller = Controller::with_config(
+            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
+            &config,
+            Box::new(|e| panic!("error: {e}")),
+        )
+        .unwrap();
+
+/*
+        for val in data.iter().cloned() {
+            writer.serialize(val).unwrap();
+        }
+        writer.flush().unwrap();
+*/
+        println!("wait for {} records", data.len() * 2);
+        wait(
+            || {
+                controller
+                    .status()
+                    .output_status()
+                    .get(&0)
+                    .unwrap()
+                    .transmitted_records()
+                    >= data.len() as u64 * 2
+            },
+            10_000,
+        )
+        .unwrap();
+
+        assert_eq!(
+            controller
+                .status()
+                .output_status()
+                .get(&0)
+                .unwrap()
+                .transmitted_records(),
+            data.len() as u64 * 2
+        );
+
+        controller.stop().unwrap();
+
+        let mut expected = data.clone();
+        expected.extend(data.iter().cloned());
+        expected.sort();
+
+        let mut actual: Vec<_> = CsvReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&output_path)
+            .unwrap()
+            .deserialize::<(TestStruct, i32)>()
+            .map(|res| {
+                let (val, weight) = res.unwrap();
+                assert_eq!(weight, 1);
+                val
+            })
+            .collect();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+        println!("{}", tempdir.into_path().display());
     }
 }
