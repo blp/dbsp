@@ -11,6 +11,8 @@ use std::{
     string::ToString,
 };
 
+use super::metadata::StepsError;
+
 /// Controller configuration error.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
@@ -487,8 +489,8 @@ pub enum ControllerError {
     /// Error parsing the checkpoint.
     CheckpointParseError { error: String },
 
-    /// Error parsing input adapter steps.
-    StepsParseError { error: String },
+    /// Error in steps metadata.
+    StepsError(StepsError),
 
     /// Feature is not supported.
     NotSupported { error: String },
@@ -634,7 +636,7 @@ impl DetailedError for ControllerError {
             Self::SchemaParseError { .. } => Cow::from("SchemaParseError"),
             Self::SchemaValidationError { .. } => Cow::from("SchemaParseError"),
             Self::CheckpointParseError { .. } => Cow::from("CheckpointParseError"),
-            Self::StepsParseError { .. } => Cow::from("StepsParseError"),
+            Self::StepsError { .. } => Cow::from("StepsError"),
             Self::IrParseError { .. } => Cow::from("IrParseError"),
             Self::CliArgsError { .. } => Cow::from("ControllerCliArgsError"),
             Self::Config { config_error } => {
@@ -676,9 +678,7 @@ impl Display for ControllerError {
             Self::CheckpointParseError { error } => {
                 write!(f, "Error parsing checkpoint file: {error}")
             }
-            Self::StepsParseError { error } => {
-                write!(f, "Error parsing input adapter steps file: {error}")
-            }
+            Self::StepsError(error) => write!(f, "Error with persistent input steps: {error}"),
             Self::IrParseError { error } => {
                 write!(f, "Error parsing program IR: {error}")
             }

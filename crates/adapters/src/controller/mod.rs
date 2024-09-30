@@ -12,9 +12,7 @@ use crate::catalog::OutputCollectionHandles;
 use crate::create_integrated_output_endpoint;
 use crate::transport::InputReader;
 use crate::transport::Step;
-use crate::transport::{
-    input_transport_config_to_endpoint, output_transport_config_to_endpoint, AtomicStep,
-};
+use crate::transport::{input_transport_config_to_endpoint, output_transport_config_to_endpoint};
 use crate::InputBuffer;
 use crate::{
     catalog::SerBatch, Catalog, CircuitCatalog, Encoder, InputConsumer, InputFormat,
@@ -496,7 +494,7 @@ impl Controller {
 
             let steps_path = path.join("steps.json");
             if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
-                steps = Some(Steps::open(&steps_path, checkpoint.step.saturating_sub(1))?);
+                steps = Some(Steps::open(&steps_path)?);
             } else {
                 steps = Some(Steps::create(&steps_path)?);
             };
@@ -561,7 +559,7 @@ impl Controller {
 
         let mut step = checkpoint.step;
         if step > 0 {
-            let prev_step_metadata = steps.as_mut().unwrap().get(step - 1)?.unwrap();
+            let prev_step_metadata = steps.as_mut().unwrap().seek(step - 1)?;
             for (endpoint_name, metadata) in prev_step_metadata.input_endpoints {
                 let endpoint_id = controller.input_endpoint_id_by_name(&endpoint_name)?;
                 controller.inputs.lock().unwrap()[&endpoint_id]
@@ -569,22 +567,7 @@ impl Controller {
                     .seek(metadata);
             }
         }
-        let replaying = if let Some(step_metadata) = steps
-            .as_mut()
-            .map(|steps| steps.get(step))
-            .transpose()?
-            .flatten()
-        {
-            for (endpoint_name, metadata) in step_metadata.input_endpoints {
-                let endpoint_id = controller.input_endpoint_id_by_name(&endpoint_name)?;
-                controller.inputs.lock().unwrap()[&endpoint_id]
-                    .reader
-                    .replay(metadata);
-            }
-            true
-        } else {
-            false
-        };
+        let mut replaying = controller.replay_step(&mut steps, step)?;
 
         let clock_resolution = controller
             .status
@@ -681,7 +664,7 @@ impl Controller {
                         }
                         if !replaying {
                             if let Some(steps) = steps.as_mut() {
-                                steps.put(StepMetadata {
+                                steps.write(&StepMetadata {
                                     step,
                                     input_endpoints: step_metadata,
                                 })?;
@@ -729,7 +712,7 @@ impl Controller {
                         // Push output batches to output pipelines.
                         if !replaying {
                             if let Some(steps) = steps.as_mut() {
-                                steps.wait()?;
+                                steps.wait();
                             }
                         }
                         let outputs = controller.outputs.read().unwrap();
@@ -762,7 +745,9 @@ impl Controller {
                         }
 
                         step += 1;
-                        controller.step.store(step, Ordering::Release);
+                        if replaying {
+                            replaying = controller.replay_step(&mut steps, step)?;
+                        }
                     } else if buffered_records > 0 {
                         // We have some buffered data, but less than `min_batch_size_records` --
                         // wait up to `max_buffering_delay` for more data to
@@ -1033,7 +1018,6 @@ pub struct ControllerInner {
     outputs: ShardedLock<OutputEndpoints>,
     circuit_thread_unparker: Unparker,
     error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
-    step: AtomicStep,
     metrics_snapshotter: Arc<Snapshotter>,
     prometheus_handle: PrometheusHandle,
     session_ctxt: SessionContext,
@@ -1066,7 +1050,6 @@ impl ControllerInner {
             outputs: ShardedLock::new(OutputEndpoints::new()),
             circuit_thread_unparker,
             error_cb,
-            step: AtomicStep::new(0),
             metrics_snapshotter,
             prometheus_handle,
             session_ctxt: SessionContext::new(),
@@ -1717,6 +1700,28 @@ impl ControllerInner {
 
     fn output_buffers_full(&self) -> bool {
         self.status.output_buffers_full()
+    }
+
+    fn replay_step(&self, steps: &mut Option<Steps>, step: Step) -> Result<bool, ControllerError> {
+        if let Some(step_metadata) = steps
+            .as_mut()
+            .map(|steps| steps.read())
+            .transpose()?
+            .flatten()
+        {
+            if step_metadata.step != step {
+                todo!()
+            }
+            for (endpoint_name, metadata) in step_metadata.input_endpoints {
+                let endpoint_id = self.input_endpoint_id_by_name(&endpoint_name)?;
+                self.inputs.lock().unwrap()[&endpoint_id]
+                    .reader
+                    .replay(metadata);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
