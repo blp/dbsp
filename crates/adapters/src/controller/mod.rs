@@ -1158,7 +1158,7 @@ impl ControllerInner {
         self.add_input_endpoint(endpoint_name, endpoint_config.clone(), endpoint)
     }
 
-    fn disconnect_input(self: &Arc<Self>, endpoint_id: &EndpointId) {
+    fn disconnect_input(&self, endpoint_id: &EndpointId) {
         let mut inputs = self.inputs.lock().unwrap();
 
         if let Some(ep) = inputs.remove(endpoint_id) {
@@ -1319,7 +1319,7 @@ impl ControllerInner {
         self.add_output_endpoint(endpoint_name, endpoint_config, endpoint)
     }
 
-    fn disconnect_output(self: &Arc<Self>, endpoint_id: &EndpointId) {
+    fn disconnect_output(&self, endpoint_id: &EndpointId) {
         let mut outputs = self.outputs.write().unwrap();
 
         if let Some(ep) = outputs.remove(endpoint_id) {
@@ -1576,20 +1576,20 @@ impl ControllerInner {
         }
     }
 
-    fn state(self: &Arc<Self>) -> PipelineState {
+    fn state(&self) -> PipelineState {
         self.status.state()
     }
 
-    fn start(self: &Arc<Self>) {
+    fn start(&self) {
         self.status.set_state(PipelineState::Running);
         self.unpark_circuit();
     }
 
-    fn pause(self: &Arc<Self>) {
+    fn pause(&self) {
         self.status.set_state(PipelineState::Paused);
     }
 
-    fn stop(self: &Arc<Self>) {
+    fn stop(&self) {
         // Prevent nested panic when stopping the pipeline in response to a panic.
         let Ok(mut inputs) = self.inputs.lock() else {
             error!("Error shutting down the pipeline: failed to acquire a poisoned lock. This indicates that the pipeline is an inconsistent state.");
@@ -1606,13 +1606,13 @@ impl ControllerInner {
         self.unpark_circuit();
     }
 
-    fn pause_input_endpoint(self: &Arc<Self>, endpoint_name: &str) -> Result<(), ControllerError> {
+    fn pause_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.pause_input_endpoint(&endpoint_id);
         Ok(())
     }
 
-    fn start_input_endpoint(self: &Arc<Self>, endpoint_name: &str) -> Result<(), ControllerError> {
+    fn start_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.start_input_endpoint(&endpoint_id);
         Ok(())
