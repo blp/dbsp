@@ -32,8 +32,7 @@ use dbsp::profile::GraphProfile;
 use dbsp::DBSPHandle;
 use log::{debug, error, info, trace};
 use metadata::Checkpoint;
-use metadata::StepMetadata;
-use metadata::Steps;
+use metadata::{ReadResult, StepMetadata, StepReader, StepWriter};
 use metrics::set_global_recorder;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_util::{
@@ -471,7 +470,8 @@ impl Controller {
 
         // Read the checkpoint and input steps, if any.
         let mut checkpoint = Checkpoint::default();
-        let mut steps = None;
+        let mut step_reader = None;
+        let mut step_writer = None;
         let storage_path = controller
             .status
             .pipeline_config
@@ -494,9 +494,9 @@ impl Controller {
 
             let steps_path = path.join("steps.json");
             if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
-                steps = Some(Steps::open(&steps_path)?);
+                step_reader = Some(StepReader::open(&steps_path)?);
             } else {
-                steps = Some(Steps::create(&steps_path)?);
+                step_writer = Some(StepWriter::create(&steps_path)?);
             };
         };
 
@@ -559,7 +559,9 @@ impl Controller {
 
         let mut step = checkpoint.step;
         if step > 0 {
-            let prev_step_metadata = steps.as_mut().unwrap().seek(step - 1)?;
+            let (new_step_reader, prev_step_metadata) =
+                step_reader.take().unwrap().seek(step - 1)?;
+            step_reader = Some(new_step_reader);
             for (endpoint_name, metadata) in prev_step_metadata.input_endpoints {
                 let endpoint_id = controller.input_endpoint_id_by_name(&endpoint_name)?;
                 controller.inputs.lock().unwrap()[&endpoint_id]
@@ -567,7 +569,8 @@ impl Controller {
                     .seek(metadata);
             }
         }
-        let mut replaying = controller.replay_step(&mut steps, step)?;
+        let (mut replaying, mut step_reader, mut step_writer) =
+            controller.replay_step(step_reader, step_writer, step)?;
 
         let clock_resolution = controller
             .status
@@ -663,8 +666,8 @@ impl Controller {
                             }
                         }
                         if !replaying {
-                            if let Some(steps) = steps.as_mut() {
-                                steps.write(&StepMetadata {
+                            if let Some(step_writer) = step_writer.as_mut() {
+                                step_writer.write(&StepMetadata {
                                     step,
                                     input_endpoints: step_metadata,
                                 })?;
@@ -711,8 +714,8 @@ impl Controller {
 
                         // Push output batches to output pipelines.
                         if !replaying {
-                            if let Some(steps) = steps.as_mut() {
-                                steps.wait();
+                            if let Some(step_writer) = step_writer.as_mut() {
+                                step_writer.wait()?;
                             }
                         }
                         let outputs = controller.outputs.read().unwrap();
@@ -746,7 +749,11 @@ impl Controller {
 
                         step += 1;
                         if replaying {
-                            replaying = controller.replay_step(&mut steps, step)?;
+                            (replaying, step_reader, step_writer) = controller.replay_step(
+                                step_reader.take(),
+                                step_writer.take(),
+                                step,
+                            )?;
                         }
                     } else if buffered_records > 0 {
                         // We have some buffered data, but less than `min_batch_size_records` --
@@ -1702,25 +1709,30 @@ impl ControllerInner {
         self.status.output_buffers_full()
     }
 
-    fn replay_step(&self, steps: &mut Option<Steps>, step: Step) -> Result<bool, ControllerError> {
-        if let Some(step_metadata) = steps
-            .as_mut()
-            .map(|steps| steps.read())
-            .transpose()?
-            .flatten()
-        {
-            if step_metadata.step != step {
-                todo!()
+    fn replay_step(
+        &self,
+        reader: Option<StepReader>,
+        writer: Option<StepWriter>,
+        step: Step,
+    ) -> Result<(bool, Option<StepReader>, Option<StepWriter>), ControllerError> {
+        if let Some(reader) = reader {
+            match reader.read()? {
+                ReadResult::Step { reader, metadata } => {
+                    if metadata.step != step {
+                        todo!()
+                    }
+                    for (endpoint_name, metadata) in metadata.input_endpoints {
+                        let endpoint_id = self.input_endpoint_id_by_name(&endpoint_name)?;
+                        self.inputs.lock().unwrap()[&endpoint_id]
+                            .reader
+                            .replay(metadata);
+                    }
+                    Ok((true, Some(reader), None))
+                }
+                ReadResult::Writer(writer) => Ok((false, None, Some(writer))),
             }
-            for (endpoint_name, metadata) in step_metadata.input_endpoints {
-                let endpoint_id = self.input_endpoint_id_by_name(&endpoint_name)?;
-                self.inputs.lock().unwrap()[&endpoint_id]
-                    .reader
-                    .replay(metadata);
-            }
-            Ok(true)
         } else {
-            Ok(false)
+            Ok((false, reader, writer))
         }
     }
 }

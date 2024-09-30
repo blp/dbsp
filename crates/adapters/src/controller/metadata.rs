@@ -7,7 +7,6 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Error as IoError, Seek, SeekFrom, Write},
-    mem,
     path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver, Sender},
     thread::{self, JoinHandle},
@@ -18,7 +17,7 @@ use crate::{transport::Step, ControllerError};
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub enum StepsError {
+pub enum StepError {
     /// I/O error.
     #[serde(serialize_with = "serialize_io_error")]
     IoError {
@@ -69,22 +68,22 @@ where
     serializer.serialize_str(&error.to_string())
 }
 
-impl Display for StepsError {
+impl Display for StepError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            StepsError::ParseError { path, error, line_number, offset } => write!(f, "error parsing step on line {line_number} starting at offset {offset} in {} ({error})", path.display()),
-            StepsError::MissingStep { path, step } => write!(f, "{} should contain step {step} but it is not present", path.display()),
-            StepsError::IoError { path, io_error, .. } => write!(f, "I/O error on {}: {io_error}", path.display()),
-            StepsError::UnexpectedRead => write!(f, "Unexpected read while in write mode"),
-            StepsError::UnexpectedWrite => write!(f, "Unexpected write while in read mode"),
-            StepsError::UnexpectedWait => write!(f, "Unexpected wait while in read mode"),
+            StepError::ParseError { path, error, line_number, offset } => write!(f, "error parsing step on line {line_number} starting at offset {offset} in {} ({error})", path.display()),
+            StepError::MissingStep { path, step } => write!(f, "{} should contain step {step} but it is not present", path.display()),
+            StepError::IoError { path, io_error, .. } => write!(f, "I/O error on {}: {io_error}", path.display()),
+            StepError::UnexpectedRead => write!(f, "Unexpected read while in write mode"),
+            StepError::UnexpectedWrite => write!(f, "Unexpected write while in read mode"),
+            StepError::UnexpectedWait => write!(f, "Unexpected wait while in read mode"),
         }
     }
 }
 
-impl StepsError {
-    fn io_error(path: &Path, io_error: IoError) -> StepsError {
-        StepsError::IoError {
+impl StepError {
+    fn io_error(path: &Path, io_error: IoError) -> StepError {
+        StepError::IoError {
             path: path.to_path_buf(),
             io_error,
             backtrace: Backtrace::capture(),
@@ -92,9 +91,9 @@ impl StepsError {
     }
 }
 
-impl From<StepsError> for ControllerError {
-    fn from(value: StepsError) -> Self {
-        ControllerError::StepsError(value)
+impl From<StepError> for ControllerError {
+    fn from(value: StepError) -> Self {
+        ControllerError::StepError(value)
     }
 }
 
@@ -107,7 +106,7 @@ pub struct Checkpoint {
 pub struct BackgroundSync {
     join_handle: Option<JoinHandle<()>>,
     request_sender: Option<Sender<()>>,
-    reply_receiver: Receiver<()>,
+    reply_receiver: Receiver<Result<(), IoError>>,
     n_incomplete_requests: usize,
 }
 
@@ -121,8 +120,7 @@ impl BackgroundSync {
             .spawn({
                 move || {
                     for () in request_receiver {
-                        let _ = file.sync_data();
-                        let _ = reply_sender.send(());
+                        let _ = reply_sender.send(file.sync_data());
                     }
                 }
             })
@@ -140,11 +138,12 @@ impl BackgroundSync {
         self.n_incomplete_requests += 1;
     }
 
-    pub fn wait(&mut self) {
+    pub fn wait(&mut self) -> Result<(), IoError> {
         while self.n_incomplete_requests > 0 {
-            let _ = self.reply_receiver.recv();
+            self.reply_receiver.recv().unwrap()?;
             self.n_incomplete_requests -= 1;
         }
+        Ok(())
     }
 }
 
@@ -157,23 +156,22 @@ impl Drop for BackgroundSync {
     }
 }
 
-pub enum Steps {
-    Reading {
-        path: PathBuf,
-        reader: BufReader<File>,
-        line_number: usize,
-    },
-    Writing {
-        path: PathBuf,
-        writer: BufWriter<File>,
-        offset: Option<u64>,
-        sync: BackgroundSync,
-    },
-    Invalid,
+pub struct StepReader {
+    path: PathBuf,
+    reader: BufReader<File>,
+    line_number: usize,
 }
 
-impl Steps {
-    pub fn open<P>(path: P) -> Result<Self, StepsError>
+pub enum ReadResult {
+    Step {
+        reader: StepReader,
+        metadata: StepMetadata,
+    },
+    Writer(StepWriter),
+}
+
+impl StepReader {
+    pub fn open<P>(path: P) -> Result<Self, StepError>
     where
         P: AsRef<Path>,
     {
@@ -183,138 +181,111 @@ impl Steps {
                 .read(true)
                 .write(true)
                 .open(&path)
-                .map_err(|io_error| StepsError::io_error(&path, io_error))?,
+                .map_err(|io_error| StepError::io_error(&path, io_error))?,
         );
-        Ok(Self::Reading {
+        Ok(Self {
             path,
             reader,
             line_number: 0,
         })
     }
 
-    pub fn create<P>(path: P) -> Result<Self, StepsError>
+    pub fn read(mut self) -> Result<ReadResult, StepError> {
+        let start_offset = self.reader.stream_position().unwrap();
+        self.line_number += 1;
+        let mut line = String::new();
+        if self
+            .reader
+            .read_line(&mut line)
+            .map_err(|error| StepError::io_error(&self.path, error))?
+            > 0
+            && line.ends_with('\n')
+        {
+            let step = serde_json::from_str::<StepMetadata>(&line).map_err(|error| {
+                StepError::ParseError {
+                    path: self.path.clone(),
+                    error,
+                    line_number: self.line_number,
+                    offset: start_offset,
+                }
+            })?;
+            Ok(ReadResult::Step {
+                reader: self,
+                metadata: step,
+            })
+        } else {
+            let mut file = self.reader.into_inner();
+            file.set_len(start_offset)
+                .and_then(|()| file.seek(SeekFrom::Start(start_offset)))
+                .map_err(|io_error| StepError::io_error(&self.path, io_error))?;
+            Ok(ReadResult::Writer(StepWriter::new(self.path, file)))
+        }
+    }
+
+    pub fn seek(mut self, step: Step) -> Result<(StepReader, StepMetadata), StepError> {
+        loop {
+            match self.read()? {
+                ReadResult::Step { reader, metadata } => {
+                    self = reader;
+                    match metadata.step.cmp(&step) {
+                        Ordering::Less => (),
+                        Ordering::Equal => return Ok((self, metadata)),
+                        Ordering::Greater => {
+                            return Err(StepError::MissingStep {
+                                path: self.path.clone(),
+                                step,
+                            })
+                        }
+                    }
+                }
+                ReadResult::Writer(writer) => {
+                    return Err(StepError::MissingStep {
+                        path: writer.path.clone(),
+                        step,
+                    })
+                }
+            }
+        }
+    }
+}
+
+pub struct StepWriter {
+    path: PathBuf,
+    writer: BufWriter<File>,
+    sync: BackgroundSync,
+}
+
+impl StepWriter {
+    pub fn create<P>(path: P) -> Result<Self, StepError>
     where
         P: AsRef<Path>,
     {
         let path = PathBuf::from(path.as_ref());
         let file =
-            File::create_new(&path).map_err(|io_error| StepsError::io_error(&path, io_error))?;
-        Ok(Self::new_writer(path, file, None))
+            File::create_new(&path).map_err(|io_error| StepError::io_error(&path, io_error))?;
+        Ok(Self::new(path, file))
     }
 
-    fn new_writer(path: PathBuf, file: File, offset: Option<u64>) -> Self {
+    fn new(path: PathBuf, file: File) -> Self {
         let sync = BackgroundSync::new(&file);
-        Self::Writing {
-            path,
-            writer: BufWriter::new(file),
-            offset,
-            sync,
-        }
+        let writer = BufWriter::new(file);
+        Self { path, writer, sync }
     }
 
-    pub fn read(&mut self) -> Result<Option<StepMetadata>, StepsError> {
-        let Self::Reading {
-            path,
-            reader,
-            line_number,
-        } = self
-        else {
-            return Err(StepsError::UnexpectedRead);
-        };
-
-        let start_offset = reader.stream_position().unwrap();
-        *line_number += 1;
-        let mut line = String::new();
-        if reader
-            .read_line(&mut line)
-            .map_err(|error| StepsError::io_error(path, error))?
-            > 0
-            && line.ends_with('\n')
-        {
-            let step = serde_json::from_str::<StepMetadata>(&line).map_err(|error| {
-                StepsError::ParseError {
-                    path: path.clone(),
-                    error,
-                    line_number: *line_number,
-                    offset: start_offset,
-                }
-            })?;
-            Ok(Some(step))
-        } else {
-            let Self::Reading { path, reader, .. } = mem::replace(self, Self::Invalid) else {
-                unreachable!()
-            };
-            *self = Self::new_writer(path, reader.into_inner(), Some(start_offset));
-            Ok(None)
-        }
-    }
-
-    pub fn seek(&mut self, step: Step) -> Result<StepMetadata, StepsError> {
-        while let Some(m) = self.read()? {
-            match m.step.cmp(&step) {
-                Ordering::Less => (),
-                Ordering::Equal => return Ok(m),
-                Ordering::Greater => break,
-            }
-        }
-        Err(StepsError::MissingStep {
-            path: self.path().clone(),
-            step,
-        })
-    }
-
-    pub fn path(&self) -> &PathBuf {
-        match self {
-            Steps::Reading {
-                path,
-                reader,
-                line_number,
-            } => path,
-            Steps::Writing {
-                path,
-                writer,
-                offset,
-                sync,
-            } => path,
-            Steps::Invalid => unreachable!(),
-        }
-    }
-
-    pub fn write(&mut self, step: &StepMetadata) -> Result<(), StepsError> {
-        let Self::Writing {
-            path,
-            writer,
-            offset,
-            sync,
-        } = self
-        else {
-            return Err(StepsError::UnexpectedWrite);
-        };
-
-        let io_error = |error| StepsError::io_error(path, error);
-
-        if let Some(offset) = offset.take() {
-            writer
-                .get_mut()
-                .set_len(offset)
-                .and_then(|()| writer.seek(SeekFrom::Start(offset)))
-                .map_err(io_error)?;
-        }
-        serde_json::to_writer(&mut *writer, step)
+    pub fn write(&mut self, step: &StepMetadata) -> Result<(), StepError> {
+        serde_json::to_writer(&mut self.writer, step)
             .map_err(|error| IoError::from(error.io_error_kind().unwrap()))
-            .and_then(|()| writeln!(writer))
-            .and_then(|()| writer.flush())
-            .map_err(io_error)?;
-        writer.get_mut().sync_data().map_err(io_error)?;
-        sync.sync();
+            .and_then(|()| writeln!(self.writer))
+            .and_then(|()| self.writer.flush())
+            .map_err(|error| StepError::io_error(&self.path, error))?;
+        self.sync.sync();
         Ok(())
     }
 
-    pub fn wait(&mut self) {
-        match self {
-            Self::Writing { sync, .. } => sync.wait(),
-            _ => unreachable!("Should always be in write mode"),
-        }
+    pub fn wait(&mut self) -> Result<(), StepError> {
+        self.sync
+            .wait()
+            .map_err(|error| StepError::io_error(&self.path, error))
     }
 }
 
@@ -326,11 +297,13 @@ pub struct StepMetadata {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, iter};
+    use std::collections::HashMap;
 
     use tempfile::TempDir;
 
-    use super::{StepMetadata, Steps};
+    use crate::controller::metadata::ReadResult;
+
+    use super::{StepMetadata, StepReader, StepWriter};
 
     /// Create and write a steps file and then read it back.
     #[test]
@@ -345,15 +318,71 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut steps = Steps::create(&path).unwrap();
+        let mut step_writer = StepWriter::create(&path).unwrap();
         for step in written_data.iter() {
-            steps.write(step).unwrap();
+            step_writer.write(step).unwrap();
+            step_writer.wait().unwrap();
         }
+        drop(step_writer);
 
-        let mut steps = Steps::open(&path).unwrap();
-        let read_data = iter::from_fn(|| steps.read().unwrap()).collect::<Vec<_>>();
+        let mut step_reader = StepReader::open(&path).unwrap();
+        let mut read_data = Vec::new();
+        while let ReadResult::Step {
+            reader: new_reader,
+            metadata,
+        } = step_reader.read().unwrap()
+        {
+            read_data.push(metadata);
+            step_reader = new_reader;
+        }
         assert_eq!(written_data, read_data);
         println!("{}", tempdir.into_path().display());
+    }
+
+    /// Create and write a steps file, then read it back, and continue adding more steps at the end.
+    #[test]
+    fn test_append() {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("steps.json");
+
+        let written_data = (0..10)
+            .map(|step| StepMetadata {
+                step,
+                input_endpoints: HashMap::new(),
+            })
+            .collect::<Vec<_>>();
+
+        // Create an empty file and close it immediately.
+        // (Thus, this test also checks that we can open and read an empty file.)
+        StepWriter::create(&path).unwrap();
+
+        for new_step in 0..10 {
+            let mut step_reader = StepReader::open(&path).unwrap();
+            let mut read_data = Vec::new();
+
+            // Exactly `new_step` steps should be readable already.
+            println!("read steps 0..{new_step}");
+            for _ in 0..new_step {
+                match step_reader.read().unwrap() {
+                    ReadResult::Step {
+                        reader: new_reader,
+                        metadata,
+                    } => {
+                        step_reader = new_reader;
+                        read_data.push(metadata);
+                    }
+                    ReadResult::Writer(_) => unreachable!(),
+                }
+            }
+            assert_eq!(&written_data[..new_step], read_data);
+
+            println!("write step {new_step}");
+            let mut step_writer = match step_reader.read().unwrap() {
+                ReadResult::Step { .. } => unreachable!(),
+                ReadResult::Writer(writer) => writer,
+            };
+            step_writer.write(&written_data[new_step]).unwrap();
+        }
     }
 
     /// Create and write a steps file and then read it back with seeking.
@@ -369,17 +398,29 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut steps = Steps::create(&path).unwrap();
+        let mut step_writer = StepWriter::create(&path).unwrap();
         for step in written_data.iter() {
-            steps.write(step).unwrap();
+            step_writer.write(step).unwrap();
+            step_writer.wait().unwrap();
         }
+        drop(step_writer);
 
         for start in 0..10 {
-            let mut steps = Steps::open(&path).unwrap();
-            let read_data = iter::once(steps.seek(start).unwrap())
-                .chain(iter::from_fn(|| steps.read().unwrap()))
-                .collect::<Vec<_>>();
-            assert_eq!(written_data, read_data);
+            println!("seek to {start}");
+            let mut step_reader = StepReader::open(&path).unwrap();
+
+            let mut read_data = Vec::new();
+            let (mut step_reader, metadata) = step_reader.seek(start).unwrap();
+            read_data.push(metadata);
+            while let ReadResult::Step {
+                reader: new_reader,
+                metadata,
+            } = step_reader.read().unwrap()
+            {
+                read_data.push(metadata);
+                step_reader = new_reader;
+            }
+            assert_eq!(&written_data[start as usize..], &read_data);
         }
     }
 }
