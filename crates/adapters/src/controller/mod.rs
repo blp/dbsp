@@ -513,6 +513,10 @@ impl Controller {
             }
             None => None,
         };
+        info!(
+            "starting from step {} in checkpoint {}",
+            checkpoint.step, checkpoint.circuit.uuid
+        );
 
         let config = CircuitConfig {
             layout: Layout::new_solo(controller.status.pipeline_config.global.workers as usize),
@@ -2002,7 +2006,11 @@ mod test {
         Controller, PipelineConfig,
     };
     use csv::{ReaderBuilder as CsvReaderBuilder, WriterBuilder as CsvWriterBuilder};
-    use std::fs::{remove_file, File};
+    use std::{
+        fs::{remove_file, File},
+        thread::sleep,
+        time::Duration,
+    };
     use tempfile::{NamedTempFile, TempDir};
 
     use proptest::prelude::*;
@@ -2108,13 +2116,39 @@ outputs:
         }
     }
 
-    #[test]
-    fn test_ft() {
+    #[derive(Clone)]
+    struct FtTestRound {
+        n_records: usize,
+        do_checkpoint: bool,
+    }
+
+    impl FtTestRound {
+        fn with_checkpoint(n_records: usize) -> Self {
+            Self { n_records, do_checkpoint: true }
+        }
+        fn without_checkpoint(n_records: usize) -> Self {
+            Self { n_records, do_checkpoint: false }
+        }
+    }
+
+    /// Runs a basic test of fault tolerance.
+    ///
+    /// The test proceeds in multiple rounds. For each element of `rounds`, the
+    /// test writes `n_records` records to the input file, and starts the
+    /// pipeline and waits for it to process the data.  If `do_checkpoint` is
+    /// true, it creates a new checkpoint. Then it stops the checkpoint, checks
+    /// that the output is as expected, and goes on to the next round.
+    fn test_ft(rounds: &[FtTestRound]) {
         init_test_logger();
         let tempdir = TempDir::new().unwrap();
-        //let tempdir_path = tempdir.path();
-        let tempdir_path = tempdir.into_path();
-        println!("{}", tempdir_path.display());
+
+        // This allows the temporary directory to be deleted when we finish.  If
+        // you want to keep it for inspection instead, comment out the following
+        // line and then remove the comment markers on the two lines after that.
+        let tempdir_path = tempdir.path();
+        //let tempdir_path = tempdir.into_path();
+        //println!("{}", tempdir_path.display());
+
         let storage_dir = tempdir_path.join("storage");
         let input_path = tempdir_path.join("input.csv");
         let input_file = File::create(&input_path).unwrap();
@@ -2152,162 +2186,204 @@ outputs:
         );
 
         let config: PipelineConfig = serde_yaml::from_str(&config_str).unwrap();
-        let controller = Controller::with_config(
-            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
-            &config,
-            Box::new(|e| panic!("error: {e}")),
-        )
-        .unwrap();
 
         let mut writer = CsvWriterBuilder::new()
             .has_headers(false)
             .from_writer(&input_file);
 
-        controller.start();
+        // Number of records written to the input.
+        let mut total_records = 0usize;
 
-        let mut data = (0..2500)
-            .map(TestStruct::for_id)
-            .inspect(|record| writer.serialize(&record).unwrap())
-            .collect::<Vec<_>>();
-        writer.flush().unwrap();
+        // Number of input records included in the latest checkpoint (always <=
+        // total_records).
+        let mut checkpointed_records = 0usize;
 
-        // Wait for the pipeline to output all records.
-        println!("wait for {} records", data.len());
-        wait(
-            || {
-                let n = controller
-                    .status()
-                    .output_status()
-                    .get(&0)
-                    .unwrap()
-                    .transmitted_records() as usize;
-                println!("received {n} records");
-                n >= data.len()
+        for (
+            round,
+            FtTestRound {
+                n_records,
+                do_checkpoint,
             },
-            10_000,
-        )
-        .unwrap();
-        assert_eq!(
-            controller
-                .status()
-                .output_status()
-                .get(&0)
-                .unwrap()
-                .transmitted_records(),
-            data.len() as u64
-        );
+        ) in rounds.into_iter().cloned().enumerate()
+        {
+            println!(
+                "--- round {round}: add {n_records} records, {} --- ",
+                if do_checkpoint {
+                    "and checkpoint"
+                } else {
+                    "no checkpoint"
+                }
+            );
 
-        println!("checkpoint");
-        controller.checkpoint().unwrap();
+            // Write records to the input file.
+            println!(
+                "Writing records {total_records}..{}",
+                total_records + n_records
+            );
+            if n_records > 0 {
+                for id in total_records..total_records + n_records {
+                    writer.serialize(&TestStruct::for_id(id as u32)).unwrap();
+                }
+                writer.flush().unwrap();
+                total_records += n_records;
+            }
 
-        data.extend(
-            (2500..5000)
-                .map(TestStruct::for_id)
-                .inspect(|record| writer.serialize(&record).unwrap()),
-        );
-        writer.flush().unwrap();
+            // Start pipeline.
+            println!("start pipeline");
+            let controller = Controller::with_config(
+                |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
+                &config,
+                Box::new(|e| panic!("error: {e}")),
+            )
+            .unwrap();
+            controller.start();
 
-        // Wait for the pipeline to output all records.
-        println!("wait for {} records", data.len());
-        wait(
-            || {
-                let n = controller
-                    .status()
-                    .output_status()
-                    .get(&0)
-                    .unwrap()
-                    .transmitted_records() as usize;
-                println!("received {n} records");
-                n >= data.len()
-            },
-            10_000,
-        )
-        .unwrap();
-        assert_eq!(
-            controller
-                .status()
-                .output_status()
-                .get(&0)
-                .unwrap()
-                .transmitted_records(),
-            data.len() as u64
-        );
+            // Wait for the records that are not in the checkpoint to be
+            // processed or replayed.
+            let expect_n = total_records - checkpointed_records;
+            println!(
+                "wait for {} records {checkpointed_records}..{total_records}",
+                expect_n
+            );
+            let mut last_n = 0;
+            wait(
+                || {
+                    let n = controller
+                        .status()
+                        .output_status()
+                        .get(&0)
+                        .unwrap()
+                        .transmitted_records() as usize;
+                    if n > last_n {
+                        println!("received {n} records");
+                        last_n = n;
+                    }
+                    n >= expect_n
+                },
+                10_000,
+            )
+            .unwrap();
 
-        println!("stop controller");
-        controller.stop().unwrap();
+            // No more records should arrive, but give the controller some time
+            // to send some more in case there's a bug.
+            sleep(Duration::from_millis(100));
 
-        let mut expected = data.clone();
-        expected.sort();
-
-        let mut actual: Vec<_> = CsvReaderBuilder::new()
-            .has_headers(false)
-            .from_path(&output_path)
-            .unwrap()
-            .deserialize::<(TestStruct, i32)>()
-            .map(|res| {
-                let (val, weight) = res.unwrap();
-                assert_eq!(weight, 1);
-                val
-            })
-            .collect();
-        actual.sort();
-
-        assert_eq!(actual, expected);
-
-        println!("restart controller");
-        let controller = Controller::with_config(
-            |circuit_config| Ok(test_circuit::<TestStruct>(circuit_config, &[])),
-            &config,
-            Box::new(|e| panic!("error: {e}")),
-        )
-        .unwrap();
-        controller.start();
-
-        println!("wait for {} records", data.len() / 2);
-        wait(
-            || {
+            // Then verify that the number is as expected.
+            assert_eq!(
                 controller
                     .status()
                     .output_status()
                     .get(&0)
                     .unwrap()
-                    .transmitted_records()
-                    >= data.len() as u64 / 2
-            },
-            10_000,
-        )
-        .unwrap();
+                    .transmitted_records(),
+                expect_n as u64
+            );
 
-        assert_eq!(
-            controller
-                .status()
-                .output_status()
-                .get(&0)
+            // Checkpoint, if requested.
+            if do_checkpoint {
+                println!("checkpoint");
+                controller.checkpoint().unwrap();
+            }
+
+            // Stop controller.
+            println!("stop controller");
+            controller.stop().unwrap();
+
+            // Read output and compare. Our output adapter, which is not FT,
+            // truncates the output file to length 0 each time. Therefore, the
+            // output file should contain all the records in
+            // `checkpointed_records..total_records`.
+            let mut actual = CsvReaderBuilder::new()
+                .has_headers(false)
+                .from_path(&output_path)
                 .unwrap()
-                .transmitted_records(),
-            data.len() as u64 / 2
-        );
+                .deserialize::<(TestStruct, i32)>()
+                .map(|res| {
+                    let (val, weight) = res.unwrap();
+                    assert_eq!(weight, 1);
+                    val
+                })
+                .collect::<Vec<_>>();
+            actual.sort();
 
-        println!("checkpoint");
-        controller.checkpoint().unwrap();
+            assert_eq!(actual.len(), expect_n);
+            for (record, expect_record) in actual
+                .into_iter()
+                .zip((checkpointed_records..).map(|id| TestStruct::for_id(id as u32)))
+            {
+                assert_eq!(record, expect_record);
+            }
 
-        println!("stop");
-        controller.stop().unwrap();
+            if do_checkpoint {
+                checkpointed_records = total_records;
+            }
+            println!();
+        }
+    }
 
-        let mut actual: Vec<_> = CsvReaderBuilder::new()
-            .has_headers(false)
-            .from_path(&output_path)
-            .unwrap()
-            .deserialize::<(TestStruct, i32)>()
-            .map(|res| {
-                let (val, weight) = res.unwrap();
-                assert_eq!(weight, 1);
-                val
-            })
-            .collect();
-        actual.sort();
+    #[test]
+    fn ft_with_checkpoints() {
+        test_ft(&[
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+        ]);
+    }
 
-        assert_eq!(actual.len(), data.len() / 2);
-        assert_eq!(actual, &data[2500..5000]);
+    #[test]
+    fn ft_without_checkpoints() {
+        test_ft(&[
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+        ]);
+    }
+
+    #[test]
+    fn ft_alternating() {
+        test_ft(&[
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+        ]);
+    }
+
+    #[test]
+    fn ft_initially_zero_without_checkpoint() {
+        test_ft(&[
+            FtTestRound::without_checkpoint(0),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(0),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+        ]);
+    }
+
+    #[test]
+    fn ft_initially_zero_with_checkpoint() {
+        test_ft(&[
+            FtTestRound::with_checkpoint(0),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::without_checkpoint(0),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+            FtTestRound::without_checkpoint(2500),
+            FtTestRound::with_checkpoint(2500),
+        ]);
     }
 }

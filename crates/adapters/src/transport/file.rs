@@ -228,7 +228,9 @@ impl FileInputReader {
                     }
                     InputReaderCommand::Seek(metadata) => {
                         let Metadata { offsets } = serde_json::from_value(metadata)?;
-                        file.seek(SeekFrom::Start(offsets.end))?;
+                        let offset = offsets.end;
+                        file.seek(SeekFrom::Start(offset))?;
+                        splitter.seek(offset);
                     }
                     InputReaderCommand::Replay(metadata) => {
                         let Metadata { offsets } = serde_json::from_value(metadata)?;
