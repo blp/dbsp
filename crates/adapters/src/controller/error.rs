@@ -1,6 +1,6 @@
 use crate::{format::ParseError, DetailedError};
 use anyhow::Error as AnyError;
-use dbsp::Error as DBSPError;
+use dbsp::Error as DbspError;
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use std::{
     backtrace::Backtrace,
@@ -537,7 +537,7 @@ pub enum ControllerError {
     },
 
     /// Error evaluating the DBSP circuit.
-    DbspError { error: DBSPError },
+    DbspError { error: DbspError },
 
     /// Error inside the Prometheus module.
     PrometheusError { error: String },
@@ -958,7 +958,7 @@ impl ControllerError {
         }
     }
 
-    pub fn dbsp_error(error: DBSPError) -> Self {
+    pub fn dbsp_error(error: DbspError) -> Self {
         Self::DbspError { error }
     }
 
@@ -977,8 +977,8 @@ impl From<ConfigError> for ControllerError {
     }
 }
 
-impl From<DBSPError> for ControllerError {
-    fn from(error: DBSPError) -> Self {
+impl From<DbspError> for ControllerError {
+    fn from(error: DbspError) -> Self {
         Self::DbspError { error }
     }
 }
