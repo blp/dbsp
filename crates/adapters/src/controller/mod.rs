@@ -26,11 +26,11 @@ use crossbeam::{
     sync::{Parker, ShardedLock, Unparker},
 };
 use datafusion::prelude::*;
-use dbsp::circuit::checkpointer::CheckpointMetadata;
-use dbsp::circuit::StorageConfig;
-use dbsp::circuit::{CircuitConfig, Layout};
-use dbsp::profile::GraphProfile;
-use dbsp::DBSPHandle;
+use dbsp::{
+    circuit::{checkpointer::CheckpointMetadata, CircuitConfig, Layout, StorageConfig},
+    profile::GraphProfile,
+    DBSPHandle, Error as DbspError,
+};
 use log::{debug, error, info, trace};
 use metadata::Checkpoint;
 use metadata::{ReadResult, StepMetadata, StepReader, StepWriter};
@@ -111,7 +111,7 @@ pub type GraphProfileCallbackFn = Box<dyn FnOnce(Result<GraphProfile, Controller
 /// uses a callback or [Sender] embedded in the command to reply.
 enum Command {
     GraphProfile(GraphProfileCallbackFn),
-    Checkpoint(Sender<Result<CheckpointMetadata, DBSPError>>),
+    Checkpoint(Sender<Result<CheckpointMetadata, DbspError>>),
 }
 
 impl Controller {
@@ -831,7 +831,7 @@ impl Controller {
         self.inner.prometheus_handle.clone()
     }
 
-    pub fn checkpoint(&self) -> Result<CheckpointMetadata, DBSPError>CheckpointMetadata {
+    pub fn checkpoint(&self) -> Result<CheckpointMetadata> {
         self.inner.checkpoint()
     }
 }
