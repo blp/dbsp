@@ -61,6 +61,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{oneshot::Sender as OneshotSender, Mutex as TokioMutex};
+use uuid::Uuid;
 
 mod error;
 mod metadata;
@@ -102,6 +103,15 @@ pub struct Controller {
 
 /// Type of the callback argumen to [`Controller::start_graph_profile`].
 pub type GraphProfileCallbackFn = Box<dyn FnOnce(Result<GraphProfile, ControllerError>) + Send>;
+
+/// A command that [Controller] can send to [Controller::circuit_thread].
+///
+/// There is no type for a command reply.  Instead, the command implementation
+/// uses a callback or [Sender] embedded in the command to reply.
+enum Command {
+    GraphProfile(GraphProfileCallbackFn),
+    Checkpoint(Sender<Uuid>),
+}
 
 impl Controller {
     /// Create a new I/O controller for a circuit.
@@ -146,13 +156,8 @@ impl Controller {
         let circuit_thread_parker = Parker::new();
         let circuit_thread_unparker = circuit_thread_parker.unparker().clone();
 
-        let (profile_request_sender, profile_request_receiver) = channel();
-        let inner = ControllerInner::new(
-            config,
-            circuit_thread_unparker,
-            error_cb,
-            profile_request_sender,
-        );
+        let (command_sender, command_receiver) = channel();
+        let inner = ControllerInner::new(config, circuit_thread_unparker, error_cb, command_sender);
 
         let (circuit_thread_handle, inner) = {
             // A channel to communicate circuit initialization status.
@@ -169,7 +174,7 @@ impl Controller {
                     inner,
                     circuit_thread_parker,
                     init_status_sender,
-                    profile_request_receiver,
+                    command_receiver,
                 )
             });
             // If `recv` fails, it indicates that the circuit thread panicked
@@ -449,7 +454,7 @@ impl Controller {
         mut controller: ControllerInner,
         parker: Parker,
         init_status_sender: SyncSender<Result<Arc<ControllerInner>, ControllerError>>,
-        profile_request_receiver: Receiver<GraphProfileCallbackFn>,
+        command_receiver: Receiver<Command>,
     ) -> Result<(), ControllerError>
     where
         F: FnOnce(CircuitConfig) -> Result<(DBSPHandle, Box<dyn CircuitCatalog>), ControllerError>,
@@ -601,8 +606,13 @@ impl Controller {
         let mut last_state = PipelineState::Paused;
 
         loop {
-            for reply_cb in profile_request_receiver.try_iter() {
-                reply_cb(circuit.graph_profile().map_err(ControllerError::dbsp_error));
+            for command in command_receiver.try_iter() {
+                match command {
+                    Command::GraphProfile(reply_callback) => {
+                        reply_callback(circuit.graph_profile().map_err(ControllerError::dbsp_error))
+                    }
+                    Command::Checkpoint(_) => todo!(),
+                }
             }
             let new_state = controller.state();
             match new_state {
@@ -802,8 +812,13 @@ impl Controller {
                 }
                 PipelineState::Terminated => {
                     circuit.kill().map_err(|_| ControllerError::dbsp_panic())?;
-                    for reply_cb in profile_request_receiver.try_iter() {
-                        reply_cb(Err(ControllerError::ControllerExit));
+                    for command in command_receiver.try_iter() {
+                        match command {
+                            Command::GraphProfile(callback) => {
+                                callback(Err(ControllerError::ControllerExit))
+                            }
+                            Command::Checkpoint(_) => (),
+                        }
                     }
                     return Ok(());
                 }
@@ -813,6 +828,10 @@ impl Controller {
 
     pub(crate) fn metrics(&self) -> PrometheusHandle {
         self.inner.prometheus_handle.clone()
+    }
+
+    pub fn checkpoint(&self) {
+        self.inner.checkpoint()
     }
 }
 
@@ -1033,7 +1052,7 @@ pub type ConsistentSnapshots =
 pub struct ControllerInner {
     pub status: Arc<ControllerStatus>,
     num_api_connections: AtomicU64,
-    profile_request: Sender<GraphProfileCallbackFn>,
+    command_sender: Sender<Command>,
     catalog: Arc<Box<dyn CircuitCatalog>>,
     // Always lock this after the catalog is locked to avoid deadlocks
     trace_snapshot: ConsistentSnapshots,
@@ -1053,7 +1072,7 @@ impl ControllerInner {
         config: &PipelineConfig,
         circuit_thread_unparker: Unparker,
         error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
-        profile_request: Sender<GraphProfileCallbackFn>,
+        command_sender: Sender<Command>,
     ) -> Self {
         let pipeline_name = config
             .name
@@ -1066,7 +1085,7 @@ impl ControllerInner {
         Self {
             status,
             num_api_connections: AtomicU64::new(0),
-            profile_request,
+            command_sender,
             catalog: Arc::new(Box::new(Catalog::new())),
             trace_snapshot: Arc::new(TokioMutex::new(BTreeMap::new())),
             inputs: Mutex::new(BTreeMap::new()),
@@ -1619,7 +1638,7 @@ impl ControllerInner {
     }
 
     fn graph_profile(&self, cb: GraphProfileCallbackFn) {
-        self.profile_request.send(cb).unwrap();
+        self.command_sender.send(Command::GraphProfile(cb)).unwrap();
         self.unpark_circuit();
     }
 
@@ -1751,6 +1770,8 @@ impl ControllerInner {
             Ok((false, reader, writer))
         }
     }
+
+    fn checkpoint(&self) {}
 }
 
 /// An [InputConsumer] for an input adapter to use.
