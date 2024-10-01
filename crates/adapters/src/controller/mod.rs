@@ -62,7 +62,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{oneshot::Sender as OneshotSender, Mutex as TokioMutex};
-use uuid::Uuid;
 
 mod error;
 mod metadata;
@@ -831,7 +830,7 @@ impl Controller {
         self.inner.prometheus_handle.clone()
     }
 
-    pub fn checkpoint(&self) -> Result<CheckpointMetadata> {
+    pub fn checkpoint(&self) -> Result<CheckpointMetadata, DbspError> {
         self.inner.checkpoint()
     }
 }
@@ -1772,7 +1771,7 @@ impl ControllerInner {
         }
     }
 
-    fn checkpoint(&self) -> Result<CheckpointMetadata, DBSPError> {
+    fn checkpoint(&self) -> Result<CheckpointMetadata, DbspError> {
         let (sender, receiver) = channel();
         self.command_sender
             .send(Command::Checkpoint(sender))

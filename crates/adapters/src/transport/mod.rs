@@ -1,6 +1,7 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 #![allow(unreachable_code)]
+#![allow(dead_code)]
 //! Data transports.
 //!
 //! Data transport adapters implement support for a specific streaming
