@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 use crate::operator::NeighborhoodDescrBox;
 use crate::trace::Serializer;
 use rkyv::{Archive, Deserialize, Serialize};
+use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
 use uuid::Uuid;
 
 /// Holds meta-data about a checkpoint that was taken for persistent storage
 /// and recovery of a circuit's state.
-#[derive(Debug, Clone, Serialize, Deserialize, Archive)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Archive, SerdeSerialize, SerdeDeserialize)]
 pub struct CheckpointMetadata {
     /// A unique identifier for the given checkpoint.
     ///

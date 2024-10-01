@@ -13,6 +13,7 @@ use crate::create_integrated_output_endpoint;
 use crate::transport::InputReader;
 use crate::transport::Step;
 use crate::transport::{input_transport_config_to_endpoint, output_transport_config_to_endpoint};
+use crate::util::write_file_atomically;
 use crate::InputBuffer;
 use crate::{
     catalog::SerBatch, Catalog, CircuitCatalog, Encoder, InputConsumer, InputFormat,
@@ -27,9 +28,9 @@ use crossbeam::{
 };
 use datafusion::prelude::*;
 use dbsp::{
-    circuit::{checkpointer::CheckpointMetadata, CircuitConfig, Layout, StorageConfig},
+    circuit::{CircuitConfig, Layout, StorageConfig},
     profile::GraphProfile,
-    DBSPHandle, Error as DbspError,
+    DBSPHandle,
 };
 use log::{debug, error, info, trace};
 use metadata::Checkpoint;
@@ -110,7 +111,7 @@ pub type GraphProfileCallbackFn = Box<dyn FnOnce(Result<GraphProfile, Controller
 /// uses a callback or [Sender] embedded in the command to reply.
 enum Command {
     GraphProfile(GraphProfileCallbackFn),
-    Checkpoint(Sender<Result<CheckpointMetadata, DbspError>>),
+    Checkpoint(Sender<Result<Checkpoint, ControllerError>>),
 }
 
 impl Controller {
@@ -483,29 +484,34 @@ impl Controller {
             .storage_config
             .as_ref()
             .map(|storage| &storage.path);
-        if let Some(path) = storage_path {
-            fn startup_io_error(error: IoError) -> ControllerError {
-                ControllerError::io_error(String::from("controller startup"), error)
-            }
-            fs::create_dir_all(path).map_err(startup_io_error)?;
-            let state_path = path.join("state.json");
-            if fs::exists(&state_path).map_err(startup_io_error)? {
-                info!("{}: reading checkpoint metadata", state_path.display());
-                checkpoint =
-                    serde_json::from_slice(&fs::read(&state_path).map_err(startup_io_error)?)
-                        .map_err(|e| ControllerError::CheckpointParseError {
+        let state_path = match storage_path {
+            Some(path) => {
+                fn startup_io_error(error: IoError) -> ControllerError {
+                    ControllerError::io_error(String::from("controller startup"), error)
+                }
+                fs::create_dir_all(path).map_err(startup_io_error)?;
+                let state_path = path.join("state.json");
+                if fs::exists(&state_path).map_err(startup_io_error)? {
+                    info!("{}: reading checkpoint metadata", state_path.display());
+                    checkpoint =
+                        serde_json::from_slice(&fs::read(&state_path).map_err(startup_io_error)?)
+                            .map_err(|e| ControllerError::CheckpointParseError {
                             error: e.to_string(),
                         })?;
-            }
+                }
 
-            let steps_path = path.join("steps.json");
-            if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
-                info!("{}: opening to read input steps", steps_path.display());
-                step_reader = Some(StepReader::open(&steps_path)?);
-            } else {
-                info!("{}: opening to write input steps", steps_path.display());
-                step_writer = Some(StepWriter::create(&steps_path)?);
-            };
+                let steps_path = path.join("steps.json");
+                if fs::exists(&steps_path).map_err(startup_io_error)? || checkpoint.step > 0 {
+                    info!("{}: opening to read input steps", steps_path.display());
+                    step_reader = Some(StepReader::open(&steps_path)?);
+                } else {
+                    info!("{}: opening to write input steps", steps_path.display());
+                    step_writer = Some(StepWriter::create(&steps_path)?);
+                };
+
+                Some(state_path)
+            }
+            None => None,
         };
 
         let config = CircuitConfig {
@@ -535,7 +541,7 @@ impl Controller {
                     )
                 })?,
             min_storage_bytes,
-            init_checkpoint: checkpoint.circuit_uuid,
+            init_checkpoint: checkpoint.circuit.uuid,
         };
         let (mut circuit, catalog) = match circuit_factory(config) {
             Ok(retval) => retval,
@@ -611,7 +617,36 @@ impl Controller {
                     Command::GraphProfile(reply_callback) => {
                         reply_callback(circuit.graph_profile().map_err(ControllerError::dbsp_error))
                     }
-                    Command::Checkpoint(reply_sender) => drop(reply_sender.send(circuit.commit())),
+                    Command::Checkpoint(reply_sender) => {
+                        let result = if let Some(state_path) = state_path.as_ref() {
+                            circuit
+                                .commit()
+                                .map_err(|error| ControllerError::from(error))
+                                .and_then(|cp| {
+                                    let checkpoint = Checkpoint { circuit: cp, step };
+                                    match write_file_atomically(
+                                        state_path,
+                                        &serde_json::to_vec(&checkpoint).unwrap(),
+                                    ) {
+                                        Ok(()) => Ok(checkpoint),
+                                        Err(error) => Err(ControllerError::io_error(
+                                            format!(
+                                                "{}: failed to write checkpoint state",
+                                                state_path.display()
+                                            ),
+                                            error,
+                                        )),
+                                    }
+                                })
+                        } else {
+                            Err(ControllerError::NotSupported {
+                                error: String::from(
+                                    "cannot checkpoint circuit because storage is not configured",
+                                ),
+                            })
+                        };
+                        let _ = reply_sender.send(result);
+                    }
                 }
             }
             let new_state = controller.state();
@@ -774,12 +809,25 @@ impl Controller {
                         }
 
                         step += 1;
+                        println!(
+                            "{} records processed",
+                            controller
+                                .status
+                                .global_metrics
+                                .num_total_processed_records()
+                        );
                         if replaying {
                             (replaying, step_reader, step_writer) = controller.replay_step(
                                 step_reader.take(),
                                 step_writer.take(),
                                 step,
                             )?;
+                            if !replaying && new_state == PipelineState::Running {
+                                info!("starting pipeline");
+                                for endpoint in controller.inputs.lock().unwrap().values() {
+                                    endpoint.reader.extend();
+                                }
+                            }
                         }
                     } else if buffered_records > 0 {
                         // We have some buffered data, but less than `min_batch_size_records` --
@@ -830,8 +878,8 @@ impl Controller {
         self.inner.prometheus_handle.clone()
     }
 
-    pub fn checkpoint(&self) -> Result<CheckpointMetadata, DbspError> {
-        self.inner.checkpoint()
+    pub fn checkpoint(&self) -> Result<Checkpoint, ControllerError> {
+        self.inner.checkpoint().map_err(|error| error.into())
     }
 }
 
@@ -1756,6 +1804,7 @@ impl ControllerInner {
                     if metadata.step != step {
                         todo!()
                     }
+                    info!("replaying input step {step}");
                     for (endpoint_name, metadata) in metadata.input_endpoints {
                         let endpoint_id = self.input_endpoint_id_by_name(&endpoint_name)?;
                         self.inputs.lock().unwrap()[&endpoint_id]
@@ -1764,19 +1813,25 @@ impl ControllerInner {
                     }
                     Ok((true, Some(reader), None))
                 }
-                ReadResult::Writer(writer) => Ok((false, None, Some(writer))),
+                ReadResult::Writer(writer) => {
+                    info!("finished replaying all input steps");
+                    Ok((false, None, Some(writer)))
+                }
             }
         } else {
             Ok((false, reader, writer))
         }
     }
 
-    fn checkpoint(&self) -> Result<CheckpointMetadata, DbspError> {
+    fn checkpoint(&self) -> Result<Checkpoint, ControllerError> {
         let (sender, receiver) = channel();
         self.command_sender
             .send(Command::Checkpoint(sender))
-            .unwrap();
-        receiver.recv().unwrap()
+            .map_err(|_| ControllerError::ControllerExit)?;
+        self.unpark_circuit();
+        receiver
+            .recv()
+            .map_err(|_| ControllerError::ControllerExit)?
     }
 }
 
@@ -1940,7 +1995,10 @@ impl OutputConsumer for OutputProbe {
 #[cfg(test)]
 mod test {
     use crate::{
-        test::{generate_test_batch, test_circuit, wait, TestStruct, DEFAULT_TIMEOUT_MS},
+        test::{
+            generate_test_batch, init_test_logger, test_circuit, wait, TestStruct,
+            DEFAULT_TIMEOUT_MS,
+        },
         Controller, PipelineConfig,
     };
     use csv::{ReaderBuilder as CsvReaderBuilder, WriterBuilder as CsvWriterBuilder};
@@ -2052,11 +2110,15 @@ outputs:
 
     #[test]
     fn test_ft() {
+        init_test_logger();
         let tempdir = TempDir::new().unwrap();
-        let storage_dir = tempdir.path().join("storage");
-        let input_path = tempdir.path().join("input.csv");
+        //let tempdir_path = tempdir.path();
+        let tempdir_path = tempdir.into_path();
+        println!("{}", tempdir_path.display());
+        let storage_dir = tempdir_path.join("storage");
+        let input_path = tempdir_path.join("input.csv");
         let input_file = File::create(&input_path).unwrap();
-        let output_path = tempdir.path().join("output.csv");
+        let output_path = tempdir_path.join("output.csv");
 
         let config_str = format!(
             r#"
@@ -2064,8 +2126,8 @@ name: test
 workers: 4
 storage_config:
     path: {storage_dir:?}
-global:
-    storage: true
+storage: true
+clock_resolution_usecs: null
 inputs:
     test_input1:
         stream: test_input1
@@ -2101,36 +2163,30 @@ outputs:
             .has_headers(false)
             .from_writer(&input_file);
 
-        let data = (0..5000)
-            .map(|id| TestStruct {
-                id,
-                b: false,
-                i: None,
-                s: "".into(),
-            })
-            .collect::<Vec<_>>();
-        for val in data.iter().cloned() {
-            writer.serialize(val).unwrap();
-        }
-        writer.flush().unwrap();
         controller.start();
+
+        let mut data = (0..2500)
+            .map(TestStruct::for_id)
+            .inspect(|record| writer.serialize(&record).unwrap())
+            .collect::<Vec<_>>();
+        writer.flush().unwrap();
 
         // Wait for the pipeline to output all records.
         println!("wait for {} records", data.len());
         wait(
             || {
-                controller
+                let n = controller
                     .status()
                     .output_status()
                     .get(&0)
                     .unwrap()
-                    .transmitted_records()
-                    >= data.len() as u64
+                    .transmitted_records() as usize;
+                println!("received {n} records");
+                n >= data.len()
             },
             10_000,
         )
         .unwrap();
-
         assert_eq!(
             controller
                 .status()
@@ -2141,6 +2197,43 @@ outputs:
             data.len() as u64
         );
 
+        println!("checkpoint");
+        controller.checkpoint().unwrap();
+
+        data.extend(
+            (2500..5000)
+                .map(TestStruct::for_id)
+                .inspect(|record| writer.serialize(&record).unwrap()),
+        );
+        writer.flush().unwrap();
+
+        // Wait for the pipeline to output all records.
+        println!("wait for {} records", data.len());
+        wait(
+            || {
+                let n = controller
+                    .status()
+                    .output_status()
+                    .get(&0)
+                    .unwrap()
+                    .transmitted_records() as usize;
+                println!("received {n} records");
+                n >= data.len()
+            },
+            10_000,
+        )
+        .unwrap();
+        assert_eq!(
+            controller
+                .status()
+                .output_status()
+                .get(&0)
+                .unwrap()
+                .transmitted_records(),
+            data.len() as u64
+        );
+
+        println!("stop controller");
         controller.stop().unwrap();
 
         let mut expected = data.clone();
@@ -2168,14 +2261,9 @@ outputs:
             Box::new(|e| panic!("error: {e}")),
         )
         .unwrap();
+        controller.start();
 
-        /*
-                for val in data.iter().cloned() {
-                    writer.serialize(val).unwrap();
-                }
-                writer.flush().unwrap();
-        */
-        println!("wait for {} records", data.len() * 2);
+        println!("wait for {} records", data.len() / 2);
         wait(
             || {
                 controller
@@ -2184,7 +2272,7 @@ outputs:
                     .get(&0)
                     .unwrap()
                     .transmitted_records()
-                    >= data.len() as u64 * 2
+                    >= data.len() as u64 / 2
             },
             10_000,
         )
@@ -2197,14 +2285,14 @@ outputs:
                 .get(&0)
                 .unwrap()
                 .transmitted_records(),
-            data.len() as u64 * 2
+            data.len() as u64 / 2
         );
 
-        controller.stop().unwrap();
+        println!("checkpoint");
+        controller.checkpoint().unwrap();
 
-        let mut expected = data.clone();
-        expected.extend(data.iter().cloned());
-        expected.sort();
+        println!("stop");
+        controller.stop().unwrap();
 
         let mut actual: Vec<_> = CsvReaderBuilder::new()
             .has_headers(false)
@@ -2219,7 +2307,7 @@ outputs:
             .collect();
         actual.sort();
 
-        assert_eq!(actual, expected);
-        println!("{}", tempdir.into_path().display());
+        assert_eq!(actual.len(), data.len() / 2);
+        assert_eq!(actual, &data[2500..5000]);
     }
 }

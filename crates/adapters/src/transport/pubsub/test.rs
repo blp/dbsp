@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, io, net::TcpStream, thread::sleep, time::Duration};
 
 use crate::test::{
-    init_test_logger, mock_input_pipeline, wait_for_output_ordered, wait_for_output_unordered,
+    init_test_logger, mock_input_pipeline,
     TestStruct,
 };
 use csv::WriterBuilder;

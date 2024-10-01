@@ -1,3 +1,4 @@
+use dbsp::circuit::checkpointer::CheckpointMetadata;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use serde_json::{Error as JsonError, Value as JsonValue};
 use std::{
@@ -11,7 +12,6 @@ use std::{
     sync::mpsc::{channel, Receiver, Sender},
     thread::{self, JoinHandle},
 };
-use uuid::Uuid;
 
 use crate::{transport::Step, ControllerError};
 
@@ -99,7 +99,8 @@ impl From<StepError> for ControllerError {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct Checkpoint {
-    pub circuit_uuid: Uuid,
+    #[serde(flatten)]
+    pub circuit: CheckpointMetadata,
     pub step: Step,
 }
 

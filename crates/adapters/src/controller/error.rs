@@ -557,7 +557,7 @@ pub enum ControllerError {
     /// Panic inside the DBSP controller.
     ControllerPanic,
 
-    /// Controller terminated before profile ran.
+    /// Controller terminated before command could be executed.
     ControllerExit,
 }
 
@@ -744,7 +744,7 @@ impl Display for ControllerError {
                 write!(f, "Panic inside the DBSP controller")
             }
             ControllerError::ControllerExit => {
-                write!(f, "Controller exited without running profile")
+                write!(f, "Controller exited before command could be executed")
             }
         }
     }
