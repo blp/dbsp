@@ -187,7 +187,6 @@ impl FileInputReader {
         let mut splitter = FileSplitter::new(parser.splitter(), buffer_size);
 
         let mut queue = VecDeque::<(Range<u64>, Box<dyn InputBuffer>)>::new();
-        let mut n_queued = 0;
         let mut extending = false;
         let mut eof = false;
         loop {
@@ -214,7 +213,6 @@ impl FileInputReader {
                                 break;
                             }
                         }
-                        n_queued -= total;
                         consumer.extended(
                             total,
                             serde_json::to_value(Metadata {
@@ -275,7 +273,6 @@ impl FileInputReader {
                 consumer.buffered(buffer.len(), chunk.len());
                 consumer.parse_errors(errors);
 
-                n_queued += buffer.len();
                 if let Some(buffer) = buffer {
                     let end = splitter.position();
                     queue.push_back((start..end, buffer));

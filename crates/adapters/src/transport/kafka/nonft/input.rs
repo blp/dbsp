@@ -1,5 +1,4 @@
 use crate::transport::{InputEndpoint, InputReaderCommand, InputStep};
-use crate::Parser;
 use crate::{
     transport::{
         kafka::{rdkafka_loglevel_from, refine_kafka_error, DeferredLogging},
@@ -8,6 +7,7 @@ use crate::{
     },
     InputConsumer, PipelineState, TransportInputEndpoint,
 };
+use crate::{InputBuffer, ParseError, Parser};
 use anyhow::{anyhow, bail, Error as AnyError, Result as AnyResult};
 use atomic::Atomic;
 use crossbeam::queue::ArrayQueue;
@@ -21,6 +21,8 @@ use rdkafka::{
     error::{KafkaError, KafkaResult},
     ClientConfig, ClientContext, Message,
 };
+use serde_json::Value;
+use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, available_parallelism, JoinHandle, Thread};
@@ -52,7 +54,7 @@ impl KafkaInputEndpoint {
 }
 
 struct KafkaInputReader {
-    inner: Arc<KafkaInputReaderInner>,
+    _inner: Arc<KafkaInputReaderInner>,
     command_sender: Sender<InputReaderCommand>,
     poller_thread: Thread,
 }
@@ -116,7 +118,6 @@ impl ConsumerContext for KafkaInputContext {
     }
 }
 
-/*
 /// A thread-safe queue for collecting and flushing input buffers.
 ///
 /// Commonly used by `InputReader` implementations for staging buffers from
@@ -142,24 +143,23 @@ impl InputQueue {
     /// [InputConsumer::queued].
     pub fn push(
         &self,
-        buffer: Option<Box<dyn InputBuffer>>,
+        (buffer, errors): (Option<Box<dyn InputBuffer>>, Vec<ParseError>),
         num_bytes: usize,
-        errors: Vec<ParseError>,
     ) {
+        self.consumer.parse_errors(errors);
         match buffer {
             Some(buffer) if !buffer.is_empty() => {
                 let num_records = buffer.len();
-                let mut guard = self.queue.lock().unwrap();
-                guard.push_back(buffer);
-                self.consumer.queued(num_bytes, num_records, errors);
+                self.queue.lock().unwrap().push_back(buffer);
+                self.consumer.buffered(num_bytes, num_records);
             }
-            _ => self.consumer.queued(num_bytes, 0, errors),
+            _ => self.consumer.buffered(num_bytes, 0),
         }
     }
 
-    /// Implements [InputBuffer::flush] for `InputQueue`-based endpoints.
-    pub fn flush(&self, n: usize) -> usize {
+    pub fn queue(&self) {
         let mut total = 0;
+        let n = self.consumer.max_batch_size();
         while total < n {
             let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
                 break;
@@ -170,19 +170,14 @@ impl InputQueue {
                 break;
             }
         }
-        total
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.consumer.extended(total, Value::Null);
     }
 }
-*/
+
 struct KafkaInputReaderInner {
     config: Arc<KafkaInputConfig>,
     kafka_consumer: BaseConsumer<KafkaInputContext>,
     errors: ArrayQueue<(KafkaError, String)>,
-    receiver: Box<dyn InputConsumer>,
 }
 
 impl KafkaInputReaderInner {
@@ -194,6 +189,7 @@ impl KafkaInputReaderInner {
         consumer: &Box<dyn InputConsumer>,
         parser: &mut Box<dyn Parser>,
         feedback: &Sender<HelperFeedback>,
+        queue: &InputQueue,
     ) {
         match self.kafka_consumer.poll(POLL_TIMEOUT) {
             None => (),
@@ -209,11 +205,8 @@ impl KafkaInputReaderInner {
                 }
             }
             Some(Ok(message)) => {
-                // println!("received {} bytes", message.payload().unwrap().len());
-                // message.payload().map(|payload| consumer.input(payload));
-
                 if let Some(payload) = message.payload() {
-                    //consumer.queue(payload.len(), parser.parse(payload));
+                    queue.push(parser.parse(payload), payload.len());
                 }
             }
         }
@@ -267,7 +260,7 @@ impl KafkaInputReader {
     fn new(
         config: &Arc<KafkaInputConfig>,
         consumer: Box<dyn InputConsumer>,
-        parser: Box<dyn Parser>,
+        mut parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         // Create Kafka consumer configuration.
         debug!("Starting Kafka input endpoint: {:?}", config);
@@ -300,7 +293,6 @@ impl KafkaInputReader {
             config: config.clone(),
             kafka_consumer: BaseConsumer::from_config_and_context(&client_config, context)?,
             errors: ArrayQueue::new(ERROR_BUFFER_SIZE),
-            receiver: consumer.clone(),
         });
 
         *inner.kafka_consumer.context().endpoint.lock().unwrap() = Arc::downgrade(&inner);
@@ -312,6 +304,7 @@ impl KafkaInputReader {
 
         let start = Instant::now();
 
+        let queue = InputQueue::new(consumer.clone());
         // Wait for the consumer to join the group by waiting for the group
         // rebalance protocol to be set.
         loop {
@@ -335,7 +328,7 @@ impl KafkaInputReader {
                     // Hopefully, this guarantees that we won't see any messages from it, but if
                     // that's not the case, there shouldn't be any harm in sending them downstream.
                     if let Some(payload) = message.payload() {
-                        //inner.receive.queue(payload.len(), parser.parse(payload));
+                        queue.push(parser.parse(payload), payload.len());
                     }
                 }
                 _ => (),
@@ -369,9 +362,13 @@ impl KafkaInputReader {
         let poller_handle = spawn({
             let endpoint = inner.clone();
             move || {
-                if let Err(e) =
-                    KafkaInputReader::poller_thread(&endpoint, &consumer, parser, command_receiver)
-                {
+                if let Err(e) = KafkaInputReader::poller_thread(
+                    &endpoint,
+                    &consumer,
+                    parser,
+                    command_receiver,
+                    queue,
+                ) {
                     let (_fatal, e) = endpoint.refine_error(e);
                     consumer.error(true, e);
                 }
@@ -379,7 +376,7 @@ impl KafkaInputReader {
         });
         let poller_thread = poller_handle.thread().clone();
         Ok(KafkaInputReader {
-            inner,
+            _inner: inner,
             command_sender,
             poller_thread,
         })
@@ -392,6 +389,7 @@ impl KafkaInputReader {
         consumer: &Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
         command_receiver: Receiver<InputReaderCommand>,
+        queue: InputQueue,
     ) -> Result<(), KafkaError> {
         // Figure out the number of threads based on configuration, defaults,
         // and system resources.
@@ -406,6 +404,7 @@ impl KafkaInputReader {
         let (feedback_sender, feedback_receiver) = channel();
         let helper_state = Arc::new(Atomic::new(PipelineState::Paused));
         let mut threads: Vec<HelperThread> = Vec::with_capacity(n_threads - 1);
+        let queue = Arc::new(queue);
 
         // Create the rest of threads (start from 1 instead of 0
         // because we're one of the threads).
@@ -416,6 +415,7 @@ impl KafkaInputReader {
                 parser.fork(),
                 Arc::clone(&helper_state),
                 feedback_sender.clone(),
+                queue.clone(),
             ));
         }
 
@@ -426,16 +426,20 @@ impl KafkaInputReader {
         loop {
             for command in command_receiver.try_iter() {
                 match command {
-                    InputReaderCommand::Seek(_) | InputReaderCommand::Replay(_) => unreachable!(),
+                    InputReaderCommand::Seek(_) | InputReaderCommand::Replay(_) => {
+                        unreachable!("Not a fault-tolerant connector.");
+                    }
                     InputReaderCommand::Extend => {
+                        println!("start");
                         running = true;
                     }
                     InputReaderCommand::Pause => {
+                        println!("pause");
                         running = false;
                         when_paused = Instant::now();
                         helper_state.store(PipelineState::Paused, Ordering::Release);
                     }
-                    InputReaderCommand::Queue => todo!(),
+                    InputReaderCommand::Queue => queue.queue(),
                     InputReaderCommand::Disconnect => return Ok(()),
                 }
             }
@@ -455,7 +459,7 @@ impl KafkaInputReader {
             // Keep polling even while the consumer is paused as `BaseConsumer`
             // processes control messages (including rebalancing and errors)
             // within the polling thread.
-            endpoint.poll(consumer, &mut parser, &feedback_sender);
+            endpoint.poll(consumer, &mut parser, &feedback_sender, &queue);
 
             for feedback in feedback_receiver.try_iter() {
                 match feedback {
@@ -510,6 +514,7 @@ impl HelperThread {
         mut parser: Box<dyn Parser>,
         state: Arc<Atomic<PipelineState>>,
         feedback_sender: Sender<HelperFeedback>,
+        queue: Arc<InputQueue>,
     ) -> Self {
         Self {
             state: state.clone(),
@@ -518,7 +523,7 @@ impl HelperThread {
                     match state.load(Ordering::Acquire) {
                         PipelineState::Paused => thread::park(),
                         PipelineState::Running => {
-                            endpoint.poll(&mut consumer, &mut parser, &feedback_sender)
+                            endpoint.poll(&mut consumer, &mut parser, &feedback_sender, &queue)
                         }
                         PipelineState::Terminated => break,
                     }
@@ -544,7 +549,8 @@ impl Drop for HelperThread {
     /// `POLL_TIMEOUT` per thread whereas since it is shared we will only block
     /// that long once.
     fn drop(&mut self) {
-        self.state.store(PipelineState::Terminated, Ordering::Release);
+        self.state
+            .store(PipelineState::Terminated, Ordering::Release);
 
         let _ = self.join_handle.take().map(|handle| {
             handle.thread().unpark();
