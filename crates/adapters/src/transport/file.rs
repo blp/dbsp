@@ -5,7 +5,6 @@ use super::{
 use crate::format::Splitter;
 use crate::{InputBuffer, Parser};
 use anyhow::{bail, Error as AnyError, Result as AnyResult};
-use crossbeam::sync::{Parker, Unparker};
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::file::{FileInputConfig, FileOutputConfig};
 use serde::{Deserialize, Serialize};
@@ -13,6 +12,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread::{self, Thread};
 use std::{
     fs::File,
     io::{Error as IoError, Write},
@@ -142,7 +142,7 @@ impl FileSplitter {
 
 struct FileInputReader {
     sender: Sender<InputReaderCommand>,
-    unparker: Unparker,
+    thread: Thread,
 }
 
 impl FileInputReader {
@@ -155,10 +155,8 @@ impl FileInputReader {
             AnyError::msg(format!("Failed to open input file '{}': {e}", config.path))
         })?;
 
-        let parker = Parker::new();
-        let unparker = parker.unparker().clone();
         let (sender, receiver) = channel();
-        spawn({
+        let join_handle = spawn({
             let follow = config.follow;
             let buffer_size = config.buffer_size_bytes;
             move || {
@@ -167,7 +165,6 @@ impl FileInputReader {
                     buffer_size,
                     &consumer,
                     parser,
-                    parker,
                     receiver,
                     follow,
                 ) {
@@ -176,7 +173,7 @@ impl FileInputReader {
             }
         });
 
-        Ok(Self { sender, unparker })
+        Ok(Self { sender, thread: join_handle.thread().clone() })
     }
 
     fn worker_thread(
@@ -184,7 +181,6 @@ impl FileInputReader {
         buffer_size: Option<usize>,
         consumer: &Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
-        parker: Parker,
         receiver: Receiver<InputReaderCommand>,
         follow: bool,
     ) -> AnyResult<()> {
@@ -258,14 +254,14 @@ impl FileInputReader {
             }
 
             if !extending || eof || n_queued >= consumer.max_queued_records() {
-                parker.park();
+                thread::park();
                 continue;
             }
 
             let n = splitter.read(&mut file, usize::MAX)?;
             if n == 0 {
                 if follow {
-                    parker.park_timeout(SLEEP);
+                    thread::park_timeout(SLEEP);
                     continue;
                 }
                 eof = true;
@@ -295,7 +291,7 @@ impl FileInputReader {
 impl InputReader for FileInputReader {
     fn request(&self, command: super::InputReaderCommand) {
         let _ = self.sender.send(command);
-        self.unparker.unpark();
+        self.thread.unpark();
     }
 }
 
