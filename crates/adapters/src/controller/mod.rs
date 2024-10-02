@@ -7,6 +7,15 @@
 //! there is some input data available for the circuit.  It can be configured
 //! to improve batching by slightly delaying the `step()` call if the number of
 //! available input records is below some used-defined threshold.
+//!
+//! The backpressure thread controls the flow of data through transport
+//! endpoints, pausing the endpoints either when the amount of data buffered by
+//! the endpoint exceeds a user-defined threshold or in response to an explicit
+//! user request.
+//!
+//! Both tasks require monitoring the state of the input buffers.  To this end,
+//! the controller expects transports to report the number of bytes and records
+//! buffered via `InputConsumer::queued`.
 
 use crate::catalog::OutputCollectionHandles;
 use crate::create_integrated_output_endpoint;
@@ -45,6 +54,7 @@ use serde_json::Value as JsonValue;
 use stats::StepResults;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::sync_channel;
@@ -157,8 +167,17 @@ impl Controller {
         let circuit_thread_parker = Parker::new();
         let circuit_thread_unparker = circuit_thread_parker.unparker().clone();
 
+        let backpressure_thread_parker = Parker::new();
+        let backpressure_thread_unparker = backpressure_thread_parker.unparker().clone();
+
         let (command_sender, command_receiver) = channel();
-        let inner = ControllerInner::new(config, circuit_thread_unparker, error_cb, command_sender);
+        let inner = ControllerInner::new(
+            config,
+            circuit_thread_unparker,
+            backpressure_thread_unparker,
+            error_cb,
+            command_sender,
+        );
 
         let (circuit_thread_handle, inner) = {
             // A channel to communicate circuit initialization status.
@@ -174,6 +193,7 @@ impl Controller {
                     circuit_factory,
                     inner,
                     circuit_thread_parker,
+                    backpressure_thread_parker,
                     init_status_sender,
                     command_receiver,
                 )
@@ -454,6 +474,7 @@ impl Controller {
         circuit_factory: F,
         mut controller: ControllerInner,
         parker: Parker,
+        backpressure_thread_parker: Parker,
         init_status_sender: SyncSender<Result<Arc<ControllerInner>, ControllerError>>,
         command_receiver: Receiver<Command>,
     ) -> Result<(), ControllerError>
@@ -461,6 +482,7 @@ impl Controller {
         F: FnOnce(CircuitConfig) -> Result<(DBSPHandle, Box<dyn CircuitCatalog>), ControllerError>,
     {
         let mut start: Option<Instant> = None;
+        let mut backpressure_thread_parker = Some(backpressure_thread_parker);
 
         let min_storage_bytes = if controller.status.pipeline_config.global.storage {
             // This reduces the files stored on disk to a reasonable number.
@@ -602,6 +624,14 @@ impl Controller {
         }
         let (mut replaying, mut step_reader, mut step_writer) =
             controller.replay_step(step_reader, step_writer, step)?;
+        let mut _backpressure_thread = if !replaying {
+            Some(BackpressureThread::new(
+                controller.clone(),
+                backpressure_thread_parker.take().unwrap(),
+            ))
+        } else {
+            None
+        };
 
         let clock_resolution = controller
             .status
@@ -755,6 +785,7 @@ impl Controller {
 
                         // Wake up the backpressure thread to unpause endpoints blocked due to
                         // backpressure.
+                        controller.unpark_backpressure();
                         debug!("circuit thread: calling 'circuit.step'");
                         circuit
                             .step()
@@ -828,11 +859,13 @@ impl Controller {
                             )?;
                             if !replaying && new_state == PipelineState::Running {
                                 info!("starting pipeline");
-                                for endpoint in controller.inputs.lock().unwrap().values() {
-                                    endpoint.reader.extend();
-                                }
+                                _backpressure_thread = Some(BackpressureThread::new(
+                                    controller.clone(),
+                                    backpressure_thread_parker.take().unwrap(),
+                                ));
                             }
                         }
+                        controller.unpark_backpressure();
                     } else if buffered_records > 0 {
                         // We have some buffered data, but less than `min_batch_size_records` --
                         // wait up to `max_buffering_delay` for more data to
@@ -884,6 +917,72 @@ impl Controller {
 
     pub fn checkpoint(&self) -> Result<Checkpoint, ControllerError> {
         self.inner.checkpoint().map_err(|error| error.into())
+    }
+}
+
+struct BackpressureThread {
+    exit: Arc<AtomicBool>,
+    join_handle: Option<JoinHandle<()>>,
+    unparker: Unparker,
+}
+
+impl BackpressureThread {
+    fn new(controller: Arc<ControllerInner>, parker: Parker) -> Self {
+        let exit = Arc::new(AtomicBool::new(false));
+        Self {
+            exit: exit.clone(),
+            unparker: parker.unparker().clone(),
+            join_handle: Some(spawn(move || {
+                Self::backpressure_thread(controller, parker, exit)
+            })),
+        }
+    }
+
+    fn backpressure_thread(
+        controller: Arc<ControllerInner>,
+        parker: Parker,
+        exit: Arc<AtomicBool>,
+    ) {
+        let mut running_endpoints = HashSet::new();
+
+        loop {
+            if exit.load(Ordering::Acquire) {
+                return;
+            }
+
+            let globally_running = match controller.state() {
+                PipelineState::Paused => false,
+                PipelineState::Running => true,
+                PipelineState::Terminated => return,
+            };
+
+            for (epid, ep) in controller.inputs.lock().unwrap().iter() {
+                let should_run = globally_running
+                    && !controller.status.input_endpoint_paused_by_user(epid)
+                    && !controller.status.input_endpoint_full(epid);
+                if should_run {
+                    if running_endpoints.insert(*epid) {
+                        ep.reader.extend();
+                    }
+                } else {
+                    if running_endpoints.remove(epid) {
+                        ep.reader.pause();
+                    }
+                }
+            }
+
+            parker.park();
+        }
+    }
+}
+
+impl Drop for BackpressureThread {
+    fn drop(&mut self) {
+        self.exit.store(true, Ordering::Release);
+        self.unparker.unpark();
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
     }
 }
 
@@ -1111,6 +1210,7 @@ pub struct ControllerInner {
     inputs: Mutex<BTreeMap<EndpointId, InputEndpointDescr>>,
     outputs: ShardedLock<OutputEndpoints>,
     circuit_thread_unparker: Unparker,
+    backpressure_thread_unparker: Unparker,
     error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
     metrics_snapshotter: Arc<Snapshotter>,
     prometheus_handle: PrometheusHandle,
@@ -1123,6 +1223,7 @@ impl ControllerInner {
     fn new(
         config: &PipelineConfig,
         circuit_thread_unparker: Unparker,
+        backpressure_thread_unparker: Unparker,
         error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
         command_sender: Sender<Command>,
     ) -> Self {
@@ -1143,6 +1244,7 @@ impl ControllerInner {
             inputs: Mutex::new(BTreeMap::new()),
             outputs: ShardedLock::new(OutputEndpoints::new()),
             circuit_thread_unparker,
+            backpressure_thread_unparker,
             error_cb,
             metrics_snapshotter,
             prometheus_handle,
@@ -1229,13 +1331,14 @@ impl ControllerInner {
         self.add_input_endpoint(endpoint_name, endpoint_config.clone(), endpoint)
     }
 
-    fn disconnect_input(&self, endpoint_id: &EndpointId) {
+    fn disconnect_input(self: &Arc<Self>, endpoint_id: &EndpointId) {
         let mut inputs = self.inputs.lock().unwrap();
 
         if let Some(ep) = inputs.remove(endpoint_id) {
             ep.reader.disconnect();
             self.status.remove_input(endpoint_id);
             self.unpark_circuit();
+            self.unpark_backpressure();
         }
     }
 
@@ -1344,6 +1447,7 @@ impl ControllerInner {
 
         drop(inputs);
 
+        self.unpark_backpressure();
         Ok(endpoint_id)
     }
 
@@ -1374,6 +1478,11 @@ impl ControllerInner {
     /// Unpark the circuit thread.
     fn unpark_circuit(&self) {
         self.circuit_thread_unparker.unpark();
+    }
+
+    /// Unpark the backpressure thread.
+    fn unpark_backpressure(&self) {
+        self.backpressure_thread_unparker.unpark();
     }
 
     fn connect_output(
@@ -1653,11 +1762,12 @@ impl ControllerInner {
 
     fn start(&self) {
         self.status.set_state(PipelineState::Running);
-        self.unpark_circuit();
+        self.unpark_backpressure();
     }
 
     fn pause(&self) {
         self.status.set_state(PipelineState::Paused);
+        self.unpark_backpressure();
     }
 
     fn stop(&self) {
@@ -1675,17 +1785,20 @@ impl ControllerInner {
         self.status.set_state(PipelineState::Terminated);
 
         self.unpark_circuit();
+        self.unpark_backpressure();
     }
 
     fn pause_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.pause_input_endpoint(&endpoint_id);
+        self.unpark_backpressure();
         Ok(())
     }
 
     fn start_input_endpoint(&self, endpoint_name: &str) -> Result<(), ControllerError> {
         let endpoint_id = self.input_endpoint_id_by_name(endpoint_name)?;
         self.status.start_input_endpoint(&endpoint_id);
+        self.unpark_backpressure();
         Ok(())
     }
 
@@ -1756,8 +1869,12 @@ impl ControllerInner {
         }
 
         if let Some((endpoint_id, num_bytes)) = endpoint_id {
-            self.status
-                .input_batch_from_endpoint(endpoint_id, num_bytes, num_records)
+            self.status.input_batch_from_endpoint(
+                endpoint_id,
+                num_bytes,
+                num_records,
+                &self.backpressure_thread_unparker,
+            )
         }
     }
 
@@ -1846,7 +1963,6 @@ struct InputProbe {
     endpoint_name: String,
     controller: Arc<ControllerInner>,
     max_batch_size: usize,
-    max_queued_records: usize,
 }
 
 impl InputProbe {
@@ -1861,7 +1977,6 @@ impl InputProbe {
             endpoint_name: endpoint_name.to_owned(),
             controller,
             max_batch_size: connector_config.max_batch_size as usize,
-            max_queued_records: connector_config.max_queued_records as usize,
         }
     }
 }
@@ -1869,10 +1984,6 @@ impl InputProbe {
 impl InputConsumer for InputProbe {
     fn max_batch_size(&self) -> usize {
         self.max_batch_size
-    }
-
-    fn max_queued_records(&self) -> usize {
-        self.max_queued_records
     }
 
     fn parse_errors(&self, errors: Vec<ParseError>) {
@@ -2124,10 +2235,16 @@ outputs:
 
     impl FtTestRound {
         fn with_checkpoint(n_records: usize) -> Self {
-            Self { n_records, do_checkpoint: true }
+            Self {
+                n_records,
+                do_checkpoint: true,
+            }
         }
         fn without_checkpoint(n_records: usize) -> Self {
-            Self { n_records, do_checkpoint: false }
+            Self {
+                n_records,
+                do_checkpoint: false,
+            }
         }
     }
 

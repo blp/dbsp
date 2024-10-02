@@ -253,7 +253,7 @@ impl FileInputReader {
                 }
             }
 
-            if !extending || eof || n_queued >= consumer.max_queued_records() {
+            if !extending || eof {
                 thread::park();
                 continue;
             }

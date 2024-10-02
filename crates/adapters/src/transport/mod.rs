@@ -291,7 +291,6 @@ pub trait InputReader: Send {
 /// trait.
 pub trait InputConsumer: Send + Sync + DynClone {
     fn max_batch_size(&self) -> usize;
-    fn max_queued_records(&self) -> usize;
     fn parse_errors(&self, errors: Vec<ParseError>);
     fn buffered(&self, num_records: usize, num_bytes: usize);
     fn replayed(&self, num_records: usize);

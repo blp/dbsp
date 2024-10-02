@@ -88,10 +88,6 @@ impl InputConsumer for MockInputConsumer {
         usize::MAX
     }
 
-    fn max_queued_records(&self) -> usize {
-        usize::MAX
-    }
-
     fn parse_errors(&self, _errors: Vec<ParseError>) {}
 
     fn buffered(&self, _num_records: usize, _num_bytes: usize) {}

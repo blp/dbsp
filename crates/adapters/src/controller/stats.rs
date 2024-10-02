@@ -568,13 +568,18 @@ impl ControllerStatus {
         endpoint_id: EndpointId,
         num_bytes: usize,
         num_records: usize,
+        backpressure_thread_unparker: &Unparker,
     ) {
         // There is a potential race condition if the endpoint is currently
         // being removed. In this case, it's safe to ignore this operation.
         if num_bytes > 0 || num_records > 0 {
             let inputs = self.inputs.read().unwrap();
             if let Some(endpoint_stats) = inputs.get(&endpoint_id) {
-                endpoint_stats.add_buffer(num_bytes as u64, num_records as u64);
+                let old = endpoint_stats.add_buffered(num_bytes as u64, num_records as u64);
+                let threshold = endpoint_stats.config.connector_config.max_queued_records;
+                if old < threshold && old + num_records as u64 >= threshold {
+                    backpressure_thread_unparker.unpark();
+                }
             }
         }
     }
@@ -877,8 +882,9 @@ impl InputEndpointStatus {
         }
     }
 
-    /// Increments the number of buffered records and bytes.
-    fn add_buffer(&self, num_bytes: u64, num_records: u64) {
+    /// Increment the number of buffered bytes and records; return
+    /// the previous number of buffered records.
+    fn add_buffered(&self, num_bytes: u64, num_records: u64) -> u64 {
         if num_bytes > 0 {
             // We are only updating statistics here, so no need to pay for
             // strong consistency.
@@ -887,14 +893,12 @@ impl InputEndpointStatus {
                 .fetch_add(num_bytes, Ordering::Relaxed);
         }
 
-        if num_records > 0 {
-            self.metrics
-                .total_records
-                .fetch_add(num_records, Ordering::Relaxed);
-            self.metrics
-                .buffered_records
-                .fetch_add(num_records, Ordering::AcqRel);
-        }
+        self.metrics
+            .total_records
+            .fetch_add(num_records, Ordering::Relaxed);
+        self.metrics
+            .buffered_records
+            .fetch_add(num_records, Ordering::AcqRel)
     }
 
     fn eoi(&self) {
