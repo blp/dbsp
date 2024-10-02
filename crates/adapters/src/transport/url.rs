@@ -18,7 +18,7 @@ use awc::{http::header::HeaderMap, Client, ClientResponse, Connector};
 use bytes::Bytes;
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::url::UrlInputConfig;
-use futures::StreamExt;
+use futures::{future::OptionFuture, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{min, Ordering},
@@ -27,9 +27,11 @@ use std::{
     str::FromStr,
     sync::Arc,
     thread::spawn,
+    time::Duration,
 };
 use tokio::{
-    sync::mpsc::{error::TryRecvError, unbounded_channel, UnboundedReceiver, UnboundedSender},
+    select,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     time::{sleep_until, Instant},
 };
 
@@ -186,8 +188,16 @@ impl<'a> UrlStream<'a> {
 
     fn seek(&mut self, ofs: u64) {
         self.ofs = ofs;
+        self.disconnect();
+    }
+
+    fn disconnect(&mut self) {
         self.response = None;
         self.buffer = Bytes::new();
+    }
+
+    fn is_connected(&self) -> bool {
+        self.response.is_some()
     }
 }
 
@@ -217,17 +227,10 @@ impl UrlInputReader {
             let config = config.clone();
             move || {
                 System::new().block_on(async move {
-                    let mut splitter = AppendSplitter::new(parser.splitter());
                     if let Err(error) =
-                        Self::worker_thread(config, &mut parser, &mut splitter, receiver, &consumer)
-                            .await
+                        Self::worker_thread(config, &mut parser, receiver, &consumer).await
                     {
                         consumer.error(true, error);
-                    } else {
-                        if let Some(record) = splitter.next(true) {
-                            //consumer.queue(record.len(), parser.parse(record));
-                        }
-                        consumer.eoi();
                     };
                 });
             }
@@ -239,112 +242,129 @@ impl UrlInputReader {
     async fn worker_thread(
         config: Arc<UrlInputConfig>,
         parser: &mut Box<dyn Parser>,
-        splitter: &mut AppendSplitter,
         mut receiver: UnboundedReceiver<InputReaderCommand>,
         consumer: &Box<dyn InputConsumer>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();
 
+        let mut splitter = AppendSplitter::new(parser.splitter());
         let mut stream = UrlStream::new(&config.path);
 
         let mut queue = VecDeque::<(Range<u64>, Box<dyn InputBuffer>)>::new();
         let mut n_queued = 0;
 
+        // The time at which we will disconnect from the server, if we are
+        // paused when this time arrives.
+        let mut deadline = None;
+
         let mut extending = false;
         let mut eof = false;
         loop {
-            match receiver.try_recv() {
-                Ok(command) => match command {
-                    InputReaderCommand::Extend => {
-                        extending = true;
-                    }
-                    InputReaderCommand::Pause => {
-                        extending = false;
-                    }
-                    InputReaderCommand::Queue => {
-                        let mut total = 0;
-                        let limit = consumer.max_batch_size();
-                        let mut range: Option<Range<u64>> = None;
-                        while let Some((offsets, mut buffer)) = queue.pop_front() {
-                            range = match range {
-                                Some(range) => Some(range.start..offsets.end),
-                                None => Some(offsets),
-                            };
-                            total += buffer.len();
-                            buffer.flush_all();
-                            if total >= limit {
-                                break;
-                            }
-                        }
-                        n_queued -= total;
-                        consumer.extended(
-                            total,
-                            serde_json::to_value(Metadata {
-                                offsets: range.unwrap_or(0..0),
-                            })?,
-                        );
-                    }
-                    InputReaderCommand::Seek(metadata) => {
-                        let Metadata { offsets } = serde_json::from_value(metadata)?;
-                        let offset = offsets.end;
-                        stream.seek(offset);
-                        splitter.seek(offset);
-                    }
-                    InputReaderCommand::Replay(metadata) => {
-                        let Metadata { offsets } = serde_json::from_value(metadata)?;
-                        stream.seek(offsets.start);
-                        splitter.seek(offsets.start);
-                        let mut remainder = (offsets.end - offsets.start) as usize;
-                        let mut num_records = 0;
-                        while remainder > 0 {
-                            let bytes = stream.read(remainder).await?;
-                            let Some(bytes) = bytes else {
-                                todo!();
-                            };
-                            splitter.append(&bytes);
-                            remainder -= bytes.len();
-                            while let Some(chunk) = splitter.next(remainder == 0) {
-                                let (mut buffer, errors) = parser.parse(chunk);
-                                consumer.parse_errors(errors);
-                                consumer.buffered(buffer.len(), chunk.len());
-                                num_records += buffer.flush_all();
-                            }
-                        }
-                        consumer.replayed(num_records);
-                    }
-                    InputReaderCommand::Disconnect => return Ok(()),
+            let running = extending && !eof && n_queued < consumer.max_queued_records();
+            if running || !stream.is_connected() {
+                deadline = None;
+            } else if deadline.is_none() {
+                // If the pause timeout is so big that it overflows `Instant`,
+                // leave it as `None` and we'll just never timeout.
+                deadline =
+                    Instant::now().checked_add(Duration::from_secs(config.pause_timeout as u64));
+            }
+            let disconnect: OptionFuture<_> = deadline.map(sleep_until).into();
+
+            select! {
+                _ = disconnect, if deadline.is_some() => {
+                    stream.disconnect()
                 },
-                Err(TryRecvError::Disconnected) => return Ok(()),
-                Err(TryRecvError::Empty) => (),
+                command = receiver.recv() => {
+                    match command {
+                        Some(InputReaderCommand::Extend) => {
+                            extending = true;
+                        }
+                        Some(InputReaderCommand::Pause) => {
+                            extending = false;
+                        }
+                        Some(InputReaderCommand::Queue) => {
+                            let mut total = 0;
+                            let limit = consumer.max_batch_size();
+                            let mut range: Option<Range<u64>> = None;
+                            while let Some((offsets, mut buffer)) = queue.pop_front() {
+                                range = match range {
+                                    Some(range) => Some(range.start..offsets.end),
+                                    None => Some(offsets),
+                                };
+                                total += buffer.len();
+                                buffer.flush_all();
+                                if total >= limit {
+                                    break;
+                                }
+                            }
+                            n_queued -= total;
+                            consumer.extended(
+                                total,
+                                serde_json::to_value(Metadata {
+                                    offsets: range.unwrap_or(0..0),
+                                })?,
+                            );
+                        }
+                        Some(InputReaderCommand::Seek(metadata)) => {
+                            let Metadata { offsets } = serde_json::from_value(metadata)?;
+                            let offset = offsets.end;
+                            stream.seek(offset);
+                            splitter.seek(offset);
+                        }
+                        Some(InputReaderCommand::Replay(metadata)) => {
+                            deadline = None;
+                            let Metadata { offsets } = serde_json::from_value(metadata)?;
+                            stream.seek(offsets.start);
+                            splitter.seek(offsets.start);
+                            let mut remainder = (offsets.end - offsets.start) as usize;
+                            let mut num_records = 0;
+                            while remainder > 0 {
+                                let bytes = stream.read(remainder).await?;
+                                let Some(bytes) = bytes else {
+                                    todo!();
+                                };
+                                splitter.append(&bytes);
+                                remainder -= bytes.len();
+                                while let Some(chunk) = splitter.next(remainder == 0) {
+                                    let (mut buffer, errors) = parser.parse(chunk);
+                                    consumer.parse_errors(errors);
+                                    consumer.buffered(buffer.len(), chunk.len());
+                                    num_records += buffer.flush_all();
+                                }
+                            }
+                            consumer.replayed(num_records);
+                        }
+                        Some(InputReaderCommand::Disconnect) => return Ok(()),
+                        None => return Ok(())
+                    }
+                },
+                bytes = stream.read(usize::MAX), if running => {
+                    match bytes? {
+                        None => eof = true,
+                        Some(bytes) => splitter.append(&bytes),
+                    };
+                    loop {
+                        let start = splitter.position();
+                        let Some(chunk) = splitter.next(eof) else {
+                            break;
+                        };
+                        let (buffer, errors) = parser.parse(chunk);
+                        consumer.buffered(buffer.len(), chunk.len());
+                        consumer.parse_errors(errors);
+
+                        n_queued += buffer.len();
+                        if let Some(buffer) = buffer {
+                            let end = splitter.position();
+                            queue.push_back((start..end, buffer));
+                        }
+                    }
+                    if eof {
+                        consumer.eoi();
+                        stream.disconnect();
+                    }
+                },
             };
-
-            if !extending || eof || n_queued >= consumer.max_queued_records() {
-                parker.park();
-                continue;
-            }
-
-            match stream.read(usize::MAX).await? {
-                None => eof = true,
-                Some(bytes) => splitter.append(&bytes),
-            };
-            loop {
-                let start = splitter.position();
-                let Some(chunk) = splitter.next(eof) else {
-                    break;
-                };
-                let (buffer, errors) = parser.parse(chunk);
-                consumer.buffered(buffer.len(), chunk.len());
-                consumer.parse_errors(errors);
-
-                n_queued += buffer.len();
-                if let Some(buffer) = buffer {
-                    let end = splitter.position();
-                    queue.push_back((start..end, buffer));
-                }
-            }
-            if eof {
-                consumer.eoi();
-            }
         }
     }
 }
@@ -622,13 +642,15 @@ bar,false,-10
         )
         .unwrap_or_else(|()| panic!("only {} records after 350 ms", n_recs(&zset)));
         let n4 = n_recs(&zset);
-        println!("{} records took {n4_time} ms longer to arrive", n4 - n3);
+        println!(
+            "{} more records ({n4} total) took {n4_time} ms longer to arrive",
+            n4 - n3
+        );
 
         // Pause the endpoint.  No more records should arrive but who knows,
         // there could be a race, so don't be precise about it.
-        /* XXX we don't have pausing anymore
         println!("pausing...");
-        endpoint.pause().unwrap();*/
+        endpoint.pause();
         sleep(Duration::from_millis(100));
         endpoint.queue(); // XXX need to wait for it to be processed.
         let n5 = n_recs(&zset);
@@ -654,17 +676,18 @@ bar,false,-10
             // there should be no new data.  Since real life is full of races,
             // let's only wait 400 ms.
             for _ in 0..4 {
+                endpoint.queue();
                 sleep(Duration::from_millis(100));
                 let n = n_recs(&zset);
-                endpoint.queue(); // XXX need to wait for it to be processed.
                 println!("100 ms later, {n} records arrived");
                 assert_eq!(n5, n);
             }
         } else {
             // The records should start arriving again immediately.
             sleep(Duration::from_millis(200));
+            endpoint.queue();
+            sleep(Duration::from_millis(100));
             let n = n_recs(&zset);
-            endpoint.queue(); // XXX need to wait for it to be processed.
             println!("200 ms later, {n} records arrived");
             assert!(n > n5);
         }

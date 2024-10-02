@@ -18,7 +18,6 @@ use std::{
     collections::BTreeMap,
     error::Error as StdError,
     fmt::{Display, Error as FmtError, Formatter},
-    io::{Read},
 };
 
 #[cfg(feature = "with-avro")]
