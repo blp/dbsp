@@ -49,7 +49,7 @@ impl UrlInputEndpoint {
 
 impl InputEndpoint for UrlInputEndpoint {
     fn is_fault_tolerant(&self) -> bool {
-        false
+        true
     }
 }
 
@@ -200,17 +200,6 @@ impl<'a> UrlStream<'a> {
         self.response.is_some()
     }
 }
-
-/*
-impl AsyncRead for UrlStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<Result<(), IoError>> {
-        todo!()
-    }
-}*/
 
 struct UrlInputReader {
     sender: UnboundedSender<InputReaderCommand>,

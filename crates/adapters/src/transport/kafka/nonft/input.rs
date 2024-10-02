@@ -22,9 +22,8 @@ use rdkafka::{
     ClientConfig, ClientContext, Message,
 };
 use std::num::NonZeroUsize;
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{channel, Sender};
-use std::thread::{self, available_parallelism, JoinHandle};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread::{self, available_parallelism, JoinHandle, Thread};
 use std::{
     collections::HashSet,
     sync::{atomic::Ordering, Arc, Mutex, Weak},
@@ -52,7 +51,11 @@ impl KafkaInputEndpoint {
     }
 }
 
-struct KafkaInputReader(Arc<KafkaInputReaderInner>, JoinHandle<()>);
+struct KafkaInputReader {
+    inner: Arc<KafkaInputReaderInner>,
+    command_sender: Sender<InputReaderCommand>,
+    poller_thread: Thread,
+}
 
 /// Client context used to intercept rebalancing events.
 ///
@@ -99,7 +102,9 @@ impl ConsumerContext for KafkaInputContext {
         // println!("Rebalance: {rebalance:?}");
         if matches!(rebalance, Rebalance::Assign(_)) {
             if let Some(endpoint) = self.endpoint.lock().unwrap().upgrade() {
-                if endpoint.state() == PipelineState::Running {
+                if true
+                /*XXX*/
+                {
                     let _ = endpoint.resume_partitions();
                 } else {
                     let _ = endpoint.pause_partitions();
@@ -111,9 +116,70 @@ impl ConsumerContext for KafkaInputContext {
     }
 }
 
+/*
+/// A thread-safe queue for collecting and flushing input buffers.
+///
+/// Commonly used by `InputReader` implementations for staging buffers from
+/// worker threads.
+pub struct InputQueue {
+    pub queue: Mutex<VecDeque<Box<dyn InputBuffer>>>,
+    pub consumer: Box<dyn InputConsumer>,
+}
+
+impl InputQueue {
+    pub fn new(consumer: Box<dyn InputConsumer>) -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            consumer,
+        }
+    }
+
+    /// Appends `buffer`, if non-`None` to the queue.  Reports to the controller
+    /// that `num_bytes` have been received and at least partially parsed, and
+    /// that `errors` have occurred during parsing.
+    ///
+    /// Using this method automatically satisfies the requirements described for
+    /// [InputConsumer::queued].
+    pub fn push(
+        &self,
+        buffer: Option<Box<dyn InputBuffer>>,
+        num_bytes: usize,
+        errors: Vec<ParseError>,
+    ) {
+        match buffer {
+            Some(buffer) if !buffer.is_empty() => {
+                let num_records = buffer.len();
+                let mut guard = self.queue.lock().unwrap();
+                guard.push_back(buffer);
+                self.consumer.queued(num_bytes, num_records, errors);
+            }
+            _ => self.consumer.queued(num_bytes, 0, errors),
+        }
+    }
+
+    /// Implements [InputBuffer::flush] for `InputQueue`-based endpoints.
+    pub fn flush(&self, n: usize) -> usize {
+        let mut total = 0;
+        while total < n {
+            let Some(mut buffer) = self.queue.lock().unwrap().pop_front() else {
+                break;
+            };
+            total += buffer.flush(n - total);
+            if !buffer.is_empty() {
+                self.queue.lock().unwrap().push_front(buffer);
+                break;
+            }
+        }
+        total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.lock().unwrap().is_empty()
+    }
+}
+*/
 struct KafkaInputReaderInner {
     config: Arc<KafkaInputConfig>,
-    state: Atomic<PipelineState>,
     kafka_consumer: BaseConsumer<KafkaInputContext>,
     errors: ArrayQueue<(KafkaError, String)>,
     receiver: Box<dyn InputConsumer>,
@@ -125,7 +191,7 @@ impl KafkaInputReaderInner {
     /// `feedback`.
     fn poll(
         self: &Arc<Self>,
-        consumer: &mut Box<dyn InputConsumer>,
+        consumer: &Box<dyn InputConsumer>,
         parser: &mut Box<dyn Parser>,
         feedback: &Sender<HelperFeedback>,
     ) {
@@ -175,14 +241,6 @@ impl KafkaInputReaderInner {
         println!("Assignment: {:?}", self.kafka_consumer.assignment());
     }
 
-    fn state(&self) -> PipelineState {
-        self.state.load(Ordering::Acquire)
-    }
-
-    fn set_state(&self, state: PipelineState) {
-        self.state.store(state, Ordering::Release);
-    }
-
     /// Pause all partitions assigned to the consumer.
     fn pause_partitions(&self) -> KafkaResult<()> {
         // println!("pause");
@@ -209,7 +267,7 @@ impl KafkaInputReader {
     fn new(
         config: &Arc<KafkaInputConfig>,
         consumer: Box<dyn InputConsumer>,
-        mut parser: Box<dyn Parser>,
+        parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
         // Create Kafka consumer configuration.
         debug!("Starting Kafka input endpoint: {:?}", config);
@@ -240,7 +298,6 @@ impl KafkaInputReader {
         debug!("Creating Kafka consumer");
         let inner = Arc::new(KafkaInputReaderInner {
             config: config.clone(),
-            state: Atomic::new(PipelineState::Paused),
             kafka_consumer: BaseConsumer::from_config_and_context(&client_config, context)?,
             errors: ArrayQueue::new(ERROR_BUFFER_SIZE),
             receiver: consumer.clone(),
@@ -308,19 +365,34 @@ impl KafkaInputReader {
             }
         }
 
-        let endpoint_clone = inner.clone();
-        let poller =
-            spawn(move || KafkaInputReader::poller_thread(endpoint_clone, consumer, parser));
-        Ok(KafkaInputReader(inner, poller))
+        let (command_sender, command_receiver) = channel();
+        let poller_handle = spawn({
+            let endpoint = inner.clone();
+            move || {
+                if let Err(e) =
+                    KafkaInputReader::poller_thread(&endpoint, &consumer, parser, command_receiver)
+                {
+                    let (_fatal, e) = endpoint.refine_error(e);
+                    consumer.error(true, e);
+                }
+            }
+        });
+        let poller_thread = poller_handle.thread().clone();
+        Ok(KafkaInputReader {
+            inner,
+            command_sender,
+            poller_thread,
+        })
     }
 
     /// The main poller thread for a Kafka input. Polls `endpoint` as long as
     /// the pipeline is running, and passes the data to `consumer`.
     fn poller_thread(
-        endpoint: Arc<KafkaInputReaderInner>,
-        mut consumer: Box<dyn InputConsumer>,
+        endpoint: &Arc<KafkaInputReaderInner>,
+        consumer: &Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
-    ) {
+        command_receiver: Receiver<InputReaderCommand>,
+    ) -> Result<(), KafkaError> {
         // Figure out the number of threads based on configuration, defaults,
         // and system resources.
         let max_threads = available_parallelism().map_or(16, NonZeroUsize::get);
@@ -330,10 +402,9 @@ impl KafkaInputReader {
             .unwrap_or(3)
             .clamp(1, max_threads);
 
-        let mut actual_state = PipelineState::Paused;
         let mut partition_eofs = HashSet::new();
         let (feedback_sender, feedback_receiver) = channel();
-        let should_exit = Arc::new(AtomicBool::new(false));
+        let helper_state = Arc::new(Atomic::new(PipelineState::Paused));
         let mut threads: Vec<HelperThread> = Vec::with_capacity(n_threads - 1);
 
         // Create the rest of threads (start from 1 instead of 0
@@ -343,58 +414,48 @@ impl KafkaInputReader {
                 Arc::clone(&endpoint),
                 consumer.clone(),
                 parser.fork(),
-                Arc::clone(&should_exit),
+                Arc::clone(&helper_state),
                 feedback_sender.clone(),
             ));
         }
 
+        let mut running = false;
+        let mut kafka_paused = true;
+        let mut when_paused = Instant::now();
+        const PAUSE_TIMEOUT: Duration = Duration::from_millis(3000);
         loop {
-            match endpoint.state() {
-                PipelineState::Paused if actual_state != PipelineState::Paused => {
-                    // Pausing partitions is a relatively expensive operation, since it discards internal
-                    // rdkafka buffers.  We have to do it, since rdkafka requires us to continue polling
-                    // in order to process control traffic.  We avoid pausing partitions when the connector
-                    // is getting paused for less than 3s.  It should be ok not to poll for this long.
-                    let start = Instant::now();
-                    while endpoint.state() == PipelineState::Paused
-                        && start.elapsed() < Duration::from_millis(3000)
-                    {
-                        thread::park_timeout(Duration::from_millis(10));
+            for command in command_receiver.try_iter() {
+                match command {
+                    InputReaderCommand::Seek(_) | InputReaderCommand::Replay(_) => unreachable!(),
+                    InputReaderCommand::Extend => {
+                        running = true;
                     }
-                    if endpoint.state() == PipelineState::Paused {
-                        if let Err(e) = endpoint.pause_partitions() {
-                            let (_fatal, e) = endpoint.refine_error(e);
-                            consumer.error(true, e);
-                            return;
-                        }
-                        actual_state = PipelineState::Paused;
-                    } else {
-                        for thread in threads.iter() {
-                            thread.unpark();
-                        }
+                    InputReaderCommand::Pause => {
+                        running = false;
+                        when_paused = Instant::now();
+                        helper_state.store(PipelineState::Paused, Ordering::Release);
                     }
+                    InputReaderCommand::Queue => todo!(),
+                    InputReaderCommand::Disconnect => return Ok(()),
                 }
-                PipelineState::Running if actual_state != PipelineState::Running => {
-                    actual_state = PipelineState::Running;
+            }
 
-                    for thread in threads.iter() {
-                        thread.unpark();
-                    }
-
-                    if let Err(e) = endpoint.resume_partitions() {
-                        let (_fatal, e) = endpoint.refine_error(e);
-                        consumer.error(true, e);
-                        return;
-                    };
+            if !running && !kafka_paused && when_paused.elapsed() >= PAUSE_TIMEOUT {
+                endpoint.pause_partitions()?;
+                kafka_paused = true;
+            } else if running && kafka_paused {
+                endpoint.resume_partitions()?;
+                helper_state.store(PipelineState::Running, Ordering::Release);
+                for thread in threads.iter() {
+                    thread.unpark();
                 }
-                PipelineState::Terminated => return,
-                _ => {}
+                kafka_paused = false;
             }
 
             // Keep polling even while the consumer is paused as `BaseConsumer`
             // processes control messages (including rebalancing and errors)
             // within the polling thread.
-            endpoint.poll(&mut consumer, &mut parser, &feedback_sender);
+            endpoint.poll(consumer, &mut parser, &feedback_sender);
 
             for feedback in feedback_receiver.try_iter() {
                 match feedback {
@@ -412,10 +473,10 @@ impl KafkaInputReader {
                             .all(|p| partition_eofs.contains(&p))
                         {
                             consumer.eoi();
-                            return;
+                            return Ok(());
                         }
                     }
-                    HelperFeedback::FatalError => return,
+                    HelperFeedback::FatalError => return Ok(()),
                 }
             }
 
@@ -425,7 +486,7 @@ impl KafkaInputReader {
                 // error.
                 consumer.error(fatal, anyhow!(reason));
                 if fatal {
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -435,8 +496,8 @@ impl KafkaInputReader {
 /// A thread that will help the main poller thread by processing messages
 /// received from Kafka.
 struct HelperThread {
-    /// Used by the poller thread to tell us to exit.
-    should_exit: Arc<AtomicBool>,
+    /// Used by the poller thread to tell us what to do.
+    state: Arc<Atomic<PipelineState>>,
 
     /// Our own join handle so we can wait when dropped.
     join_handle: Option<JoinHandle<()>>,
@@ -447,19 +508,19 @@ impl HelperThread {
         endpoint: Arc<KafkaInputReaderInner>,
         mut consumer: Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
-        should_exit: Arc<AtomicBool>,
+        state: Arc<Atomic<PipelineState>>,
         feedback_sender: Sender<HelperFeedback>,
     ) -> Self {
         Self {
-            should_exit: Arc::clone(&should_exit),
+            state: state.clone(),
             join_handle: {
-                Some(spawn(move || {
-                    while !should_exit.load(Ordering::Acquire) {
-                        if endpoint.state() == PipelineState::Running {
-                            endpoint.poll(&mut consumer, &mut parser, &feedback_sender);
-                        } else {
-                            thread::park();
+                Some(spawn(move || loop {
+                    match state.load(Ordering::Acquire) {
+                        PipelineState::Paused => thread::park(),
+                        PipelineState::Running => {
+                            endpoint.poll(&mut consumer, &mut parser, &feedback_sender)
                         }
+                        PipelineState::Terminated => break,
                     }
                 }))
             },
@@ -472,17 +533,18 @@ impl HelperThread {
         }
     }
 }
+
 impl Drop for HelperThread {
     /// When we're dropped, make the thread exit.
     ///
-    /// *Careful*: `should_exit` is shared with all the helper threads, so if
-    /// one gets dropped, the others will exit too. Currently this is OK because
-    /// we always drop all of them together. It is in fact desirable because if
+    /// *Careful*: `state` is shared with all the helper threads, so if one gets
+    /// dropped, the others will exit too. Currently this is OK because we
+    /// always drop all of them together. It is in fact desirable because if
     /// they had separate `should_exit` flags then we'd have to block up to
     /// `POLL_TIMEOUT` per thread whereas since it is shared we will only block
     /// that long once.
     fn drop(&mut self) {
-        self.should_exit.store(true, Ordering::Release);
+        self.state.store(PipelineState::Terminated, Ordering::Release);
 
         let _ = self.join_handle.take().map(|handle| {
             handle.thread().unpark();
@@ -522,8 +584,9 @@ impl TransportInputEndpoint for KafkaInputEndpoint {
 }
 
 impl InputReader for KafkaInputReader {
-    fn request(&self, _command: InputReaderCommand) {
-        todo!()
+    fn request(&self, command: InputReaderCommand) {
+        let _ = self.command_sender.send(command);
+        self.poller_thread.unpark();
     }
 }
 
