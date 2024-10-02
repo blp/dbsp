@@ -18,8 +18,7 @@ use std::{
     collections::BTreeMap,
     error::Error as StdError,
     fmt::{Display, Error as FmtError, Formatter},
-    fs::File,
-    io::{Error as IoError, Read},
+    io::{Read},
 };
 
 #[cfg(feature = "with-avro")]
@@ -535,6 +534,7 @@ impl Splitter for LineSplitter {
 
 pub struct AppendSplitter {
     buffer: Vec<u8>,
+    start: u64,
     fragment: Range<usize>,
     fed: usize,
     splitter: Box<dyn Splitter>,
@@ -544,6 +544,7 @@ impl AppendSplitter {
     pub fn new(splitter: Box<dyn Splitter>) -> Self {
         Self {
             buffer: Vec::new(),
+            start: 0,
             fragment: 0..0,
             fed: 0,
             splitter,
@@ -569,6 +570,9 @@ impl AppendSplitter {
                 }
             }
         }
+    }
+    pub fn position(&self) -> u64 {
+        self.start + self.fragment.start as u64
     }
     pub fn final_chunk(&mut self) -> Option<&[u8]> {
         if !self.fragment.is_empty() {
@@ -588,82 +592,14 @@ impl AppendSplitter {
         self.buffer.resize(self.fragment.len(), 0);
         self.buffer.extend(data);
         self.fed -= self.fragment.start;
+        self.start += self.fragment.start as u64;
         self.fragment = 0..self.buffer.len();
     }
-}
-
-pub struct StreamingSplitter {
-    buffer: Vec<u8>,
-    fragment: Range<usize>,
-    fed: usize,
-    splitter: Box<dyn Splitter>,
-}
-
-impl StreamingSplitter {
-    pub fn new(splitter: Box<dyn Splitter>, buffer_size: Option<usize>) -> Self {
-        let mut buffer = Vec::new();
-        let buffer_size = buffer_size.unwrap_or_default();
-        buffer.resize(if buffer_size == 0 { 8192 } else { buffer_size }, 0);
-        Self {
-            buffer,
-            fragment: 0..0,
-            fed: 0,
-            splitter,
-        }
-    }
-    pub fn next(&mut self, eoi: bool) -> Option<&[u8]> {
-        match self
-            .splitter
-            .input(&self.buffer[self.fed..self.fragment.end])
-        {
-            Some(n) => {
-                let chunk = &self.buffer[self.fragment.start..self.fed + n];
-                self.fed += n;
-                self.fragment.start = self.fed;
-                Some(chunk)
-            }
-            None => {
-                self.fed = self.fragment.end;
-                if eoi {
-                    self.final_chunk()
-                } else {
-                    None
-                }
-            }
-        }
-    }
-    pub fn final_chunk(&mut self) -> Option<&[u8]> {
-        if !self.fragment.is_empty() {
-            let chunk = &self.buffer[self.fragment.clone()];
-            self.fragment.end = self.fragment.start;
-            Some(chunk)
-        } else {
-            None
-        }
-    }
-    pub fn spare_capacity_mut(&mut self) -> &mut [u8] {
-        self.buffer.copy_within(self.fragment.clone(), 0);
-        self.fed -= self.fragment.start;
-        self.fragment = 0..self.fragment.len();
-        if self.fragment.len() == self.buffer.len() {
-            self.buffer.resize(self.buffer.capacity() * 2, 0);
-        }
-        &mut self.buffer[self.fragment.len()..]
-    }
-    pub fn added_data(&mut self, n: usize) {
-        self.fragment.end += n;
-    }
-    pub fn read(&mut self, file: &mut File, max: usize) -> Result<usize, IoError> {
-        let mut space = self.spare_capacity_mut();
-        if space.len() > max {
-            space = &mut space[..max];
-        }
-        let result = file.read(space);
-        if let Ok(n) = result {
-            println!("read {n} bytes");
-            self.added_data(n);
-        }
-        result
+    pub fn seek(&mut self, offset: u64) {
+        self.start = offset;
+        self.fragment = 0..0;
+        self.fed = 0;
+        self.splitter.clear();
     }
 }
 

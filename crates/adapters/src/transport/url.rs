@@ -1,19 +1,35 @@
+#![warn(unused_variables)]
+#![warn(unused_mut)]
+#![warn(unreachable_code)]
+#![warn(dead_code)]
+
 use super::{
     InputConsumer, InputEndpoint, InputReader, InputReaderCommand, InputStep,
     TransportInputEndpoint,
 };
-use crate::{ensure_default_crypto_provider, format::AppendSplitter, Parser, PipelineState};
+use crate::{ensure_default_crypto_provider, format::AppendSplitter, InputBuffer, Parser};
 use actix::System;
-use actix_web::http::header::{ByteRangeSpec, ContentRangeSpec, Range, CONTENT_RANGE};
-use anyhow::{anyhow, Result as AnyResult};
-use awc::{Client, Connector};
+use actix_web::{
+    dev::{Decompress, Payload},
+    http::header::{ByteRangeSpec, ContentRangeSpec, Range as ActixRange, CONTENT_RANGE},
+};
+use anyhow::{anyhow, bail, Result as AnyResult};
+use awc::{http::header::HeaderMap, Client, ClientResponse, Connector};
+use bytes::Bytes;
 use feldera_types::program_schema::Relation;
 use feldera_types::transport::url::UrlInputConfig;
 use futures::StreamExt;
-use std::{cmp::Ordering, str::FromStr, sync::Arc, thread::spawn, time::Duration};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::{min, Ordering},
+    collections::VecDeque,
+    ops::Range,
+    str::FromStr,
+    sync::Arc,
+    thread::spawn,
+};
 use tokio::{
-    select,
-    sync::watch::{channel, Receiver, Sender},
+    sync::mpsc::{error::TryRecvError, unbounded_channel, UnboundedReceiver, UnboundedSender},
     time::{sleep_until, Instant},
 };
 
@@ -51,8 +67,143 @@ impl TransportInputEndpoint for UrlInputEndpoint {
     }
 }
 
+struct UrlStream<'a> {
+    client: Client,
+    path: &'a str,
+
+    response: Option<ClientResponse<Decompress<Payload>>>,
+    next_read_ofs: u64,
+
+    buffer: Bytes,
+    ofs: u64,
+}
+
+/// Returns the starting offset into the URL content that the server is sending
+/// in `response`.
+///
+/// The server tells us the range of the URL content it's sending us.  If it
+/// doesn't say anything (which is valid even if we asked for a range), then it
+/// is starting at the beginning.
+fn get_response_starting_offset(headers: &HeaderMap) -> AnyResult<u64> {
+    if let Some(range) = headers.get(CONTENT_RANGE) {
+        match ContentRangeSpec::from_str(range.to_str()?)? {
+            ContentRangeSpec::Bytes {
+                range: Some((start, _)),
+                ..
+            } => Ok(start),
+            ContentRangeSpec::Bytes { range: None, .. } => {
+                // Weird flex, bro.
+                Ok(0)
+            }
+            other => Err(anyhow!(
+                "expected byte range in HTTP response, instead received {other}"
+            ))?,
+        }
+    } else {
+        Ok(0)
+    }
+}
+
+impl<'a> UrlStream<'a> {
+    pub fn new(path: &'a str) -> Self {
+        Self {
+            client: Client::builder().connector(Connector::new()).finish(),
+            path,
+            response: None,
+            next_read_ofs: 0,
+            buffer: Bytes::new(),
+            ofs: 0,
+        }
+    }
+
+    pub async fn read(&mut self, limit: usize) -> AnyResult<Option<Bytes>> {
+        loop {
+            if !self.buffer.is_empty() {
+                let n = min(limit, self.buffer.len());
+                self.ofs += n as u64;
+                return Ok(Some(self.buffer.split_to(n)));
+            }
+
+            if self.response.is_none() {
+                let mut request = self.client.get(self.path);
+                if self.ofs > 0 {
+                    // Try to resume at the point where we left off.
+                    request = request
+                        .insert_header(ActixRange::Bytes(vec![ByteRangeSpec::From(self.ofs)]));
+                }
+
+                let response = request.send().await.map_err(
+                    // `awc` intentionally uses errors that aren't `Sync`, but
+                    // `anyhow::Error` requires `Sync`.  Transform the error so we can
+                    // return it.
+                    |error| anyhow!("{error}"),
+                )?;
+                if !response.status().is_success() {
+                    bail!(
+                        "received unexpected HTTP status code ({})",
+                        response.status()
+                    );
+                }
+                self.next_read_ofs = get_response_starting_offset(response.headers())?;
+                if self.next_read_ofs > self.ofs {
+                    Err(anyhow!(
+                        "HTTP server skipped past data we need, by starting at {} instead of {}",
+                        self.next_read_ofs,
+                        self.ofs
+                    ))?
+                }
+                self.response = Some(response);
+            };
+
+            let Some(result) = self.response.as_mut().unwrap().next().await else {
+                // End of stream.
+                return Ok(None);
+            };
+
+            // Get the data and its starting offset from the beginning of
+            // the URL.
+            let data = result?;
+            let data_ofs = self.next_read_ofs;
+            self.next_read_ofs += data.len() as u64;
+
+            // Extract a chunk of data that can be returned to our
+            // caller. If this is nonempty, then `self.ofs` is its starting
+            // offset from the beginning of the URL.
+            self.buffer = match data_ofs.cmp(&self.ofs) {
+                Ordering::Equal => data,
+                Ordering::Less => {
+                    let skip = (self.ofs - data_ofs) as usize;
+                    if skip < data.len() {
+                        data.slice(skip..)
+                    } else {
+                        Bytes::new()
+                    }
+                }
+                Ordering::Greater => unreachable!(),
+            };
+        }
+    }
+
+    fn seek(&mut self, ofs: u64) {
+        self.ofs = ofs;
+        self.response = None;
+        self.buffer = Bytes::new();
+    }
+}
+
+/*
+impl AsyncRead for UrlStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), IoError>> {
+        todo!()
+    }
+}*/
+
 struct UrlInputReader {
-    sender: Sender<PipelineState>,
+    sender: UnboundedSender<InputReaderCommand>,
 }
 
 impl UrlInputReader {
@@ -61,10 +212,9 @@ impl UrlInputReader {
         consumer: Box<dyn InputConsumer>,
         mut parser: Box<dyn Parser>,
     ) -> AnyResult<Self> {
-        let (sender, receiver) = channel(PipelineState::Paused);
+        let (sender, receiver) = unbounded_channel();
         spawn({
             let config = config.clone();
-            let receiver = receiver.clone();
             move || {
                 System::new().block_on(async move {
                     let mut splitter = AppendSplitter::new(parser.splitter());
@@ -90,173 +240,118 @@ impl UrlInputReader {
         config: Arc<UrlInputConfig>,
         parser: &mut Box<dyn Parser>,
         splitter: &mut AppendSplitter,
-        mut receiver: Receiver<PipelineState>,
+        mut receiver: UnboundedReceiver<InputReaderCommand>,
         consumer: &Box<dyn InputConsumer>,
     ) -> AnyResult<()> {
         ensure_default_crypto_provider();
 
-        let client = Client::builder().connector(Connector::new()).finish();
+        let mut stream = UrlStream::new(&config.path);
 
-        // Number of bytes of URL content that we've delivered to `consumer`.
-        let mut consumed_bytes = 0;
+        let mut queue = VecDeque::<(Range<u64>, Box<dyn InputBuffer>)>::new();
+        let mut n_queued = 0;
 
-        // The URL content offset of the next byte that we'll receive.
-        let mut offset = 0;
-
-        // The `ClientResponse`, if there is one.
-        let mut response = None;
-
-        // The time at which we will disconnect from the server, if we are
-        // paused when this time arrives.
-        let mut deadline = None;
-
+        let mut extending = false;
+        let mut eof = false;
         loop {
-            let state = *receiver.borrow();
-            match state {
-                PipelineState::Terminated => return Ok(()),
-                PipelineState::Paused => {
-                    if deadline.is_none() {
-                        // If the pause timeout is so big that it overflows
-                        // `Instant`, leave it as `None` and we'll just never
-                        // timeout.
-                        deadline = Instant::now()
-                            .checked_add(Duration::from_secs(config.pause_timeout as u64));
+            match receiver.try_recv() {
+                Ok(command) => match command {
+                    InputReaderCommand::Extend => {
+                        extending = true;
                     }
-                    loop {
-                        let sleep = deadline.map(sleep_until);
-                        tokio::pin!(sleep);
-                        select! {
-                            _ = sleep.as_pin_mut().unwrap(), if sleep.is_some() && response.is_some() => {
-                                // On pause, drop the connection after a delay.
-                                // We will reconnect when we start running
-                                // again.
-                                //
-                                // Dropping the connection immediately is a bad
-                                // idea because the pause might be just long
-                                // enough to let a data ingress backlog clear
-                                // up, probably at most a few seconds.  It's not
-                                // good to churn the connection to the server
-                                // for that, especially if it's one that can't
-                                // restart mid-file.
-                                //
-                                // On the other hand, if we never drop the
-                                // connection while paused, we risk getting an
-                                // error from the server disconnecting when we
-                                // go idle for a long time.  Then we'd have to
-                                // be able to distinguish idle disconnects from
-                                // other server errors, which could be
-                                // challenging.  It seems easier to just
-                                // disconnect and reconnect.
-                                let _ = response.take();
-                            },
-
-                            // Wait for a state change.
-                            result = receiver.changed() => { result?; break; }
-                        }
+                    InputReaderCommand::Pause => {
+                        extending = false;
                     }
-                }
-                PipelineState::Running => {
-                    deadline = None;
-
-                    // If we haven't connected yet, or if we're resuming
-                    // following pause, connect to the server.
-                    if response.is_none() {
-                        let mut request = client.get(&config.path);
-                        if consumed_bytes > 0 {
-                            // Try to resume at the point where we left off.
-                            request =
-                                request.insert_header(Range::Bytes(vec![ByteRangeSpec::From(
-                                    consumed_bytes,
-                                )]));
-                        }
-                        let r = request.send().await.map_err(
-                            // `awc` intentionally uses errors that aren't `Sync`, but
-                            // `anyhow::Error` requires `Sync`.  Transform the error so we can
-                            // return it.
-                            |error| anyhow!("{error}"),
-                        )?;
-                        if !r.status().is_success() {
-                            Err(anyhow!(
-                                "received unexpected HTTP status code ({})",
-                                r.status()
-                            ))?
-                        }
-
-                        // The server tells us the range of the URL content it's
-                        // sending us.  If it doesn't say anything (which is
-                        // valid even if we asked for a range), then it is
-                        // starting at the beginning.
-                        offset = if let Some(range) = r.headers().get(CONTENT_RANGE) {
-                            match ContentRangeSpec::from_str(range.to_str()?)? {
-                                ContentRangeSpec::Bytes {
-                                    range: Some((start, _)),
-                                    ..
-                                } => start,
-                                ContentRangeSpec::Bytes { range: None, .. } => {
-                                    // Weird flex, bro.
-                                    0
-                                },
-                                other => Err(anyhow!("expected byte range in HTTP response, instead received {other}"))?,
-                            }
-                        } else {
-                            0
-                        };
-                        if offset > consumed_bytes {
-                            Err(anyhow!("HTTP server skipped past data we need, by starting at {offset} instead of {consumed_bytes}"))?
-                        }
-                        response = Some(r);
-                    };
-                    let response = response.as_mut().unwrap();
-
-                    select! {
-                        _ = receiver.changed() => (),
-                        result = response.next() => {
-                            match result {
-                                None => return Ok(()),
-                                Some(Ok(data)) => {
-                                    let data_len = data.len() as u64;
-
-                                    // Figure out what part of the data we
-                                    // received should be fed to `consumer`.  In
-                                    // the common case, that's all of it.  But
-                                    // if we paused and restarted, and the HTTP
-                                    // server didn't honor our range request, we
-                                    // have to discard data up to offset
-                                    // `consumed_bytes`.
-                                    let chunk = match offset.cmp(&consumed_bytes) {
-                                        Ordering::Equal => &data[..],
-                                        Ordering::Less => {
-                                            let skip = consumed_bytes - offset;
-                                            if skip >= data_len {
-                                                &[]
-                                            } else {
-                                                &data[skip as usize..]
-                                            }
-                                        },
-                                        Ordering::Greater => unreachable!()
-                                    };
-                                    if !chunk.is_empty() {
-                                        consumed_bytes += chunk.len() as u64;
-                                        splitter.append(chunk);
-                                        while let Some(record) = splitter.next(false) {
-                                            //consumer.queue(record.len(), parser.parse(record));
-                                        }
-                                    }
-                                    offset += data_len;
-                                },
-                                Some(Err(error)) => Err(error)?,
+                    InputReaderCommand::Queue => {
+                        let mut total = 0;
+                        let limit = consumer.max_batch_size();
+                        let mut range: Option<Range<u64>> = None;
+                        while let Some((offsets, mut buffer)) = queue.pop_front() {
+                            range = match range {
+                                Some(range) => Some(range.start..offsets.end),
+                                None => Some(offsets),
+                            };
+                            total += buffer.len();
+                            buffer.flush_all();
+                            if total >= limit {
+                                break;
                             }
                         }
+                        n_queued -= total;
+                        consumer.extended(
+                            total,
+                            serde_json::to_value(Metadata {
+                                offsets: range.unwrap_or(0..0),
+                            })?,
+                        );
                     }
+                    InputReaderCommand::Seek(metadata) => {
+                        let Metadata { offsets } = serde_json::from_value(metadata)?;
+                        let offset = offsets.end;
+                        stream.seek(offset);
+                        splitter.seek(offset);
+                    }
+                    InputReaderCommand::Replay(metadata) => {
+                        let Metadata { offsets } = serde_json::from_value(metadata)?;
+                        stream.seek(offsets.start);
+                        splitter.seek(offsets.start);
+                        let mut remainder = (offsets.end - offsets.start) as usize;
+                        let mut num_records = 0;
+                        while remainder > 0 {
+                            let bytes = stream.read(remainder).await?;
+                            let Some(bytes) = bytes else {
+                                todo!();
+                            };
+                            splitter.append(&bytes);
+                            remainder -= bytes.len();
+                            while let Some(chunk) = splitter.next(remainder == 0) {
+                                let (mut buffer, errors) = parser.parse(chunk);
+                                consumer.parse_errors(errors);
+                                consumer.buffered(buffer.len(), chunk.len());
+                                num_records += buffer.flush_all();
+                            }
+                        }
+                        consumer.replayed(num_records);
+                    }
+                    InputReaderCommand::Disconnect => return Ok(()),
+                },
+                Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Empty) => (),
+            };
+
+            if !extending || eof || n_queued >= consumer.max_queued_records() {
+                parker.park();
+                continue;
+            }
+
+            match stream.read(usize::MAX).await? {
+                None => eof = true,
+                Some(bytes) => splitter.append(&bytes),
+            };
+            loop {
+                let start = splitter.position();
+                let Some(chunk) = splitter.next(eof) else {
+                    break;
+                };
+                let (buffer, errors) = parser.parse(chunk);
+                consumer.buffered(buffer.len(), chunk.len());
+                consumer.parse_errors(errors);
+
+                n_queued += buffer.len();
+                if let Some(buffer) = buffer {
+                    let end = splitter.position();
+                    queue.push_back((start..end, buffer));
                 }
+            }
+            if eof {
+                consumer.eoi();
             }
         }
     }
 }
 
 impl InputReader for UrlInputReader {
-    fn request(&self, _command: InputReaderCommand) {
-        todo!()
+    fn request(&self, command: InputReaderCommand) {
+        let _ = self.sender.send(command);
     }
 }
 
@@ -264,6 +359,11 @@ impl Drop for UrlInputReader {
     fn drop(&mut self) {
         self.disconnect();
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Metadata {
+    offsets: Range<u64>,
 }
 
 #[cfg(test)]
